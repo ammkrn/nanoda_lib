@@ -1,0 +1,22 @@
+[package]
+name = "nanoda_lib"
+version = "0.1.1"
+authors = ["ammkrn <ammkrn@tuta.io>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+mimalloc = []
+default = ["mimalloc"]
+
+[dependencies]
+nanoda_macros = { git = "https://github.com/ammkrn/nanoda_macros" }
+pretty_simple = { git = "https://github.com/ammkrn/pretty_simple" }
+enum_tools = { git = "https://github.com/ammkrn/enum_tools" }
+indexmap = "1.3.1"
+fxhash = "0.2.1"
+hashbrown = "0.3.0"
+mimallocator = "0.1.3"
+once_cell = "1.2.0"
+parking_lot = "0.9.0"

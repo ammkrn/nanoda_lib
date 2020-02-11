@@ -1,0 +1,6 @@
+/target
+Cargo.lock
+callgrind*
+test.out
+*.scratch
+examples/example_trace
