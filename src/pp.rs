@@ -10,6 +10,7 @@ use crate::env::{ ArcEnv, ConstantInfo, Notation, Notation::* };
 use pretty_simple::doc::{ Doc, word_wrap_val };
 use pretty_simple::parenable::{ Parenable, MAX_PRIORITY };
 use crate::utils::HasInstantiate;
+use crate::trace::{ TraceMgr, ArcBaseStorage };
 
 
 
@@ -23,12 +24,12 @@ pub struct PrettyPrinter {
 }
 
 impl PrettyPrinter {
-    pub fn new(env : ArcEnv, options : Option<PPOptions>) -> Self {
+    pub fn new(env : ArcEnv, options : Option<PPOptions>, base_items : &ArcBaseStorage) -> Self {
         let pp_options = options.unwrap_or_else(|| PPOptions::new_default());
         let underscores_val = pp_options.incr_w_underscores;
         PrettyPrinter {
             pp_options,
-            ctx_mgr : CtxMgr::new(env, underscores_val)
+            ctx_mgr : CtxMgr::new(env, underscores_val, base_items)
         }
     }
 
@@ -534,26 +535,26 @@ impl PrettyPrinter {
 }
 
 
-pub fn print_declar(env : &ArcEnv, n : &Name, options : Option<PPOptions>) -> String {
+pub fn print_declar(env : &ArcEnv, n : &Name, options : Option<PPOptions>, base : &ArcBaseStorage) -> String {
     let declar = match env.read().constant_infos.get(n) {
         Some(d) => d.clone(),
         None => return String::new()
     };
 
-    let pp = PrettyPrinter::new(env.clone(), options);
+    let pp = PrettyPrinter::new(env.clone(), options, base);
 
     pp.pp_main(&declar)
       .group()
       .render(pp.pp_options.width)
 }
 
-pub fn print_all(env : &ArcEnv, options : Option<PPOptions>) -> IoResult<()> {
+pub fn print_all(env : &ArcEnv, options : Option<PPOptions>, base : &ArcBaseStorage) -> IoResult<()> {
     let handle = std::io::stdout();
     let mut _l = std::io::BufWriter::new(handle.lock());
     let options = options.unwrap_or(PPOptions::new_default());
     for const_info in env.read().constant_infos.values() {
         
-        let pp = PrettyPrinter::new(env.clone(), Some(options));
+        let pp = PrettyPrinter::new(env.clone(), Some(options), base);
         let _s = pp.pp_main(const_info)
                    .group()
                    .render(options.width);
@@ -565,16 +566,16 @@ pub fn print_all(env : &ArcEnv, options : Option<PPOptions>) -> IoResult<()> {
 //#[derive(Clone)]
 pub struct CtxMgr {
     pub used_lc_names : RefCell<HashSet<Name>>,
-    pub tc : RefCell<TypeChecker>,
+    pub tc : RefCell<TypeChecker<()>>,
     pub incr_w_underscores : bool,
     // pub paren_mgr : Vec<T>
 
 }
 impl CtxMgr {
-    pub fn new(env : ArcEnv, incr_w_underscores : bool) -> Self {
+    pub fn new(env : ArcEnv, incr_w_underscores : bool, base_items : &ArcBaseStorage) -> Self {
         CtxMgr {
             used_lc_names : RefCell::new(HashSet::with_capacity(50)),
-            tc : RefCell::new(TypeChecker::new(Some(true), env.clone())),
+            tc : RefCell::new(TypeChecker::new(Some(true), env.clone(), TraceMgr::new_arc_trace_mgr(base_items, (), None))),
             incr_w_underscores
         }
     }

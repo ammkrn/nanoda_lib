@@ -1,10 +1,11 @@
 use std::cmp::Ordering::*;
 use hashbrown::HashMap;
 use once_cell::sync::Lazy;
+use nanoda_macros::trace;
 
 use Cheap::*;
 use crate::ret_none_if;
-use crate::utils::{ HasInstantiate,
+use crate::utils::{ 
                     Either, 
                     FailureCache, 
                     Either::*, 
@@ -32,6 +33,7 @@ use crate::expr::{ Expr,
                    mk_lambda,
                    mk_prop,
                    Binder, InnerExpr::*, };
+use crate::trace::{ ArcTraceMgr, Tracer };
 
 pub static QLIFT    : Lazy<Name> = Lazy::new(|| Name::from("quot").extend_str("lift"));
 pub static QMK      : Lazy<Name> = Lazy::new(|| Name::from("quot").extend_str("mk"));
@@ -45,7 +47,7 @@ pub enum Cheap {
 }
 
 #[derive(Clone)]
-pub struct TypeChecker {
+pub struct TypeChecker<T : Tracer> {
     pub m_safe_only : bool,
     pub infer_cache : HashMap<Expr, Expr>,
     pub eq_cache : EqCache,
@@ -54,25 +56,26 @@ pub struct TypeChecker {
     pub m_lparams : Option<Vec<Level>>,
     pub failure_cache : FailureCache,
     pub quot_is_init : bool,
+    pub trace_mgr : ArcTraceMgr<T>,
 }
 
 
-impl std::fmt::Debug for TypeChecker {
+impl<T : Tracer> std::fmt::Debug for TypeChecker<T> {
     fn fmt(&self, f : &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "<typechecker>")
     }
 }
 
-impl std::cmp::PartialEq for TypeChecker {
-    fn eq(&self, _ : &TypeChecker) -> bool {
+impl<T : Tracer> std::cmp::PartialEq for TypeChecker<T> {
+    fn eq(&self, _ : &TypeChecker<T>) -> bool {
         true
     }
 }
 
-impl std::cmp::Eq for TypeChecker {}
+impl<T : Tracer> std::cmp::Eq for TypeChecker<T> {}
 
-impl TypeChecker {
-    pub fn new(safe_only : Option<bool>, env : ArcEnv) -> Self {
+impl<T : Tracer> TypeChecker<T> {
+    pub fn new(safe_only : Option<bool>, env : ArcEnv, trace_mgr : ArcTraceMgr<T>) -> Self {
         let quot_is_init = env.read().quot_is_init;
         TypeChecker {
             m_safe_only : safe_only.unwrap_or(false),
@@ -83,30 +86,38 @@ impl TypeChecker {
             m_lparams : None,
             failure_cache : FailureCache::with_capacity(500),
             quot_is_init,
+            trace_mgr,
         }
     }
 
     pub fn set_safe_only(&mut self, safe_only : Option<bool>) {
         std::mem::replace(&mut self.m_safe_only, safe_only.unwrap_or(false));
     }
+
+    pub fn swap_tracer(&mut self, t : ArcTraceMgr<T>) {
+        std::mem::replace(&mut self.trace_mgr, t);
+    }
+
 }
 
 
 // Basically just instantiate_lparams for a ConstantInfo it it's one 
 // that has a Value with some optimizations.
-pub fn instantiate_value_lparams(const_info : &ConstantInfo, ls : &Vec<Level>) -> Expr {
+#[trace(trace_mgr, InstantiateValueLparam(const_info, ls))]
+pub fn instantiate_value_lparams(const_info : &ConstantInfo, ls : &Vec<Level>, trace_mgr : &ArcTraceMgr<impl Tracer>) -> Expr {
     if (const_info.get_constant_base().lparams.len() != ls.len()) {
         err_mismatch_lparams(line!(), const_info, ls)
     } else if (!const_info.has_value(None)) {
         err_no_value(line!(), const_info)
    } else {
         let zip = const_info.get_constant_base().lparams.iter().zip(ls.iter());
-        const_info.get_value().instantiate_lparams(zip)
+        const_info.get_value().instantiate_lparams_trace(trace_mgr, zip)
     }
 }
 
 
-pub fn check_level(m_lparams : Option<&Vec<Level>>, l : &Level) {
+#[trace(trace_mgr, CheckLevel(m_lparams.clone(), l))]
+pub fn check_level(m_lparams : Option<&Vec<Level>>, l : &Level, trace_mgr : &ArcTraceMgr<impl Tracer>) {
     if let Some(set) = m_lparams {
         match l.get_undef_param(set) {
             Some(bad) => err_bad_sort(line!(), bad),
@@ -172,7 +183,8 @@ impl LcCache {
 */
 
 
-pub fn infer_const(n : &Name, ls : &Vec<Level>, infer_only : bool, tc : &mut TypeChecker) -> Expr {
+#[trace(tc.trace_mgr, InferConst(n, ls))]
+pub fn infer_const(n : &Name, ls : &Vec<Level>, infer_only : bool, tc : &mut TypeChecker<impl Tracer>) -> Expr {
     let _x = tc.env.read().get_constant_info(n);
     if let Some(const_info) = _x {
         assert_eq!(ls.len(), const_info.get_constant_base().lparams.len());
@@ -181,18 +193,19 @@ pub fn infer_const(n : &Name, ls : &Vec<Level>, infer_only : bool, tc : &mut Typ
                 panic!("Cannot check an unsafe definition in this manner")
             }
 
-            ls.iter().for_each(|l| check_level(tc.m_lparams.as_ref(), l))
+            ls.iter().for_each(|l| check_level(tc.m_lparams.as_ref(), l, &tc.trace_mgr))
         }
 
         const_info.get_constant_base()
         .type_
-        .instantiate_lparams(const_info.get_constant_base().lparams.iter().zip(ls))
+        .instantiate_lparams_trace(&tc.trace_mgr, const_info.get_constant_base().lparams.iter().zip(ls))
     } else {
         err_infer_const(line!(), n)
     }
 }
 
-pub fn infer_let(dom : &Binder, val : &Expr, body : &Expr, infer_only : bool, tc : &mut TypeChecker) -> Expr {
+#[trace(tc.trace_mgr, InferLet(dom, val, body, infer_only))]
+pub fn infer_let(dom : &Binder, val : &Expr, body : &Expr, infer_only : bool, tc : &mut TypeChecker<impl Tracer>) -> Expr {
     if !infer_only {
         dom.type_.infer_sort(tc);
     }
@@ -201,13 +214,14 @@ pub fn infer_let(dom : &Binder, val : &Expr, body : &Expr, infer_only : bool, tc
         assert!(infd.check_def_eq(&dom.type_, tc) == EqShort)
     }
 
-    let instd_body = body.instantiate(Some(val).into_iter());
+    let instd_body = body.instantiate_trace(tc.trace_mgr.clone(), Some(val).into_iter());
     instd_body.infer_type_core(tc, infer_only)
 }
 
 impl Expr {
 
-    pub fn check_type__(&self, type_ : &Expr, tc : &mut TypeChecker) -> Judgment {
+    #[trace(tc.trace_mgr, CheckType(self, type_))]
+    pub fn check_type__(&self, type_ : &Expr, tc : &mut TypeChecker<impl Tracer>) -> Judgment {
         match self.infer_type_core(tc, false)
                   .check_def_eq(type_, tc) {
             EqShort => Judgment::OK,
@@ -217,20 +231,24 @@ impl Expr {
         }
     }
 
-    pub fn checked_infer(&self, lparams : Vec<Level>, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, CheckedInfer(self, &lparams))]
+    pub fn checked_infer(&self, lparams : Vec<Level>, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         tc.m_lparams = Some(lparams);
         self.infer_type_core(tc, false)
     }
 
-    pub fn unchecked_infer(&self, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, UncheckedInfer(self))]
+    pub fn unchecked_infer(&self, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         self.infer_type(tc)
     }
 
-    pub fn infer_type(&self, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, InferType(self))]
+    pub fn infer_type(&self, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         self.infer_type_core(tc, true)
     }
 
-    pub fn infer_sort(&self, tc : &mut TypeChecker) -> Level {
+    #[trace(tc.trace_mgr, InferSort(self))]
+    pub fn infer_sort(&self, tc : &mut TypeChecker<impl Tracer>) -> Level {
         match self.infer_type_core(tc, false)
                   .whnf(tc)
                   .as_ref() {
@@ -242,7 +260,8 @@ impl Expr {
     // If we've already inferred this expression, return the cached result.
     // Otherwise, dispatch the term to the correct function based
     // on its discriminant, and cache the eventual result.
-    pub fn infer_type_core(&self, tc : &mut TypeChecker, infer_only : bool) -> Expr {
+    #[trace(tc.trace_mgr, InferTypeCore(self))]
+    pub fn infer_type_core(&self, tc : &mut TypeChecker<impl Tracer>, infer_only : bool) -> Expr {
         if let Some(cached) = tc.infer_cache.get(self) {
             cached.clone()
         } else {
@@ -252,7 +271,7 @@ impl Expr {
                     //tc.trace_mgr.write().push_extra(format!("sort_arm"));
                     //
                     if !infer_only {
-                        check_level(tc.m_lparams.as_ref(), level);
+                        check_level(tc.m_lparams.as_ref(), level, &tc.trace_mgr);
                     }
                     mk_sort(mk_succ(level.clone()))
                 },
@@ -271,15 +290,18 @@ impl Expr {
     }
 
 
-    pub fn ensure_type(&self, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, EnsureType(self))]
+    pub fn ensure_type(&self, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         self.unchecked_infer(tc).ensure_sort(tc)
     }
 
-    pub fn ensure_pi(&self, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, EnsurePi(self.clone()))]
+    pub fn ensure_pi(&self, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         self.ensure_pi_core(tc)
     }
 
-    pub fn ensure_pi_core(&self, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, EnsurePiCore(self.clone()))]
+    pub fn ensure_pi_core(&self, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         if self.as_ref().is_pi() {
             self.clone()
         } else {
@@ -290,11 +312,13 @@ impl Expr {
         }
     }
 
-    pub fn ensure_sort(&self, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, EnsureSort(self.clone()))]
+    pub fn ensure_sort(&self, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         self.ensure_sort_core(tc)
     }
 
-    pub fn ensure_sort_core(&self, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, EnsureSortCore(self.clone()))]
+    pub fn ensure_sort_core(&self, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         if self.as_ref().is_sort() {
             self.clone()
         } else {
@@ -307,7 +331,8 @@ impl Expr {
 
 
 
-    pub fn check_def_eq(&self, other :&Expr, tc : &mut TypeChecker) -> ShortCircuit {
+    #[trace(tc.trace_mgr, CheckDefEq(self.clone(), other.clone()))]
+    pub fn check_def_eq(&self, other :&Expr, tc : &mut TypeChecker<impl Tracer>) -> ShortCircuit {
         tc.eq_cache.get(self, other).unwrap_or_else(|| {
             let result = if self == other {
                 EqShort
@@ -325,7 +350,8 @@ impl Expr {
     // Change this so that it only checks the cache when given
     // a flag (IE the 2nd time around after whnf_core, when whnf_core)
     // has succeeded in reduction in some form.
-    pub fn quick_def_eq(&self, other : &Expr, tc : &mut TypeChecker) -> Option<ShortCircuit> {
+    #[trace(tc.trace_mgr, QuickDefEq(self.clone(), other.clone()))]
+    pub fn quick_def_eq(&self, other : &Expr, tc : &mut TypeChecker<impl Tracer>) -> Option<ShortCircuit> {
         if let Some(cached) = tc.eq_cache.get(self, other) {
             Some(cached)
         } else if (self == other) {
@@ -333,7 +359,7 @@ impl Expr {
         } else {
             match (self.as_ref(), other.as_ref()) {
                 (Sort { level : level1, .. }, Sort { level : level2, .. }) => {
-                    match level1.eq_by_antisymm(level2) {
+                    match level1.eq_by_antisymm(level2, &tc.trace_mgr) {
                         true => Some(EqShort),
                         false => Some(NeqShort)
                     }
@@ -345,7 +371,8 @@ impl Expr {
         }
     }
 
-    pub fn def_eq_lambdas(&self, other : &Expr, tc : &mut TypeChecker) -> ShortCircuit {
+    #[trace(tc.trace_mgr, DefEqLambdas(self.clone(), other.clone()))]
+    pub fn def_eq_lambdas(&self, other : &Expr, tc : &mut TypeChecker<impl Tracer>) -> ShortCircuit {
         let mut lhs_cursor = self;
         let mut rhs_cursor = other;
         let mut substs = Vec::new();
@@ -353,8 +380,8 @@ impl Expr {
             let mut lhs_type = None;
 
             if dom1 != dom2 {
-                let instd_d2_ty = dom2.type_.instantiate(substs.iter().rev());
-                let instd_d1_ty = dom1.type_.instantiate(substs.iter().rev());
+                let instd_d2_ty = dom2.type_.instantiate_trace(tc.trace_mgr.clone(), substs.iter().rev());
+                let instd_d1_ty = dom1.type_.instantiate_trace(tc.trace_mgr.clone(), substs.iter().rev());
                 lhs_type = Some(dom2.clone().swap_ty(instd_d2_ty.clone()));
                 if (instd_d1_ty.check_def_eq(&instd_d2_ty, tc) == NeqShort) {
                     return NeqShort
@@ -366,7 +393,7 @@ impl Expr {
                     Some(elem) => elem.as_local(),
                     None => {
                         let mut _x = dom2.clone();
-                        let new_ty = _x.type_.instantiate(substs.iter().rev());
+                        let new_ty = _x.type_.instantiate_trace(tc.trace_mgr.clone(), substs.iter().rev());
                         _x.swap_ty(new_ty).as_local()
                     }
                 };
@@ -379,12 +406,13 @@ impl Expr {
             rhs_cursor = body2;
          }
 
-         let lhs = lhs_cursor.instantiate(substs.iter().rev());
-         let rhs = rhs_cursor.instantiate(substs.iter().rev());
+         let lhs = lhs_cursor.instantiate_trace(tc.trace_mgr.clone(), substs.iter().rev());
+         let rhs = rhs_cursor.instantiate_trace(tc.trace_mgr.clone(), substs.iter().rev());
          lhs.check_def_eq(&rhs, tc)
    }
     
-    pub fn def_eq_pis(&self, other : &Expr, tc : &mut TypeChecker) -> ShortCircuit {
+   #[trace(tc.trace_mgr, DefEqPis(self.clone(), other.clone()))]
+    pub fn def_eq_pis(&self, other : &Expr, tc : &mut TypeChecker<impl Tracer>) -> ShortCircuit {
         let mut lhs_cursor = self;
         let mut rhs_cursor = other;
         let mut substs = Vec::new();
@@ -392,8 +420,8 @@ impl Expr {
             let mut lhs_type = None;
 
             if dom1 != dom2 {
-                let instd_d2_ty = dom2.type_.instantiate(substs.iter().rev());
-                let instd_d1_ty = dom1.type_.instantiate(substs.iter().rev());
+                let instd_d2_ty = dom2.type_.instantiate_trace(tc.trace_mgr.clone(), substs.iter().rev());
+                let instd_d1_ty = dom1.type_.instantiate_trace(tc.trace_mgr.clone(), substs.iter().rev());
                 lhs_type = Some(dom2.clone().swap_ty(instd_d2_ty.clone()));
                 if (instd_d1_ty.check_def_eq(&instd_d2_ty, tc) == NeqShort) {
                     return NeqShort
@@ -405,7 +433,7 @@ impl Expr {
                     Some(elem) => elem.as_local(),
                     None => {
                         let mut _x = dom2.clone();
-                        let new_ty = _x.type_.instantiate(substs.iter().rev());
+                        let new_ty = _x.type_.instantiate_trace(tc.trace_mgr.clone(), substs.iter().rev());
                         _x.swap_ty(new_ty).as_local()
                     }
                 };
@@ -418,13 +446,14 @@ impl Expr {
             rhs_cursor = body2;
          }
 
-         let lhs = lhs_cursor.instantiate(substs.iter().rev());
-         let rhs = rhs_cursor.instantiate(substs.iter().rev());
+         let lhs = lhs_cursor.instantiate_trace(tc.trace_mgr.clone(), substs.iter().rev());
+         let rhs = rhs_cursor.instantiate_trace(tc.trace_mgr.clone(), substs.iter().rev());
          lhs.check_def_eq(&rhs, tc)
 
     }
 
-    pub fn check_def_eq_core(&self, other : &Expr, tc : &mut TypeChecker) -> ShortCircuit {
+    #[trace(tc.trace_mgr, EqCore(self.clone(), other.clone()))]
+    pub fn check_def_eq_core(&self, other : &Expr, tc : &mut TypeChecker<impl Tracer>) -> ShortCircuit {
         if let Some(short) = self.quick_def_eq(other, tc) {
             return short
         }
@@ -449,7 +478,7 @@ impl Expr {
         };
 
         if let (Const { name : n1, levels : lvls1, .. }, Const { name : n2, levels : lvls2, .. }) = (t_reduced.as_ref(), s_reduced.as_ref()) {
-            if (n1 == n2) && (is_def_eq_lvls(lvls1, lvls2)) {
+            if (n1 == n2) && (is_def_eq_lvls(lvls1, lvls2, &tc.trace_mgr)) {
                 return EqShort
             }
         }
@@ -483,7 +512,8 @@ impl Expr {
     }
 
     /// e is a prop iff it destructures as Sort(Level(Zero))
-    pub fn is_prop(&self, tc : &mut TypeChecker) -> bool {
+    #[trace(tc.trace_mgr, IsProp(self.clone()))]
+    pub fn is_prop(&self, tc : &mut TypeChecker<impl Tracer>) -> bool {
         match self.whnf(tc).as_ref() {
             Sort { level, .. } => level.is_zero(),
             _ => false
@@ -491,22 +521,26 @@ impl Expr {
     }
 
     /// tries is_prop after inferring e
-    pub fn is_proposition(&self, tc : &mut TypeChecker) -> bool {
+    #[trace(tc.trace_mgr, IsProposition(self.clone()))]
+    pub fn is_proposition(&self, tc : &mut TypeChecker<impl Tracer>) -> bool {
         self.unchecked_infer(tc).is_prop(tc)
     }
 
 
 
-    pub fn is_proof(&self, tc : &mut TypeChecker) -> bool {
+    #[trace(tc.trace_mgr, IsProof(self.clone()))]
+    pub fn is_proof(&self, tc : &mut TypeChecker<impl Tracer>) -> bool {
         self.unchecked_infer(tc).is_proposition(tc)
     }
 
-    pub fn proof_irrel_eq(&self, other : &Expr, tc : &mut TypeChecker) -> bool {
+    #[trace(tc.trace_mgr, ProofIrrelEq(self.clone(), other.clone()))]
+    pub fn proof_irrel_eq(&self, other : &Expr, tc : &mut TypeChecker<impl Tracer>) -> bool {
         (self.is_proof(tc)) && (other.is_proof(tc))
     }
 
 
-    pub fn is_delta(&self, tc : &mut TypeChecker) -> Option<ConstantInfo> {
+    #[trace(tc.trace_mgr, IsDelta(self.clone()))]
+    pub fn is_delta(&self, tc : &mut TypeChecker<impl Tracer>) -> Option<ConstantInfo> {
         self.unfold_apps_fn()
             .get_const_name()
             .and_then(|name| tc.env.read().get_constant_info(name))
@@ -518,21 +552,24 @@ impl Expr {
     }
 
 
-    pub fn unfold_def_core(&self, tc : &mut TypeChecker) -> Option<Expr> {
+    #[trace(tc.trace_mgr, UnfoldDefCore(self.clone()))]
+    pub fn unfold_def_core(&self, tc : &mut TypeChecker<impl Tracer>) -> Option<Expr> {
         if let (Const { levels, .. }, Some(ref const_info)) = (self.as_ref(), self.is_delta(tc)) {
             if (levels.len() == const_info.get_constant_base().lparams.len()) {
-                return Some(instantiate_value_lparams(const_info, levels))
+                return Some(instantiate_value_lparams(const_info, levels, &tc.trace_mgr))
             }
         }
         None
     }
 
-    pub fn unfold_def_infallible(&self, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, UnfoldDefInfallible(self.clone()))]
+    pub fn unfold_def_infallible(&self, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         self.unfold_def(tc)
         .unwrap_or_else(|| crate::errors::unfold_def_infallible_failed(line!(), self))
     }
     
-    pub fn unfold_def(&self, tc : &mut TypeChecker) -> Option<Expr> {
+    #[trace(tc.trace_mgr, UnfoldDef(self.clone()))]
+    pub fn unfold_def(&self, tc : &mut TypeChecker<impl Tracer>) -> Option<Expr> {
         if let App {..} = self.as_ref() {
             self.unfold_apps_fn()
             .unfold_def_core(tc)
@@ -548,7 +585,8 @@ impl Expr {
     // vectors
     // The reversal here is super important; if you don't reverse this,
     // you'll hit a wall trying to check things like pi314
-    pub fn eq_args(&self, other : &Expr, tc : &mut TypeChecker) -> bool {
+    #[trace(tc.trace_mgr, EqArgs(self.clone(), other.clone()))]
+    pub fn eq_args(&self, other : &Expr, tc : &mut TypeChecker<impl Tracer>) -> bool {
         let (_, t_args) = self.unfold_apps_rev();
         let (_, s_args) = other.unfold_apps_rev();
 
@@ -562,7 +600,8 @@ impl Expr {
 
     }
 
-    pub fn is_def_eq_app(&self, other : &Expr, tc : &mut TypeChecker) -> bool {
+    #[trace(tc.trace_mgr, IsDefEqApp(self.clone(), other.clone()))]
+    pub fn is_def_eq_app(&self, other : &Expr, tc : &mut TypeChecker<impl Tracer>) -> bool {
         if (self.as_ref().is_app() && other.as_ref().is_app()) {
             let (t_fn, t_args) = self.unfold_apps_rev();
             let (s_fn, s_args) = other.unfold_apps_rev();
@@ -580,7 +619,8 @@ impl Expr {
 
 
 
-    pub fn infer_lambda(&self, infer_only : bool, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, InferLambda(self, infer_only))]
+    pub fn infer_lambda(&self, infer_only : bool, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         let mut term_cursor = self;
         let mut domains = Vec::with_capacity(50);
         let mut locals  = Vec::with_capacity(50);
@@ -588,7 +628,7 @@ impl Expr {
         while let Lambda { binder, body, .. } = term_cursor.as_ref() {
             domains.push(binder.clone());
 
-            let new_dom_ty = binder.type_.instantiate(locals.iter().rev());
+            let new_dom_ty = binder.type_.instantiate_trace(tc.trace_mgr.clone(), locals.iter().rev());
             let new_dom = binder.clone().swap_ty(new_dom_ty.clone());
 
             if !infer_only {
@@ -599,9 +639,9 @@ impl Expr {
             term_cursor = body;
         }
 
-        let mut abstrd = term_cursor.instantiate(locals.iter().rev())
+        let mut abstrd = term_cursor.instantiate_trace(tc.trace_mgr.clone(), locals.iter().rev())
                                     .infer_type_core(tc, infer_only)
-                                    .abstract_(locals.iter().rev());
+                                    .abstract_trace(tc.trace_mgr.clone(), locals.iter().rev());
         while let Some(d) = domains.pop() {
             abstrd = mk_pi(d, abstrd);
         }
@@ -610,13 +650,14 @@ impl Expr {
 
     }
 
-    pub fn infer_pi(&self, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, InferPi(self.clone()))]
+    pub fn infer_pi(&self, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         let mut term_cursor = self;
         let mut locals = Vec::new();
         let mut universes = Vec::new();
 
         while let Pi { binder, body, .. } = term_cursor.as_ref() {
-            let new_dom_ty = binder.type_.instantiate(locals.iter().rev());
+            let new_dom_ty = binder.type_.instantiate_trace(tc.trace_mgr.clone(), locals.iter().rev());
             let new_dom = binder.clone().swap_ty(new_dom_ty.clone());
             let dom_univ = new_dom_ty.infer_sort(tc);
 
@@ -627,7 +668,7 @@ impl Expr {
             term_cursor = body;
         }
 
-        let mut inferred = term_cursor.instantiate(locals.iter().rev())
+        let mut inferred = term_cursor.instantiate_trace(tc.trace_mgr.clone(), locals.iter().rev())
                                   .infer_sort(tc);
         while let Some(u) = universes.pop() {
             inferred = mk_imax(u, inferred);
@@ -637,7 +678,8 @@ impl Expr {
     }
 
 
-    pub fn infer_apps(&self, infer_only : bool, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, InferApps(self, infer_only))]
+    pub fn infer_apps(&self, infer_only : bool, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         let (fn_, mut apps) = self.unfold_apps();
 
         let mut acc = fn_.infer_type_core(tc, infer_only);
@@ -647,13 +689,13 @@ impl Expr {
         while let Some(elem) = apps.pop() {
             if let Pi { binder, body, .. } = acc.as_ref() {
                 if !infer_only {
-                    let new_dom_ty = binder.type_.instantiate(context.iter().copied().rev());
+                    let new_dom_ty = binder.type_.instantiate_trace(tc.trace_mgr.clone(), context.iter().copied().rev());
                     elem.check_type__(&new_dom_ty, tc);
                 }
                 context.push(elem);
                 acc = body.clone();
             } else {
-                let whnfd = acc.instantiate(context.iter().copied().rev())
+                let whnfd = acc.instantiate_trace(tc.trace_mgr.clone(), context.iter().copied().rev())
                                .whnf(tc);
                 match whnfd.as_ref() {
                     Pi {..} => {
@@ -666,12 +708,13 @@ impl Expr {
             }
         }
 
-        acc.instantiate(context.iter().copied().rev())
+        acc.instantiate_trace(tc.trace_mgr.clone(), context.iter().copied().rev())
     }
 
 
     // Not sure whether to do the delta steps here.
-    pub fn lazy_delta_reduction(&self, other : &Expr, tc : &mut TypeChecker) -> Either<SSOption, (Expr, Expr)> {
+    #[trace(tc.trace_mgr, LazyDeltaReduction(self, other))]
+    pub fn lazy_delta_reduction(&self, other : &Expr, tc : &mut TypeChecker<impl Tracer>) -> Either<SSOption, (Expr, Expr)> {
         let mut t_cursor = self.clone();
         let mut s_cursor = other.clone();
 
@@ -689,7 +732,8 @@ impl Expr {
     }
 
 
-    pub fn lazy_delta_reduction_step(&self, other : &Expr, tc : &mut TypeChecker) -> DeltaResult {
+    #[trace(tc.trace_mgr, LazyDeltaReductionStep(self, other))]
+    pub fn lazy_delta_reduction_step(&self, other : &Expr, tc : &mut TypeChecker<impl Tracer>) -> DeltaResult {
         let delta_t = self.is_delta(tc);
         let delta_s = other.is_delta(tc);
 
@@ -732,7 +776,7 @@ impl Expr {
                             // "If these two expressions have the same arguments, and their 
                             // base constants have the same universe levels, 
                             // they are equal"
-                            if ((self.eq_args(other, tc)) && (is_def_eq_lvls(self.unfold_apps_fn().get_const_levels_inf(), other.unfold_apps_fn().get_const_levels_inf()))) {
+                            if ((self.eq_args(other, tc)) && (is_def_eq_lvls(self.unfold_apps_fn().get_const_levels_inf(), other.unfold_apps_fn().get_const_levels_inf(), &tc.trace_mgr))) {
                                 return Short(EqShort)
                             } else {
 
@@ -756,7 +800,8 @@ impl Expr {
     }
 
 
-    pub fn whnf(&self, tc : &mut TypeChecker) -> Expr {
+    #[trace(tc.trace_mgr, Whnf(self))]
+    pub fn whnf(&self, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         tc.whnf_cache.get(self).cloned().unwrap_or_else(|| {
             let mut cursor = self.clone();
             loop {
@@ -771,18 +816,19 @@ impl Expr {
         })
     }
 
-    pub fn whnf_core(&self, tc : &mut TypeChecker, _cheap : Option<Cheap>) -> Expr {
+    #[trace(tc.trace_mgr, WhnfCore(self, _cheap))]
+    pub fn whnf_core(&self, tc : &mut TypeChecker<impl Tracer>, _cheap : Option<Cheap>) -> Expr {
         let cheap = _cheap.unwrap_or(CheapFalse);
 
         let (_fn, args) = self.unfold_apps();
         match _fn.as_ref() {
-            Sort { level, .. } => mk_sort(level.simplify()),
+            Sort { level, .. } => mk_sort(level.simplify_tracing(&tc.trace_mgr)),
             Lambda { .. } if !args.is_empty() => {
-                _fn.whnf_lambda(args)
+                _fn.whnf_lambda(args, tc)
                    .whnf_core(tc, Some(cheap))
             },
             Let { val, body, .. } => {
-                let applied = body.instantiate(Some(val).into_iter())
+                let applied = body.instantiate_trace(tc.trace_mgr.clone(), Some(val).into_iter())
                                   .foldl_apps(args.into_iter().rev());
                 applied.whnf_core(tc, Some(cheap))
             },
@@ -827,7 +873,8 @@ impl Expr {
     ///       λ_y
     ///         \ 
     ///          E
-    pub fn whnf_lambda(&self, args : Vec<&Expr>) -> Expr {
+    #[trace(tc.trace_mgr, WhnfLambda(self, &args))]
+    pub fn whnf_lambda(&self, args : Vec<&Expr>, tc : &mut TypeChecker<impl Tracer>) -> Expr {
         let mut lambda_cursor = self;
         let mut num_lambdas = 0usize;
 
@@ -844,11 +891,12 @@ impl Expr {
         // and 2 lambda applications, creates
         // ([A1, A2, A3, A4, A5], [A6, A7])
         let (fold, inst) = args.split_at(args.len() - num_lambdas);
-        lambda_cursor.instantiate(inst.into_iter().copied())
+        lambda_cursor.instantiate_trace(tc.trace_mgr.clone(), inst.into_iter().copied())
                      .foldl_apps(fold.into_iter().rev().copied())
     }
 
-    pub fn reduce_quot_rec(&self, tc : &mut TypeChecker) -> Option<Expr> {
+    #[trace(tc.trace_mgr, ReduceQuotRec(self))]
+    pub fn reduce_quot_rec(&self, tc : &mut TypeChecker<impl Tracer>) -> Option<Expr> {
         ret_none_if! { !tc.quot_is_init };
 
         let (fun, args) = self.unfold_apps_rev();
@@ -884,19 +932,21 @@ impl Expr {
     }
 
 
-    pub fn reduce_inductive_rec(&self, cheap : Cheap, tc : &mut TypeChecker) -> Option<Expr> {
+    #[trace(tc.trace_mgr, ReduceInductiveRec(self, cheap))]
+    pub fn reduce_inductive_rec<T>(&self, cheap : Cheap, tc : &mut TypeChecker<T>) -> Option<Expr> 
+    where T : Tracer {
         let (fun, args) = self.unfold_apps_rev();
         let (name, levels) = fun.try_const_fields()?;
 
-        let whnf_closure = |e : &Expr, tc : &mut TypeChecker | {
+        let whnf_closure = |e : &Expr, tc : &mut TypeChecker<T> | {
             match cheap {
                 CheapTrue => e.whnf_core(tc, Some(cheap)),
                 _ => e.whnf(tc)
             }
         };
 
-        let recursor_val = tc.env.read().get_recursor_val(name)?;
-        let major_idx = recursor_val.get_major_idx();
+        let recursor_val = tc.env.read().get_recursor_val(name, tc.trace_mgr.clone())?;
+        let major_idx = recursor_val.get_major_idx(tc.trace_mgr.clone());
 
         ret_none_if! { major_idx >= args.len() };
 
@@ -909,7 +959,7 @@ impl Expr {
 
         major = whnf_closure(&major, tc);
 
-        let rule = recursor_val.get_rec_rule_for(&major)?;
+        let rule = recursor_val.get_rec_rule_for(&major, tc.trace_mgr.clone())?;
 
         let (_, major_args) = major.unfold_apps_rev();
         ret_none_if! { rule.nfields > major_args.len() };
@@ -917,7 +967,7 @@ impl Expr {
 
 
         let rhs_zip = recursor_val.get_constant_base().lparams.iter().zip(levels.iter());
-        let rhs = rule.rhs.instantiate_lparams(rhs_zip);
+        let rhs = rule.rhs.instantiate_lparams_trace(&tc.trace_mgr, rhs_zip);
         let rhs = rhs.foldl_apps(args.iter().take(recursor_val.nparams 
                                                 + recursor_val.nmotives 
                                                 + recursor_val.nminors).copied());
@@ -936,7 +986,8 @@ impl Expr {
     }
 
 
-    pub fn mk_nullary_cnstr(&self, num_params : usize, tc : &mut TypeChecker) -> Option<Expr> {
+    #[trace(tc.trace_mgr, MkNullaryCnstr(self))]
+    pub fn mk_nullary_cnstr(&self, num_params : usize, tc : &mut TypeChecker<impl Tracer>) -> Option<Expr> {
         let (fun, args) = self.unfold_apps_rev();
         if let Const { name, levels, .. } = fun.as_ref() {
             let constructor_name = tc.env.read().get_first_constructor_name(name)?;
@@ -948,7 +999,8 @@ impl Expr {
     }
 
 
-    pub fn to_cnstr_when_K(&self, rval : &RecursorVal, tc : &mut TypeChecker) -> Option<Expr> {
+    #[trace(tc.trace_mgr, ToCnstrWhenK(self, ConstantInfo::RecursorInfo(rval.clone())))]
+    pub fn to_cnstr_when_K(&self, rval : &RecursorVal, tc : &mut TypeChecker<impl Tracer>) -> Option<Expr> {
         let app_type = self.infer_type(tc)
                            .whnf(tc);
         if (app_type.unfold_apps_fn().get_const_name()? != rval.get_induct()) {
@@ -964,12 +1016,14 @@ impl Expr {
         }
     }
 
-    pub fn try_eta_expansion(&self, other : &Expr, tc : &mut TypeChecker) -> bool {
+    #[trace(tc.trace_mgr, TryEtaExpansion(self, other))]
+    pub fn try_eta_expansion(&self, other : &Expr, tc : &mut TypeChecker<impl Tracer>) -> bool {
         self.try_eta_expansion_core(other, tc)
         || other.try_eta_expansion_core(self, tc)
     }
 
-    pub fn try_eta_expansion_core(&self, other : &Expr, tc : &mut TypeChecker) -> bool {
+    #[trace(tc.trace_mgr, TryEtaExpansionCore(self, other))]
+    pub fn try_eta_expansion_core(&self, other : &Expr, tc : &mut TypeChecker<impl Tracer>) -> bool {
         if ((self.as_ref().is_lambda()) && (!other.as_ref().is_lambda())) {
             let other_type = other.infer_type(tc) 
                                   .whnf(tc);

@@ -4,10 +4,10 @@ use hashbrown::HashSet;
 use crate::name::Name;
 use crate::errors;
 use crate::utils::{ HasInstantiate };
+use crate::trace::{ Tracer, ArcTraceMgr };
+use nanoda_macros::trace;
 
 use InnerLevel::*;
-
-
 
 
 /// `Level` and `InnerLevel` together represent Lean's Sort/Universe level terms.
@@ -86,8 +86,8 @@ pub fn mk_succ(l : Level) -> Level {
     Level(Arc::new(Succ(l)))
 }
 
-pub fn is_def_eq_lvls(lhs : &Vec<Level>, rhs : &Vec<Level>) -> bool {
-    lhs.iter().zip(rhs.iter()).all(|(l, r)| l.eq_by_antisymm(r))
+pub fn is_def_eq_lvls(lhs : &Vec<Level>, rhs : &Vec<Level>, trace_mgr : &ArcTraceMgr<impl Tracer>) -> bool {
+    lhs.iter().zip(rhs.iter()).all(|(l, r)| l.eq_by_antisymm(r, trace_mgr))
 }
 
 
@@ -154,10 +154,15 @@ impl Level {
         }
     }
 
+    #[trace(trace_mgr, Simplify(self))]
+    pub fn simplify_tracing(&self, trace_mgr : &ArcTraceMgr<impl Tracer>) -> Level {
+        self.simplify()
+    }
+
     /// Brief simplification procedure mostly aimed at simplifying IMax terms 
     /// (the rule about an IMax with a right hand side of Zero becoming Zero 
     /// is enforced here).
-    pub fn simplify(&self) -> Level {
+    fn simplify(&self) -> Level {
         match self.as_ref() {
             Zero | Param(..) => self.clone(),
             Succ(lvl)        => mk_succ(lvl.simplify()),
@@ -203,8 +208,9 @@ impl Level {
         closure(Some((self, &succ_of_)), lhs, rhs)
     }
 
-    pub fn is_geq(&self, other : &Level) -> bool {
-        if self.eq_by_antisymm(other)  {
+    #[trace(trace_mgr, IsGeq(self, other))]
+    pub fn is_geq(&self, other : &Level, trace_mgr : &ArcTraceMgr<impl Tracer>) -> bool {
+        if self.eq_by_antisymm(other, trace_mgr)  {
             return true
         } else {
             !(self.leq(other))
@@ -290,7 +296,8 @@ impl Level {
     ///```pseudo
     ///(x ≤ y ∧ y ≤ x) → x = y
     ///```
-    pub fn eq_by_antisymm(&self, other : &Level) -> bool {
+    #[trace(trace_mgr, EqByAntisymm(self, other))]
+    pub fn eq_by_antisymm(&self, other : &Level, trace_mgr : &ArcTraceMgr<impl Tracer>) -> bool {
         let l1 = self.simplify();
         let l2 = other.simplify();
         

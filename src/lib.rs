@@ -17,6 +17,7 @@ pub mod quot;
 pub mod inductive;
 pub mod recursor;
 pub mod serial_parser;
+pub mod trace;
 pub mod pp;
 
 #[cfg(test)]

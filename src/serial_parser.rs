@@ -15,7 +15,13 @@ use crate::env::{ Notation,
                   add_definition,
                   add_inductive,
                   add_quot };
+
 use crate::errors::{ NanodaResult, NanodaErr::* };
+use crate::trace::{ BaseStorage, 
+                    TraceMgr,
+                    HasInsertItem,
+                    ArcBaseStorage, 
+                    Tracer };
 
 pub struct LineParser {
     pub line_num: usize,
@@ -23,6 +29,7 @@ pub struct LineParser {
     pub levels : Vec<Level>,
     pub exprs  : Vec<Expr>,
     pub env_handle : ArcEnv,
+    pub base_storage : ArcBaseStorage,
     pub prop : Expr,
 }
 
@@ -35,6 +42,7 @@ impl LineParser {
             exprs : Vec::with_capacity(400_000),
             env_handle,
             prop : mk_prop(),
+            base_storage : BaseStorage::new_arc_base_storage()
         };
 
         parser.names.push(mk_anon());
@@ -54,29 +62,39 @@ impl LineParser {
         self.prop.clone()
     }
 
-    pub fn parse_check_all(s : String, env_handle : ArcEnv) -> NanodaResult<()> {
+    pub fn parse_check_all(s : String, env_handle : ArcEnv, tracer : &impl Tracer) -> NanodaResult<ArcBaseStorage> {
         let mut parser = LineParser::new(env_handle);
         let mut as_lines = s.lines();
 
         while let Some(line) = &mut as_lines.next() {
-            match parser.try_next(line) {
+            match parser.try_next(line, tracer) {
                 Ok(_) => (),
                 Err(e) => return Err(e)
             }
-
            parser.line_num  += 1;
         }
 
-        Ok(())
+        let mut new_tracer = tracer.get_new();
+
+        match new_tracer.trace_items(& (*parser.base_storage.read())) {
+            Err(e) => {
+                eprintln!("std io err when printing base items : {}\n", e);
+                return Err(StdIoErr(line!()))
+            },
+            _ => ()
+        };
+
+        Ok(parser.base_storage)
+
     }
 
-    pub fn try_next(&mut self, line : &str) -> NanodaResult<()> {
+    pub fn try_next(&mut self, line : &str, tracer : &impl Tracer) -> NanodaResult<()> {
         let mut ws = line.split_whitespace();
         match ws.next().ok_or_else(|| ParseExhaustedErr(self.line_num, line!()))? {
-            "#AX"          => self.make_axiom(&mut ws),
-            "#DEF"         => self.make_definition(&mut ws),
-            "#QUOT"        => self.make_quotient(),
-            "#IND"         => self.make_inductive(&mut ws),
+            "#AX"          => self.make_axiom(&mut ws, tracer),
+            "#DEF"         => self.make_definition(&mut ws, tracer),
+            "#QUOT"        => self.make_quotient(tracer),
+            "#IND"         => self.make_inductive(&mut ws, tracer),
             s @ "#INFIX"   => self.make_notation(s, line, &mut ws),
             s @ "#PREFIX"  => self.make_notation(s, line, &mut ws),
             s @ "#POSTFIX" => self.make_notation(s, line, &mut ws),
@@ -172,6 +190,11 @@ impl LineParser {
             _ => unreachable!("parser `make_name` line : {}", line!())
         };
 
+        //
+        new_name.clone().insert_item(&mut (*self.base_storage.write()));
+        //
+
+
         write_elem_strict(&mut self.names, new_name, new_pos)
     }
 
@@ -185,6 +208,10 @@ impl LineParser {
             'P'  => mk_param(self.get_name(ws)?),
             _ => unreachable!("parser line : {}", line!())
         };
+
+        //
+        new_level.clone().insert_item(&mut (*self.base_storage.write()));
+        //
 
         write_elem_strict(&mut self.levels, new_level, new_pos)
     }
@@ -220,6 +247,8 @@ impl LineParser {
             otherwise => unreachable!("parser `make_expr` line : {} expectex expression cue, got {:?}", line!(), otherwise)
         };
 
+        new_expr.clone().insert_item(&mut (*self.base_storage.write()));
+
         write_elem_strict(&mut self.exprs, new_expr, new_pos)
     }
 
@@ -246,16 +275,20 @@ impl LineParser {
         Ok(())
     }
 
-    pub fn make_axiom(&mut self, ws : &mut SplitWhitespace) -> NanodaResult<()> {
+    pub fn make_axiom(&mut self, ws : &mut SplitWhitespace, tracer : &impl Tracer) -> NanodaResult<()> {
         let name = self.get_name(ws)?;
         let ty = self.get_expr(ws)?;
         let uparams = self.get_uparams(ws)?;
 
         let new_axiom = crate::env::AxiomVal::new(name, uparams, ty, None);
-        add_axiom(new_axiom, self.env_handle.clone(), true)
+        // 
+        let announce = format!("#! make_axiom {}", &new_axiom.constant_base.name);
+        let trace_mgr = TraceMgr::new_arc_trace_mgr(&self.base_storage, tracer.get_new(), Some(announce));
+        // 
+        add_axiom(new_axiom, self.env_handle.clone(), true, trace_mgr)
     }
 
-    pub fn make_definition(&mut self, ws : &mut SplitWhitespace) -> NanodaResult<()> {
+    pub fn make_definition(&mut self, ws : &mut SplitWhitespace, tracer : &impl Tracer) -> NanodaResult<()> {
         let name = self.get_name(ws)?;
         let ty = self.get_expr(ws)?;
         let val = self.get_expr(ws)?;
@@ -267,20 +300,28 @@ impl LineParser {
                                             ty,
                                             val);
 
-        add_definition(definition, self.env_handle.clone(), true)
+        //
+        let announce = format!("#! make_definition {}", &definition.constant_base.name);
+        let trace_mgr = TraceMgr::new_arc_trace_mgr(&self.base_storage, tracer.get_new(), Some(announce));
+        //
+        add_definition(definition, self.env_handle.clone(), true, trace_mgr)
     }
 
-    pub fn make_quotient(&mut self) -> NanodaResult<()> {
+    pub fn make_quotient(&mut self, tracer : &impl Tracer) -> NanodaResult<()> {
         let new_quot = Quot::new();
         for elem in new_quot.inner.into_iter() {
-            add_quot(elem, self.env_handle.clone())?;
+            //
+            let announce = format!("#! make_quotient {}", &elem.constant_base.name);
+            let trace_mgr = TraceMgr::new_arc_trace_mgr(&self.base_storage, tracer.get_new(), Some(announce));
+            //
+            add_quot(elem, self.env_handle.clone(), trace_mgr)?;
         }
         // set environment's `quot_is_init` flag to `true`; enables
         // typechecker to use the quotient reduction procedure.
         Ok(self.env_handle.write().init_quot())
     }
 
-    pub fn make_inductive(&mut self, ws : &mut SplitWhitespace) -> NanodaResult<()> {
+    pub fn make_inductive(&mut self, ws : &mut SplitWhitespace, tracer : &impl Tracer) -> NanodaResult<()> {
         let num_params = self.parse_usize(ws)?;
         let name = self.get_name(ws)?;
 
@@ -315,7 +356,12 @@ impl LineParser {
             vec![ind_type], 
             false);
 
-        add_inductive(ind, self.env_handle.clone(), true)
+        //
+        let announce = format!("#! add_inductive {}", &ind.name);
+        let trace_mgr = TraceMgr::new_arc_trace_mgr(&self.base_storage, tracer.get_new(), Some(announce));
+        add_inductive(ind, self.env_handle.clone(), true, trace_mgr)
+        //
+
     }
 
 

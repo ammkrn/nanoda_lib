@@ -13,7 +13,9 @@ use crate::level::{ Level,
                     mk_zero };
 use crate::utils::{ HasInstantiate, safe_minus_one, max3 };
 use crate::errors;
+use nanoda_macros::trace;
 use enum_tools::{ Get, Discrim };
+use crate::trace::{ ArcTraceMgr, Tracer };
 
 use InnerExpr::*;
 
@@ -443,6 +445,16 @@ impl Expr {
         self.abstract_core(0usize, &mut cache, locals)
     }
 
+    #[trace(trace_mgr, Abstract(self, locals.clone().collect::<Vec<&'e Expr>>()))]
+    pub fn abstract_trace<'e, I>(&self, trace_mgr : ArcTraceMgr<impl Tracer>, locals : I) -> Expr 
+    where I : Iterator<Item = &'e Expr> + Clone {
+        if !self.has_locals() {
+            return self.clone() 
+        }
+        let mut cache = OffsetCache::new();
+        self.abstract_core(0usize, &mut cache, locals)
+    }
+
     fn abstract_core<'e, I>(&self, offset : usize, cache : &mut OffsetCache, locals : I) -> Expr 
     where I : Iterator<Item = &'e Expr> + Clone {
         if !self.has_locals() {
@@ -494,6 +506,14 @@ impl Expr {
         let mut cache = OffsetCache::new();
         self.instantiate_core(offset, &mut cache, es)
     }
+
+    #[trace(trace_mgr, Instantiate(self, es.clone().collect::<Vec<&'e Expr>>()))]
+    pub fn instantiate_trace<'e, I>(&self, trace_mgr : ArcTraceMgr<impl Tracer>, es : I) -> Expr 
+    where I : Iterator<Item = &'e Expr> + Clone {
+        let mut cache = OffsetCache::new();
+        self.instantiate_core(0usize, &mut cache, es)
+    } 
+
 
     fn instantiate_core<'e, I>(&self, offset : usize, cache : &mut OffsetCache, es : I) -> Self 
     where I : Iterator<Item = &'e Expr> + Clone {
@@ -590,6 +610,57 @@ impl Expr {
             self.clone()
         }
     }
+
+
+    #[trace(trace_mgr, InstantiateLparams(self, substs.clone().collect::<Vec<(&'l Level, &'l Level)>>()))]
+    pub fn instantiate_lparams_trace<'l, I>(&self, trace_mgr : &ArcTraceMgr<impl Tracer>, substs : I) -> Expr 
+    where I : Iterator<Item = (&'l Level, &'l Level)> + Clone {
+        if substs.clone().any(|(l, r)| l != r) {
+            match self.as_ref() {
+                App { fun : lhs, arg : rhs, .. } => {
+                    let new_lhs = lhs.instantiate_lparams(substs.clone());
+                    let new_rhs = rhs.instantiate_lparams(substs);
+                    mk_app(new_lhs, new_rhs)
+                },
+                Lambda { binder, body, .. } => {
+                    let new_binder_ty = binder.type_.instantiate_lparams(substs.clone());
+                    let new_body = body.instantiate_lparams(substs);
+                    mk_lambda(binder.swap_ty(new_binder_ty), new_body)
+
+                }
+                Pi { binder, body, .. } => {
+                    let new_binder_ty = binder.type_.instantiate_lparams(substs.clone());
+                    let new_body = body.instantiate_lparams(substs);
+                    mk_pi(binder.swap_ty(new_binder_ty), new_body)
+                },
+
+                Let { binder, val, body, .. } => {
+                    let new_binder_ty = binder.type_.instantiate_lparams(substs.clone());
+                    let new_val = val.instantiate_lparams(substs.clone());
+                    let new_body = body.instantiate_lparams(substs);
+                    mk_let(binder.swap_ty(new_binder_ty), new_val, new_body)
+                },
+                Local { binder, .. } => {
+                    let new_binder_ty = binder.type_.instantiate_lparams(substs);
+                    binder.swap_ty(new_binder_ty).as_local()
+                },
+                Var {..} => self.clone(),
+                Sort { level : lvl, .. } => {
+                    let instd_level = lvl.instantiate(substs);
+                    mk_sort(instd_level)
+                },
+                Const { name, levels : lvls, .. } => {
+                    let new_levels = lvls.iter()
+                                         .map(|x| (x.instantiate(substs.clone())))
+                                         .collect::<Vec<Level>>();
+                    mk_const(name.clone(), new_levels)
+                }
+            }
+        } else {
+            self.clone()
+        }
+    }
+
 
 
     /// Note for non-rust users, IntoIterator is idempotent over Iterators; if

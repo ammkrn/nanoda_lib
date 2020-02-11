@@ -21,12 +21,15 @@ use crate::expr::{ Expr,
                    mk_sort, 
                    mk_app };
 use crate::errors::{ NanodaResult, NanodaErr::* };
+use crate::trace::{ Tracer, ArcTraceMgr };
+use nanoda_macros::trace;
 
 
 
 // inductive.cpp ~78
 #[derive(Debug)]
-pub struct AddInductiveFn {
+pub struct AddInductiveFn<T> 
+where T : Tracer {
     //m_lctx : LocalCtx,
     name : Name,
     m_lparams : Vec<Level>,
@@ -44,15 +47,18 @@ pub struct AddInductiveFn {
     m_K_target : bool,
     m_rec_infos : Vec<RecInfo>,
     use_dep_elim : Option<bool>,
+    trace_mgr : ArcTraceMgr<T>
 }
 
-impl AddInductiveFn {
+impl<T> AddInductiveFn<T> 
+where T : Tracer {
     pub fn new(name : Name,
                m_lparams : Vec<Level>,
                m_nparams : usize,
                m_is_unsafe : bool,
                m_ind_types : Vec<InductiveType>,
-               env_handle : ArcEnv) -> Self {
+               env_handle : ArcEnv,
+               trace_mgr : ArcTraceMgr<T>) -> Self {
         AddInductiveFn {
             name,
             m_lparams,
@@ -70,11 +76,13 @@ impl AddInductiveFn {
             m_rec_infos : Vec::new(),
             use_dep_elim : None,
             env_handle,
+            trace_mgr,
         }
     }
 
+    #[trace(self.trace_mgr, AddInductiveCore(&self.name, &self.m_lparams, &self.m_ind_types))]
     pub fn add_inductive_core(&mut self) -> NanodaResult<()> {
-        ensure_no_dupe_lparams(&self.m_lparams)?;
+        ensure_no_dupe_lparams(&self.m_lparams, self.trace_mgr.clone())?;
         self.check_inductive_types()?;
         self.declare_inductive_types()?;
         self.check_constructors()?;
@@ -92,6 +100,7 @@ impl AddInductiveFn {
         }
     }
 
+    #[trace(self.trace_mgr, UseDepElim(base_type))]
     pub fn use_dep_elim(&self, base_type : &Expr) -> NanodaResult<bool> {
         match base_type.as_ref() {
             Sort { level, .. } => Ok(level.maybe_nonzero()),
@@ -99,10 +108,11 @@ impl AddInductiveFn {
         }
     }
 
+    #[trace(self.trace_mgr, CheckInductiveTypes(&self.m_ind_types))]
     pub fn check_inductive_types(&mut self) -> NanodaResult<()> {
         self.m_levels = self.m_lparams.clone();
 
-        let mut tc = TypeChecker::new(None, self.env_handle.clone());
+        let mut tc = TypeChecker::new(None, self.env_handle.clone(), self.trace_mgr.clone());
 
         // We might potentially have multiple types in the case of
         // mutual declarations.
@@ -122,13 +132,13 @@ impl AddInductiveFn {
                 if i < self.m_nparams {
                     if (idx == 0) {
                         let param_ = mk_local_declar_for(&base_type);
-                        base_type = body.instantiate(Some(&param_).into_iter());
+                        base_type = body.instantiate_trace(self.trace_mgr.clone(), Some(&param_).into_iter());
                         self.m_params.push(param_);
                     } else {
                         let indexed_param = self.m_params.get(i).ok_or_else(|| BadIndexErr(file!(), line!(), i))?;
                         //assert!(tc.is_def_eq(&binder.type_, indexed_param.get_local_type()?) == EqShort) ;
                         assert!(binder.type_.check_def_eq(indexed_param.get_local_type()?, &mut tc) == EqShort);
-                        base_type = body.instantiate(Some(indexed_param).into_iter());
+                        base_type = body.instantiate_trace(self.trace_mgr.clone(), Some(indexed_param).into_iter());
                     }
                     i += 1;
                 } else {
@@ -153,7 +163,7 @@ impl AddInductiveFn {
                 let is_not_zero = result_level.is_nonzero();
                 self.m_result_level = result_level.clone();
                 self.m_is_not_zero = Some(is_not_zero);
-            } else if !(infd_sort.get_sort_level()?.eq_by_antisymm(&self.m_result_level)) {
+            } else if !(infd_sort.get_sort_level()?.eq_by_antisymm(&self.m_result_level, &self.trace_mgr)) {
                 crate::errors::mutual_different_universes(line!(), infd_sort.get_sort_level()?, &self.m_result_level);
             }
 
@@ -167,6 +177,7 @@ impl AddInductiveFn {
         Ok(())
     }
 
+    #[trace(self.trace_mgr, DeclareInductiveTypes())]
     pub fn declare_inductive_types(&self) -> NanodaResult<()> {
         for idx in 0..self.m_ind_types.len() {
             let ind_type = self.m_ind_types.get(idx)
@@ -195,6 +206,7 @@ impl AddInductiveFn {
         Ok(())
     }
 
+    #[trace(self.trace_mgr, IsRec())]
     fn is_rec(&self) -> bool {
         let predicate = |e : &Expr| 
         if let Const { name, .. } = e.as_ref() {
@@ -238,6 +250,7 @@ impl AddInductiveFn {
     where `T` is another inductive datatype (possibly `T`) in the same
     mutual declaration
     */ 
+    #[trace(self.trace_mgr, IsReflexive())]
     fn is_reflexive(&self) -> bool {
         self.m_ind_types.iter()
         .flat_map(|ind_type| ind_type.constructors.iter())
@@ -249,7 +262,7 @@ impl AddInductiveFn {
                     return true
                 } else {
                     let local = mk_local_declar_for(&cursor);
-                    cursor = body.instantiate(Some(&local).into_iter());
+                    cursor = body.instantiate_trace(self.trace_mgr.clone(), Some(&local).into_iter());
                 }
             }
 
@@ -258,6 +271,7 @@ impl AddInductiveFn {
         })
     }
 
+    #[trace(self.trace_mgr, IsValidIndApp2())]
     pub fn is_valid_ind_app2(&self, t : &Expr, idx : usize) -> bool {
         let (I, args) = t.unfold_apps_rev();
         let cond1 = ((I) != ((&self.m_ind_consts[idx])));
@@ -278,6 +292,7 @@ impl AddInductiveFn {
         return true
     }
 
+    #[trace(self.trace_mgr, IsValidIndApp())]
     pub fn is_valid_ind_app(&self, _e : &Expr) -> Option<usize> {
         for idx in 0..self.m_ind_types.len() {
             if self.is_valid_ind_app2(_e, idx) {
@@ -287,19 +302,21 @@ impl AddInductiveFn {
         None
     }
 
-    pub fn is_rec_argument(&self, _e : &Expr, tc : &mut TypeChecker) -> Option<usize> {
+    #[trace(tc.trace_mgr, IsRecArgument())]
+    pub fn is_rec_argument(&self, _e : &Expr, tc : &mut TypeChecker<T>) -> Option<usize> {
         let mut cursor = _e.whnf(tc);
         while let Pi { body, .. } = cursor.as_ref() {
             let local = mk_local_declar_for(&cursor);
 
-            let instd = body.instantiate(Some(&local).into_iter());
+            let instd = body.instantiate_trace(self.trace_mgr.clone(), Some(&local).into_iter());
             cursor = instd.whnf(tc);
         }
 
         self.is_valid_ind_app(&cursor)
     }
 
-    pub fn check_positivity(&self, _t : &Expr, cnstr_name : &Name, arg_idx : usize, tc : &mut TypeChecker) -> NanodaResult<()> {
+    #[trace(tc.trace_mgr, CheckPositivity())]
+    pub fn check_positivity(&self, _t : &Expr, cnstr_name : &Name, arg_idx : usize, tc : &mut TypeChecker<T>) -> NanodaResult<()> {
         let whnfd = _t.whnf(tc);
         if !self.is_ind_occurrence(&whnfd) {
             Ok(())
@@ -309,7 +326,7 @@ impl AddInductiveFn {
             } else {
                 let local = mk_local_declar_for(&whnfd);
                 //let instd = body.instantiate(Some(&local).into_iter());
-                let instd = body.instantiate(Some(&local).into_iter());
+                let instd = body.instantiate_trace(self.trace_mgr.clone(), Some(&local).into_iter());
                 self.check_positivity(&instd, cnstr_name, arg_idx, tc)
             }
         } else if self.is_valid_ind_app(&whnfd).is_some() {
@@ -320,8 +337,9 @@ impl AddInductiveFn {
     }
 
 
+    #[trace(self.trace_mgr, CheckConstructors())]
     pub fn check_constructors(&self) -> NanodaResult<()> {
-        let mut tc = TypeChecker::new(None, self.env_handle.clone());
+        let mut tc = TypeChecker::new(None, self.env_handle.clone(), self.trace_mgr.clone());
         for idx in 0..self.m_ind_types.len() {
             let ind_type = &self.m_ind_types[idx];
             for cnstr in ind_type.constructors.iter() {
@@ -338,12 +356,12 @@ impl AddInductiveFn {
                             return Err(CnstrBadParamTypeErr)
                         } else {
                             let l = &self.m_params[i];
-                            let instd = body.instantiate(Some(l).into_iter());
+                            let instd = body.instantiate_trace(self.trace_mgr.clone(), Some(l).into_iter());
                             t = instd;
                         }
                     } else {
                         let s = dom.type_.ensure_type(&mut tc);
-                        let cond1 = self.m_result_level.is_geq(s.get_sort_level()?);
+                        let cond1 = self.m_result_level.is_geq(s.get_sort_level()?, &self.trace_mgr);
                         let cond2 = self.m_result_level.is_zero();
 
                         if !(cond1 || cond2) {
@@ -355,7 +373,7 @@ impl AddInductiveFn {
                         }
 
                         let local = mk_local_declar_for(&t);
-                        let instd = body.instantiate(Some(&local).into_iter());
+                        let instd = body.instantiate_trace(self.trace_mgr.clone(), Some(&local).into_iter());
                         t = instd;
                     }
                     i += 1;
@@ -370,6 +388,7 @@ impl AddInductiveFn {
     }
 
 
+    #[trace(self.trace_mgr, DeclareConstructors())]
     pub fn declare_constructors(&self) {
         for idx in 0..self.m_ind_types.len() {
             let ind_type = &self.m_ind_types[idx];
@@ -408,7 +427,8 @@ impl AddInductiveFn {
         }
     }
 
-    pub fn elim_only_at_universe_zero(&self, tc : &mut TypeChecker) -> NanodaResult<bool> {
+    #[trace(tc.trace_mgr, ElimOnlyAtUniverseZero())]
+    pub fn elim_only_at_universe_zero(&self, tc : &mut TypeChecker<T>) -> NanodaResult<bool> {
         if self.m_is_not_zero
            .ok_or_else(|| NoneErr(file!(), line!(), "elim_only_at_universe_zero::m_is_not_zero"))? {
             return Ok(false)
@@ -446,7 +466,7 @@ impl AddInductiveFn {
                 }
             }
 
-            let instd = body.instantiate(Some(&fvar).into_iter());
+            let instd = body.instantiate_trace(self.trace_mgr.clone(), Some(&fvar).into_iter());
             cnstr_type = instd;
             i += 1;
         }
@@ -462,8 +482,9 @@ impl AddInductiveFn {
         Ok(false)
     }
 
+    #[trace(self.trace_mgr, InitElimLevel())]
     pub fn init_elim_level(&mut self) -> NanodaResult<()> {
-        let mut tc = TypeChecker::new(None, self.env_handle.clone());
+        let mut tc = TypeChecker::new(None, self.env_handle.clone(), self.trace_mgr.clone());
         let result = if self.elim_only_at_universe_zero(&mut tc)? {
             self.m_elim_level = mk_zero();
         } else {
@@ -484,6 +505,7 @@ impl AddInductiveFn {
     // This one doesn't admit punit as a target for k-like reduction since 
     // its result_level is Sort(u). The other ones are eq, heq, and true, which
     // are all m_result_level == Sort(0) AKA Props.
+    #[trace(self.trace_mgr, InitKTarget())]
     pub fn init_k_target(&mut self) -> NanodaResult<()> {
         let cond1 = self.m_ind_types.len() == 1;
         let cond2 = self.m_result_level.is_zero();
@@ -514,6 +536,7 @@ impl AddInductiveFn {
         Ok(())
     }
 
+    #[trace(self.trace_mgr, GetIIndices())]
     pub fn get_I_indices(&self, t : Expr, indices : &mut Vec<Expr>) -> NanodaResult<usize> {
         let r : usize = self.is_valid_ind_app(&t)
                         .ok_or_else(|| NoneErr(file!(), line!(), "inductive::get_I_indices"))?;
@@ -527,8 +550,9 @@ impl AddInductiveFn {
     }
 
     // This function is horrifying.
+    #[trace(self.trace_mgr, MkRecInfos())]
     pub fn mk_rec_infos(&mut self) -> NanodaResult<()> {
-        let mut tc = TypeChecker::new(None, self.env_handle.clone());
+        let mut tc = TypeChecker::new(None, self.env_handle.clone(), self.trace_mgr.clone());
         let mut d_idx = 0usize;
 
         for ind_type in self.m_ind_types.iter() {
@@ -541,13 +565,13 @@ impl AddInductiveFn {
             while let Pi { body, .. } = t.as_ref() {
                 if (i < self.m_nparams) {
                     let l = &self.m_params[i];
-                    let instd = body.instantiate(Some(l).into_iter());
+                    let instd = body.instantiate_trace(self.trace_mgr.clone(), Some(l).into_iter());
                     t = instd;
                 } else {
                     let idx = mk_local_declar_for(&t);
                     rec_info.m_indices.push(idx.clone());
                     // set m_indices
-                    let instd = body.instantiate(Some(&idx).into_iter());
+                    let instd = body.instantiate_trace(self.trace_mgr.clone(), Some(&idx).into_iter());
                     t = instd;
                 }
 
@@ -673,6 +697,7 @@ impl AddInductiveFn {
         Ok(())
     }
 
+    #[trace(self.trace_mgr, GetRecLevels())]
     pub fn get_rec_levels(&self) -> Vec<Level> {
         if self.m_elim_level.is_param() {
             let mut v = Vec::new();
@@ -687,6 +712,7 @@ impl AddInductiveFn {
     }
 
     // These are implemented as `fill a given mutable ref to a vec` functions.
+    #[trace(self.trace_mgr, CollectCs())]
     pub fn collect_Cs(&self) -> Vec<Expr> {
         let mut v = Vec::new();
         for i in 0 .. self.m_ind_types.len() {
@@ -695,6 +721,7 @@ impl AddInductiveFn {
         v
     }
 
+    #[trace(self.trace_mgr, CollectMinorPremises())]
     pub fn collect_minor_premises(&self) -> Vec<Expr> {
         let mut v = Vec::new();
         for i in 0 .. self.m_ind_types.len() {
@@ -704,7 +731,8 @@ impl AddInductiveFn {
     }
 
 
-    pub fn mk_rec_rules(&self, tc : &mut TypeChecker, d_idx : usize, Cs : &mut Vec<Expr>, minors : &mut Vec<Expr>, mut minor_idx : usize) -> NanodaResult<Vec<RecursorRule>> {
+    #[trace(self.trace_mgr, MkRecRules())]
+    pub fn mk_rec_rules(&self, tc : &mut TypeChecker<T>, d_idx : usize, Cs : &mut Vec<Expr>, minors : &mut Vec<Expr>, mut minor_idx : usize) -> NanodaResult<Vec<RecursorRule>> {
         let d = &self.m_ind_types[d_idx].clone();
         let lvls = self.get_rec_levels();
         let mut rules = Vec::<RecursorRule>::new();
@@ -783,6 +811,7 @@ impl AddInductiveFn {
 
     }
 
+    #[trace(self.trace_mgr, GetAllInductiveNames())]
     pub fn get_all_inductive_names(&self) -> Vec<Name> {
         let mut v = Vec::new();
         for elem in self.m_ind_types.iter() {
@@ -791,6 +820,7 @@ impl AddInductiveFn {
         v
     }
 
+    #[trace(self.trace_mgr, DeclareRecursors())]
     pub fn declare_recursors(&mut self) -> NanodaResult<()> {
         let mut Cs = self.collect_Cs();
         let mut minors = self.collect_minor_premises();
@@ -802,7 +832,7 @@ impl AddInductiveFn {
 
         let minor_idx = 0usize;
 
-        let mut tc = TypeChecker::new(None, self.env_handle.clone());
+        let mut tc = TypeChecker::new(None, self.env_handle.clone(), self.trace_mgr.clone());
 
         for d_idx in 0..(self.m_ind_types.len()) {
             let use_dep_elim_result = self.use_dep_elim

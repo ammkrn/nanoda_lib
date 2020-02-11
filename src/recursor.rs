@@ -2,6 +2,11 @@ use crate::name::Name;
 use crate::level::Level;
 use crate::env::ConstantBase;
 use crate::expr::{ Expr, mk_var, InnerExpr::* };
+use crate::trace::{ ArcTraceMgr, Tracer };
+use nanoda_macros::trace;
+
+
+
 
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -108,7 +113,8 @@ impl RecursorVal {
         result
     }
 
-    pub fn get_major_idx(&self) -> usize {
+    #[trace(trace_mgr, GetMajorIdx(self.constant_base.clone()))]
+    pub fn get_major_idx(&self, trace_mgr : ArcTraceMgr<impl Tracer>) -> usize {
         self.nparams + self.nmotives + self.nminors + self.nindices
     }
 
@@ -116,7 +122,8 @@ impl RecursorVal {
         self.constant_base.name.get_prefix()
     }
 
-    pub fn get_rec_rule_for(&self, major : &Expr) -> Option<RecursorRule> {
+    #[trace(trace_mgr, GetRecRuleFor(self.constant_base.clone(), major.clone()))]
+    pub fn get_rec_rule_for(&self, major : &Expr, trace_mgr : ArcTraceMgr<impl Tracer>) -> Option<RecursorRule> {
         if let Const { name, .. } = major.unfold_apps_fn().as_ref() {
             self.rules.iter().find(|r| r.get_cnstr() == name).cloned()
         } else {

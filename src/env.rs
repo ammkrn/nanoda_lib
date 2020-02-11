@@ -13,6 +13,8 @@ use crate::inductive::addinductive::AddInductiveFn;
 use crate::tc::TypeChecker;
 use crate::utils::ShortCircuit::*;
 use crate::errors::{ NanodaResult, NanodaErr::* };
+use crate::trace::{ ArcTraceMgr, Tracer };
+use nanoda_macros::trace;
 use enum_tools::Get;
 
 use ConstantInfo::*;
@@ -85,21 +87,24 @@ impl Env {
         }
     }
 
-    pub fn get_recursor_val(&self, n : &Name) -> Option<RecursorVal> {
+    #[trace(trace_mgr, GetRecursorVal(n.clone()))]
+    pub fn get_recursor_val(&self, n : &Name, trace_mgr : ArcTraceMgr<impl Tracer>) -> Option<RecursorVal> {
         match self.constant_infos.get(n)? {
             ConstantInfo::RecursorInfo(rec_val) => Some(rec_val.clone()),
             _ => None
         }
     }
 
-    pub fn ensure_not_dupe_name(&self, n : &Name) {
+    #[trace(trace_mgr, EnsureNotDupeName(n.clone()))]
+    pub fn ensure_not_dupe_name(&self, n : &Name, trace_mgr : ArcTraceMgr<impl Tracer>) {
         if self.constant_infos.contains_key(n) {
             panic!("constant_base name {} was already declared!\n", n);
         }
     }
 }
 
-pub fn ensure_no_dupe_lparams(v : &Vec<Level>) -> NanodaResult<()> {
+#[trace(trace_mgr, EnsureNoDupeLparams(v))]
+pub fn ensure_no_dupe_lparams(v : &Vec<Level>, trace_mgr : ArcTraceMgr<impl Tracer>) -> NanodaResult<()> {
     for (idx, elem) in v.iter().enumerate() {
         let slice = &v[idx+1..];
         if slice.contains(elem) {
@@ -431,9 +436,10 @@ impl Env {
 // 2. Inferring its type with `checked_infer`
 // 3. Ensuring that the inferred type is a Sort (since ConstantBase is itself a type,
 //    its inferred type must therefore be a sort)
-pub fn check_constant_base(c : &ConstantBase, tc : &mut TypeChecker) -> NanodaResult<()> {
-    tc.env.read().ensure_not_dupe_name(&c.name);
-    ensure_no_dupe_lparams(&c.lparams)?;
+#[trace(tc.trace_mgr, CheckConstantBase(c))]
+pub fn check_constant_base<T : Tracer>(c : &ConstantBase, tc : &mut TypeChecker<T>) -> NanodaResult<()> {
+    tc.env.read().ensure_not_dupe_name(&c.name, tc.trace_mgr.clone());
+    ensure_no_dupe_lparams(&c.lparams, tc.trace_mgr.clone())?;
     assert!(!c.type_.has_locals());
     c.type_
      .checked_infer(c.lparams.clone(), tc)
@@ -441,14 +447,15 @@ pub fn check_constant_base(c : &ConstantBase, tc : &mut TypeChecker) -> NanodaRe
     Ok(())
 }
 
-pub fn check_constant_base_new_tc(env : ArcEnv, c : &ConstantBase, safe_only : bool) -> NanodaResult<()> {
-    let mut tc = TypeChecker::new(Some(safe_only), env.clone());
+pub fn check_constant_base_new_tc<T : Tracer>(env : ArcEnv, c : &ConstantBase, safe_only : bool, trace_mgr : ArcTraceMgr<T>) -> NanodaResult<()> {
+    let mut tc = TypeChecker::<T>::new(Some(safe_only), env.clone(), trace_mgr);
     check_constant_base(c, &mut tc)
 }
 
-pub fn add_axiom(ax : AxiomVal, env : ArcEnv, _check : bool) -> NanodaResult<()> {
+#[trace(trace_mgr, AddAxiom(AxiomInfo(ax.clone())))]
+pub fn add_axiom<T : Tracer>(ax : AxiomVal, env : ArcEnv, _check : bool, trace_mgr : ArcTraceMgr<T>) -> NanodaResult<()> {
     if _check {
-        check_constant_base_new_tc(env.clone(), &ax.constant_base, ax.is_unsafe)?
+        check_constant_base_new_tc(env.clone(), &ax.constant_base, ax.is_unsafe, trace_mgr.clone())?
     } 
 
     Ok(env.write().add_constant_info(AxiomInfo(ax)))
@@ -465,13 +472,14 @@ pub fn add_axiom(ax : AxiomVal, env : ArcEnv, _check : bool) -> NanodaResult<()>
 // 2. inferring the type of its value
 // 3. ensuring that the inferred type of its value is definitionally equal
 //    to the type it claims to have.
-pub fn add_definition(def : DefinitionVal, env : ArcEnv, _check : bool) -> NanodaResult<()> {
+#[trace(trace_mgr, AddDefinition(DefinitionInfo(def.clone())))]
+pub fn add_definition<T : Tracer>(def : DefinitionVal, env : ArcEnv, _check : bool, trace_mgr : ArcTraceMgr<T>) -> NanodaResult<()> {
     // If it's unsafe, we need to add its `constant_base` to the environment,
     // then we can check its value level stuff.
     if def.is_unsafe {
         if _check {
             let safe_only = false;
-            let mut tc = TypeChecker::new(Some(safe_only), env.clone());
+            let mut tc = TypeChecker::<T>::new(Some(safe_only), env.clone(), trace_mgr.clone());
             check_constant_base(&def.constant_base, &mut tc)?;
         }
 
@@ -479,7 +487,7 @@ pub fn add_definition(def : DefinitionVal, env : ArcEnv, _check : bool) -> Nanod
 
         if _check {
             let safe_only = false;
-            let mut tc = TypeChecker::new(Some(safe_only), env.clone());
+            let mut tc = TypeChecker::<T>::new(Some(safe_only), env.clone(), trace_mgr.clone());
             let val_type = def.value.checked_infer(def.constant_base.lparams.clone(), &mut tc);
             if (val_type.check_def_eq(&def.constant_base.type_, &mut tc) == NeqShort) {
                 return Err(TcNeqErr(file!(), line!()))
@@ -488,7 +496,7 @@ pub fn add_definition(def : DefinitionVal, env : ArcEnv, _check : bool) -> Nanod
         Ok(())
     } else {
         if _check {
-            let mut tc = TypeChecker::new(None, env.clone());
+            let mut tc = TypeChecker::<T>::new(None, env.clone(), trace_mgr.clone());
             check_constant_base(&def.constant_base, &mut tc)?;
             let val_type = def.value.checked_infer(def.constant_base.lparams.clone(), &mut tc);
  
@@ -500,8 +508,9 @@ pub fn add_definition(def : DefinitionVal, env : ArcEnv, _check : bool) -> Nanod
     }
 }
 
-pub fn add_quot(quot : QuotVal, env : ArcEnv) -> NanodaResult<()> {
-    check_constant_base_new_tc(env.clone(), &quot.constant_base, false)?;
+#[trace(trace_mgr, AddQuot(QuotInfo(quot.clone())))]
+pub fn add_quot<T : Tracer>(quot : QuotVal, env : ArcEnv, trace_mgr : ArcTraceMgr<T>) -> NanodaResult<()> {
+    check_constant_base_new_tc(env.clone(), &quot.constant_base, false, trace_mgr.clone())?;
 
 
     Ok(env.write().add_constant_info(QuotInfo(quot)))
@@ -511,11 +520,12 @@ pub fn add_quot(quot : QuotVal, env : ArcEnv) -> NanodaResult<()> {
 
 // Exactly the same as the `is_safe` branch of add_definition
 #[allow(dead_code)]
-pub fn add_theorem(thm : TheoremVal, env : ArcEnv, _check : bool) -> NanodaResult<()> {
+//#[trace(trace_mgr)]
+pub fn add_theorem<T : Tracer>(thm : TheoremVal, env : ArcEnv, _check : bool, trace_mgr : ArcTraceMgr<T>) -> NanodaResult<()> {
     // FIXME there's a `TODO` in the CPP version here.
     if _check {
         let safe_only = false;
-        let mut tc = TypeChecker::new(Some(safe_only), env.clone());
+        let mut tc = TypeChecker::<T>::new(Some(safe_only), env.clone(), trace_mgr);
         check_constant_base(&thm.constant_base, &mut tc)?;
 
         let val_type = thm.value.checked_infer(thm.constant_base.lparams.clone(), &mut tc);
@@ -532,10 +542,10 @@ pub fn add_theorem(thm : TheoremVal, env : ArcEnv, _check : bool) -> NanodaResul
 
 // Exactly the same as the `is_safe` branch of add_definition.
 #[allow(dead_code)]
-fn add_opaque(opaque : OpaqueVal, env : ArcEnv, _check : bool) -> NanodaResult<()> {
+fn add_opaque<T : Tracer>(opaque : OpaqueVal, env : ArcEnv, _check : bool, trace_mgr : ArcTraceMgr<T>) -> NanodaResult<()> {
     if _check {
         let safe_only = false;
-        let mut tc = TypeChecker::new(Some(safe_only), env.clone());
+        let mut tc = TypeChecker::<T>::new(Some(safe_only), env.clone(), trace_mgr);
         check_constant_base(&opaque.constant_base, &mut tc)?;
 
         let val_type = opaque.value.checked_infer(opaque.constant_base.lparams.clone(), &mut tc);
@@ -554,10 +564,10 @@ fn add_opaque(opaque : OpaqueVal, env : ArcEnv, _check : bool) -> NanodaResult<(
 // 2. then add all definitions to env
 // 3. check the types of the definitions' values match their ascribed types.
 #[allow(dead_code)]
-fn add_mutual(defs : Vec<DefinitionVal>, env : ArcEnv, _check : bool) -> NanodaResult<()> {
+fn add_mutual<T : Tracer>(defs : Vec<DefinitionVal>, env : ArcEnv, _check : bool, trace_mgr : ArcTraceMgr<T>) -> NanodaResult<()> {
     if _check {
         let safe_only = false;
-        let mut tc = TypeChecker::new(Some(safe_only), env.clone());
+        let mut tc = TypeChecker::<T>::new(Some(safe_only), env.clone(), trace_mgr.clone());
 
         for def in defs.iter() {
             if (!def.is_unsafe) {
@@ -573,7 +583,7 @@ fn add_mutual(defs : Vec<DefinitionVal>, env : ArcEnv, _check : bool) -> NanodaR
 
     if _check {
         let safe_only = false;
-        let mut tc = TypeChecker::new(Some(safe_only), env.clone());
+        let mut tc = TypeChecker::<T>::new(Some(safe_only), env.clone(), trace_mgr);
         for def in defs.iter() {
             let val_type = def.value.checked_infer(def.constant_base.lparams.clone(), &mut tc);
             if (val_type.check_def_eq(&def.constant_base.type_, &mut tc) == NeqShort) {
@@ -586,13 +596,14 @@ fn add_mutual(defs : Vec<DefinitionVal>, env : ArcEnv, _check : bool) -> NanodaR
 }
 
 // The tracing attribute on this one is over `AddInductiveFn::add_inductive_core`
-pub fn add_inductive(ind : InductiveDeclar, env : ArcEnv, _check : bool) -> NanodaResult<()> {
+pub fn add_inductive<T : Tracer>(ind : InductiveDeclar, env : ArcEnv, _check : bool, trace_mgr : ArcTraceMgr<T>) -> NanodaResult<()> {
     AddInductiveFn::new(ind.name, 
                         ind.lparams, 
                         ind.num_params, 
                         ind.is_unsafe, 
                         ind.types, 
-                        env).add_inductive_core()
+                        env,
+                        trace_mgr).add_inductive_core()
 }
 
 

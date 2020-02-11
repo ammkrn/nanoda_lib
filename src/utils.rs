@@ -181,3 +181,33 @@ impl FailureCache {
     }
 }
 
+
+/*
+pub fn intercal_str(v : Vec<String>, s : &str, newline : bool) -> String {
+    if v.is_empty() {
+        // Don't add newline in either case if it's just empty
+        String::new()
+    } else {
+        let mut acc = String::new();
+
+        for elem in v {
+            acc.push_str(elem.as_str());
+            acc.push_str(s);
+        }
+
+        for c in s.chars().rev() {
+            assert_eq!(acc.pop(), Some(c));
+        }
+
+        if newline {
+            acc.push('\n');
+        }
+
+
+        acc
+
+    }
+
+}
+*/
+
