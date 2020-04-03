@@ -195,6 +195,10 @@ impl AddInductiveFn {
         Ok(())
     }
 
+    fn has_ind_occ(&self, e : &Expr) -> bool {
+        e.find_matching(|x| self.is_ind_occ(x)).is_some()
+    }
+
     fn is_rec(&self) -> bool {
         let predicate = |e : &Expr| 
         if let Const { name, .. } = e.as_ref() {
@@ -220,7 +224,7 @@ impl AddInductiveFn {
     // only used as a check in is_reflexive
     // does self.ind_consts contain any other items with the same
     // const name as e?
-    fn is_ind_occurrence(&self, _e : &Expr) -> bool {
+    fn is_ind_occ(&self, _e : &Expr) -> bool {
         if let Const { name, .. } = _e.as_ref() {
             self.m_ind_consts.iter().all(|cnst| {
                 cnst.get_const_name().map(|n| n == name).unwrap_or(false)
@@ -245,7 +249,7 @@ impl AddInductiveFn {
             let mut cursor = cnstr.type_.clone();
 
             while let Pi { binder, body, .. } = cursor.as_ref() {
-                if binder.type_.as_ref().is_pi() && self.is_ind_occurrence(&binder.type_) {
+                if binder.type_.as_ref().is_pi() && self.has_ind_occ(&binder.type_) {
                     return true
                 } else {
                     let local = mk_local_declar_for(&cursor);
@@ -301,10 +305,10 @@ impl AddInductiveFn {
 
     pub fn check_positivity(&self, _t : &Expr, cnstr_name : &Name, arg_idx : usize, tc : &mut TypeChecker) -> NanodaResult<()> {
         let whnfd = _t.whnf(tc);
-        if !self.is_ind_occurrence(&whnfd) {
+        if !self.has_ind_occ(&whnfd) {
             Ok(())
         } else if let Pi { binder, body, .. } = whnfd.as_ref() {
-            if self.is_ind_occurrence(&binder.type_) {
+            if self.has_ind_occ(&binder.type_) {
                 Err(NonposOccurrenceErr(file!(), line!()))
             } else {
                 let local = mk_local_declar_for(&whnfd);
