@@ -349,7 +349,7 @@ impl PrettyPrinter {
 
     pub fn pp_expr(&self, _e : &Expr) -> Parenable {
         //if !self.pp_options.proofs && self.ctx_mgr.tc.borrow_mut().is_proof(_e) {
-        if !self.pp_options.proofs && _e.is_proof(&mut *self.ctx_mgr.tc.borrow_mut()) {
+        if !self.pp_options.proofs && _e.is_proof(&mut *self.ctx_mgr.tc.borrow_mut()).0 {
             Doc::from("_").as_parenable_max()
         } else {
             match _e.as_ref() {

@@ -6,7 +6,8 @@ use nanoda_lib::env::Env;
 use nanoda_lib::serial_parser::LineParser;
 
 fn main() {
-    let export_file_path = PathBuf::from("examples/short_lean_export.out");
+    //let export_file_path = PathBuf::from("examples/short_lean_export.out");
+    let export_file_path = PathBuf::from("/home/hkse/vmShared/mathlib_export.out");
     let export_file_string = match read_to_string(&export_file_path) {
         Ok(s) => s,
         Err(e) => {
