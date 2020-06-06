@@ -128,11 +128,10 @@ impl<'a> Expr<'a> {
                 let body = body.insert_env(env, live);
                 <ExprPtr>::new_let(b_name, b_type, b_style, val, body, env)
             },
-            Local { b_name, b_type, b_style, serial } => {
-                let b_name = b_name.insert_env(env, live);
-                let b_type = b_type.insert_env(env, live);
-                Local { b_name, b_type, b_style, serial }.alloc(env)
-            }
+            // In combination with the assertion the `new_local` constructor
+            // effectively ban Locals from the environment, ensuring that
+            // contexts cannot be confused.
+            Local {..} => unreachable!("Locals are not allowed in the environment!"),
         };
         assert!(r.in_env());
         r
@@ -309,12 +308,14 @@ impl<'a> ExprPtr<'a> {
         b_style : BinderStyle,
         ctx : &mut impl IsLiveCtx<'a>
     ) -> ExprPtr<'a> {
-        Local {
+        let l = Local {
             b_name,
             b_type,
             b_style,
             serial : ctx.next_local()
-        }.alloc(ctx)
+        }.alloc(ctx);
+        assert!(!l.in_env());
+        l
     }
 
     pub fn subst(self, ks : LevelsPtr<'a>, vs : LevelsPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> Self {
