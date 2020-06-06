@@ -1,1051 +1,690 @@
-use std::sync::Arc;
-use std::cmp::max;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering::Relaxed;
-use std::hash::{ Hash, Hasher };
+use crate::name::{ NamePtr, NamesPtr };
+use crate::level::{ LevelPtr, LevelsPtr };
+use crate::env::{ Declar::*, ReducibilityHint::* };
+use crate::utils::{ 
+    IsCtx, 
+    IsLiveCtx, 
+    List::*, 
+    Ptr, 
+    ListPtr, 
+    Store,
+    Env, 
+    LiveZst, 
+    HasNanodaDbg 
+};
 
-use fxhash::hash64;
-use hashbrown::{ HashMap, HashSet };
-
-use crate::name::{ Name, mk_anon };
-use crate::level::{ Level, 
-                    unique_univ_params, 
-                    mk_zero };
-use crate::utils::{ HasInstantiate, safe_minus_one, max3 };
-use crate::errors;
-use enum_tools::{ Get, Discrim };
-
-use InnerExpr::*;
-
-use crate::errors::{ NanodaResult, NanodaErr::* };
+pub type ExprPtr<'a> = Ptr<'a, Expr<'a>>;
+pub type ExprsPtr<'a> = ListPtr<'a, Expr<'a>>;
 
 
-/// Because we calculate hashes based on structure, we need
-/// something to distinguish between Pi and Lambda expressions, which 
-/// apart from their enum discriminant, have the same structure internally.
-/// We just use a prime number in a (probably futile) attempt to reduce
-/// the likelihood of hash collisions since they'll often be kept in hash maps.
-/// Prop itself is treated as a constant, so we also need to know its hash
-/// beforehand.
-pub const LAMBDA_HASH   : u64 = 402653189;
-pub const PI_HASH       : u64 = 1610612741;
-pub const PROP_HASH     : u64 = 786433;
-pub const PROP_CACHE    : ExprCache = ExprCache { digest : PROP_HASH, 
-                                                  var_bound : 0, 
-                                                  has_locals : false };
+use Expr::*;
+use BinderStyle::*;
 
-/// Globally visible incrementing counter for fresh Local names. 
-/// Lazy man's way of creating fresh names across threads.
-/// `Local` items need to have the property that two locals will
-/// have the same serial iff `B` was created by executing `clone()`
-/// on `A`. 
-pub static LOCAL_SERIAL : AtomicU64 = AtomicU64::new(0);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LocalSerial(pub u64);
 
 
-pub fn easy_fresh_name() -> Name {
-    let num = LOCAL_SERIAL.fetch_add(1, Relaxed);
-    mk_anon().extend_num(num)
-}
-
-
-impl<'e> HasInstantiate<&'e Expr> for Expr {
-    fn instantiate<I>(&self, es : I) -> Expr 
-    where I : Iterator<Item = &'e Expr> + Clone {
-       let mut cache = OffsetCache::new();
-        self.instantiate_core(0usize, &mut cache, es)
-    } 
-
-}
-
-impl<'z> HasInstantiate<(&'z Level, &'z Level)> for Expr {
-    fn instantiate<I>(&self, substs : I) -> Expr 
-    where I : Iterator<Item = (&'z Level, &'z Level)> + Clone {
-        self.instantiate_lparams(substs)
-    } 
-
-}
-
-
-impl<'e> HasInstantiate<&'e Expr> for Binder {
-    fn instantiate<I>(&self, es : I) -> Binder 
-    where I : Iterator<Item = &'e Expr> + Clone {
-        self.swap_ty(self.type_.instantiate(es))
+pub fn safe_pred(n : u16) -> u16 {
+    if n == 0 {
+        n
+    } else {
+        n - 1
     }
 }
 
-
-/// Denote different flavors of binders.
-/// Each variant corresponds to the following Lean binder notation : (click for info)
-///``` pseudo
-///Default         |->   ( .. )
-///Implicit        |->   { .. }
-///StrictImplicit  |->  {{ .. }}
-///InstImplicit    |->   [ .. ]
-///```
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinderStyle {
     Default,
     Implicit,
     StrictImplicit,
-    InstImplicit,
+    InstImplicit
 }
 
 
-/// Binder is used to represent the information associated with a Pi, Lambda, or Let
-/// expression's binding. pp_name and ty would be like the `x` and `T` respectively
-/// in `(λ x : T, E)`. See the doc comments for BinderStyle for information on that.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Binder {
-    pub pp_name : Name,
-    pub type_ : Expr,
-    pub style : BinderStyle
-}
-
-
-
-impl Binder {
-    pub fn mk(name : Name, type_ : Expr, style : BinderStyle) -> Self {
-        Binder {
-            pp_name : name,
-            type_,
-            style
-        }
-    }
-
-    pub fn is_explicit(&self) -> bool {
-        match self.style {
-            BinderStyle::Default => true,
-            BinderStyle::Implicit => false,
-            BinderStyle::StrictImplicit => false,
-            BinderStyle::InstImplicit => false
-        }
-    }
-
-
-    pub fn as_local(self) -> Expr {
-        let serial = LOCAL_SERIAL.fetch_add(1, Relaxed);
-        let digest = hash64(&(serial, &self));
-        Local { cache : ExprCache::mk(digest, 0, true), 
-                binder : self, 
-                serial }.into()
-    }
-
-    pub fn swap_ty(&self, other : Expr) -> Self {
-        Binder::mk(self.pp_name.clone(), other, self.style)
-    }
-
-    pub fn swap_name(&self, other : Name) -> Self {
-        Binder::mk(other, self.type_.clone(), self.style)
-    }
-
-    pub fn swap_name_and_ty(&self, other_n : Name, other_t : Expr) -> Self {
-        Binder::mk(other_n, other_t, self.style)
-    }
-}
-
-/// Arc wrapper around `InnerExpr`. See  InnerExpr's docs.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Expr(Arc<InnerExpr>);
-
-impl std::fmt::Debug for Expr {
-    fn fmt(&self, f : &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", self.as_ref())
-    }
-}
-
-/// special constructor for an Expr::Sort that corresponds to `Prop`
-pub fn mk_prop() -> Expr {
-    Sort { cache : PROP_CACHE, level : mk_zero() }.into() // into Level from InnerLevel
-}
-
-/// Makes a variable expression which contains a 
-/// [De Brujin index](https://en.wikipedia.org/wiki/De_Bruijn_index).
-pub fn mk_var(dbj : usize) -> Expr {
-    let digest = hash64(&(dbj));
-    Var { cache : ExprCache::mk(digest, dbj as u16 + 1, false), 
-          dbj }.into() // InnerLevel -> Level
-}
-
-/// Makes a node in the tree, joining two expressions as application.
-pub fn mk_app(fun : Expr, arg : Expr) -> Expr {
-    let digest = hash64(&(fun.get_digest(), arg.get_digest()));
-    let var_bound = fun.var_bound().max(arg.var_bound());
-    let has_locals = fun.has_locals() || arg.has_locals();
-    App { cache : ExprCache::mk(digest, var_bound, has_locals), 
-          fun, 
-          arg }.into() // InnerLevel -> Level 
-}
-
-/// Represents a Sort/Level/Universe. You can read more about these in 
-/// sources like Theorem Proving in Lean.
-pub fn mk_sort(level : Level) -> Expr {
-    let digest = hash64(&level);
-    Sort { cache : ExprCache::mk(digest, 0, false), level }.into() // InnerLevel -> Level 
-}
-
-/// A constant; represents a reference to a declaration that has already
-/// been added to the environment.
-pub fn mk_const(name : impl Into<Name>, levels : impl Into<Vec<Level>>) -> Expr {
-    let name = name.into();
-    let levels = levels.into();
-    let digest = hash64(&(&name, &levels));
-    Const { cache : ExprCache::mk(digest, 0, false), 
-            name, 
-            levels }.into()
-}
-
-/// A lambda function.
-pub fn mk_lambda(binder : Binder, body: Expr) -> Expr {
-    let digest = hash64(&(LAMBDA_HASH, &binder, &body));
-    let var_bound = max(binder.type_.var_bound(), 
-                        safe_minus_one(body.var_bound()));
-    let has_locals = binder.type_.has_locals() || body.has_locals();
-    Lambda { cache : ExprCache::mk(digest, var_bound, has_locals), binder, body }.into() // InnerLevel -> Level
-}
-
-/// A Pi (dependent function) type.
-pub fn mk_pi(binder : Binder, body: Expr) -> Expr {
-    let digest = hash64(&(PI_HASH, &binder, &body));
-    let var_bound = max(binder.type_.var_bound(),
-                        safe_minus_one(body.var_bound()));
-    let has_locals = binder.type_.has_locals() || body.has_locals();
-    Pi { cache : ExprCache::mk(digest, var_bound, has_locals), 
-         binder,
-         body  }.into()
-}
-
-pub fn mk_local_declar_for(e : &Expr) -> Expr {
-    match e.as_ref() {
-        Pi { binder, .. } => {
-            mk_local(binder.pp_name.clone(), binder.type_.clone(), binder.style)
-        },
-        owise => panic!("mk_local_declar for wants a pi, got : {:?}\n", owise)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Expr<'a> {
+    Var { 
+        dbj : u16
+    },
+    Sort {
+        level : LevelPtr<'a>,
+    },
+    Const {
+        name : NamePtr<'a>,
+        levels : LevelsPtr<'a>,
+    },
+    App {
+        fun : ExprPtr<'a>,
+        arg : ExprPtr<'a>,
+        var_bound : u16,
+        locals : bool,
+    },
+    Pi {
+        b_name : NamePtr<'a>,
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        body : ExprPtr<'a>,
+        var_bound : u16,
+        locals : bool,
+    },
+    Lambda {
+        b_name : NamePtr<'a>,
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        body : ExprPtr<'a>,
+        var_bound : u16,
+        locals : bool,
+    },
+    Let {
+        b_name : NamePtr<'a>,
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        val : ExprPtr<'a>,
+        body : ExprPtr<'a>,
+        var_bound : u16,
+        locals : bool,
+    },
+    Local {
+        b_name : NamePtr<'a>,
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        serial : LocalSerial
     }
 
 }
 
-pub fn mk_local_declar(n : Name, t : Expr, bi : BinderStyle) -> Expr {
-    mk_local(n, t, bi)
-}
 
-
-/// A let binding, IE `let (x : nat) := 5  in 2 * x`
-pub fn mk_let(binder : Binder, val : Expr, body : Expr) -> Expr {
-    let digest = hash64(&(&binder, val.get_digest(), body.get_digest()));
-    let var_bound = max3(binder.type_.var_bound(),
-                         val.var_bound(),
-                         safe_minus_one(body.var_bound()));
-    let has_locals = binder.type_.has_locals() || body.has_locals() || val.has_locals();
-    Let { cache : ExprCache::mk(digest, var_bound, has_locals), 
-          binder, 
-          val, 
-          body }.into() // InnerLevel -> Level
-}
-
-/// A `Local` represents a free variable. All `Local` terms have a unique
-/// identifier (here we just use a monotonically increasing counter, with each
-/// local's identifier being called a `serial`), and carries its type around.
-/// As discussed above, locals must have the property that a clone/deep copy
-/// is the only way to produce two local items with the same serial. All other
-/// methods of constructing a local must produce a term with a unique identifier.
-pub fn mk_local(name : impl Into<Name>, ty : Expr, style : BinderStyle) -> Expr {
-    let binding = Binder::mk(name.into(), ty, style);
-    let serial = LOCAL_SERIAL.fetch_add(1, Relaxed);
-    let digest = hash64(&(serial, &binding));
-
-    Local { cache : ExprCache::mk(digest, 0, true),
-            serial,
-            binder : binding }.into()  // InnerLevel -> Level
-}
-
-pub fn mk_local_w_serial(serial : u64, binding : &Binder, new_ty : Expr) -> Expr {
-    let new_binding = binding.swap_ty(new_ty);
-    let digest = hash64(&(serial, &new_binding));
-
-    Local { cache : ExprCache::mk(digest, 0, true),
-            serial,
-            binder : new_binding }.into()  // InnerLevel -> Level
-}
-
-
-impl Expr {
-
-    pub fn mk_app(&self, other : &Expr) -> Expr {
-        mk_app(self.clone(), other.clone())
-    }
-
-
-
-
-
-    // pointer
-    pub fn check_ptr_eq(&self, other : &Expr) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-
-    pub fn mk_local_declar_binders_only(&self) -> NanodaResult<Expr> {
-        match self.as_ref() {
-            Pi { binder, .. } | Lambda { binder, .. } => {
-                Ok(mk_local(binder.pp_name.clone(), binder.type_.clone(), binder.style))
+impl<'a> Expr<'a> {
+    pub fn insert_env<'e>(self, env : &mut Env<'e>, live : &Store<LiveZst>) -> ExprPtr<'e> {
+        let r = match self {
+            Var { dbj } => <ExprPtr>::new_var(dbj, env),
+            Sort { level } => level.insert_env(env, live).new_sort(env),
+            Const { name, levels } => {
+                let name = name.insert_env(env, live);
+                let levels = levels.insert_env(env, live);
+                <ExprPtr>::new_const(name, levels, env)
             },
-            _ => Err(NotBinderErr(file!(), line!()))
-        }
-    }
-
-
-
-
-    pub fn find_matching(&self, f : impl Fn(&Expr) -> bool) -> Option<Expr> {
-        let mut v = vec![self];
-
-        while !v.is_empty() {
-            let elem = v.pop().expect("impossible `None` in find_matching");
-
-            if f(elem) {
-                return Some(elem.clone())
+            App { fun, arg, .. } => {
+                let fun = fun.insert_env(env, live);
+                let arg = arg.insert_env(env, live);
+                fun.new_app(arg, env)
+            },
+            Pi { b_name, b_type, b_style, body, .. } => {
+                let b_name = b_name.insert_env(env, live);
+                let b_type = b_type.insert_env(env, live);
+                let body = body.insert_env(env, live);
+                <ExprPtr>::new_pi(b_name, b_type, b_style, body, env)
+            },
+            Lambda { b_name, b_type, b_style, body, .. } => {
+                let b_name = b_name.insert_env(env, live);
+                let b_type = b_type.insert_env(env, live);
+                let body = body.insert_env(env, live);
+                <ExprPtr>::new_lambda(b_name, b_type, b_style, body, env)
+            },
+            Let { b_name, b_type, b_style, val, body, .. } => {
+                let b_name = b_name.insert_env(env, live);
+                let b_type = b_type.insert_env(env, live);
+                let val = val.insert_env(env, live);
+                let body = body.insert_env(env, live);
+                <ExprPtr>::new_let(b_name, b_type, b_style, val, body, env)
+            },
+            Local { b_name, b_type, b_style, serial } => {
+                let b_name = b_name.insert_env(env, live);
+                let b_type = b_type.insert_env(env, live);
+                Local { b_name, b_type, b_style, serial }.alloc(env)
             }
+        };
+        assert!(r.in_env());
+        r
+    }    
+}
 
-            match elem.as_ref() {
-                Var {..} | Const {..} | Sort {..} => {
-                    continue
-                },
-                App { fun, arg , .. } => {
-                    v.push(fun);
-                    v.push(arg);
-                },
-                Pi { binder, body, .. } | Lambda { binder, body, .. } => {
-                    v.push(&binder.type_);
-                    v.push(body);
-                },
-                Let { binder, val, body, .. } => {
-                    v.push(&binder.type_);
-                    v.push(val);
-                    v.push(body);
-                },
-                Local { binder, .. } => {
-                    v.push(&binder.type_);
-                }
 
+impl<'a> ExprPtr<'a> {
+    // This is for testing only.
+    pub fn eq_mod_locals(self, other : Self, ctx : &impl IsCtx<'a>) -> bool {
+        match (self.read(ctx), other.read(ctx)) {
+            _ if self == other => true,
+            (Var {..}, Var{..})
+            | (Sort {..}, Sort {..})
+            | (Const {..}, Const {..}) => self == other,
+            (App { fun:f1, arg:a1, ..}, App { fun:f2, arg:a2, .. }) => {
+                f1.eq_mod_locals(f2, ctx)
+                &&
+                a1.eq_mod_locals(a2, ctx)
+            },
+            | (Pi { b_type:t1, body:b1, .. }, Pi { b_type:t2, body:b2, .. }) 
+            | (Lambda { b_type:t1, body:b1, .. }, Lambda { b_type:t2, body:b2, .. }) => {
+                t1.eq_mod_locals(t2, ctx)
+                && b1.eq_mod_locals(b2, ctx)
             }
-        }
-
-        assert!(v.len() == 0);
-        return None
-    }
-
-
-    pub fn eq_mod_serial(&self, other : &Expr) -> bool {
-        match (self.as_ref(), other.as_ref()) {
-            (Local { binder : b1, .. }, Local { binder : b2, .. }) => b1 == b2,
+            (Let { b_type:t1, val:v1, body:b1, .. }, 
+             Let { b_type:t2, val:v2, body:b2, .. }) => {
+                t1.eq_mod_locals(t2, ctx)
+                && v1.eq_mod_locals(v2, ctx)
+                && b1.eq_mod_locals(b2, ctx)
+            }
+            (Local { b_type:t1, .. }, Local { b_type:t2, .. }) => {
+                t1.eq_mod_locals(t2, ctx)
+            },
             _ => false
         }
     }
 
-
-
-// from cpp
-    pub fn get_sort_level(&self) -> NanodaResult<&Level> {
-        match self.as_ref() {
-            Sort { level, .. } => Ok(level),
-            _ => Err(NotSortErr(file!(), line!())),
+    pub fn var_bound(self, ctx : &impl IsCtx<'a>) -> u16 {
+        match self.read(ctx) {
+            Var { dbj } => (dbj + 1),
+            | Sort {..} | Const {..} | Local {..} => 0,
+            | App { var_bound, .. }
+            | Pi { var_bound, ..} 
+            | Lambda { var_bound, ..}
+            | Let { var_bound, .. } => var_bound,
         }
     }
 
-    pub fn get_local_type(&self) -> NanodaResult<&Expr> {
-        match self.as_ref() {
-            Local { binder, .. } => Ok(&binder.type_),
-            _ => Err(NotLocalErr(file!(), line!()))
-        }
-    }
-
-
-    pub fn get_digest(&self) -> u64 {
-        self.as_ref().get_cache().digest
-    }
-
-    pub fn has_locals(&self) -> bool {
-        self.as_ref().get_cache().has_locals
-    }
-
-    pub fn has_vars(&self) -> bool {
-        self.as_ref().get_cache().var_bound > 0
-    }
-
-    pub fn var_bound(&self) -> u16 {
-        self.as_ref().get_cache().var_bound
-    }
-
-
-
-    // !! Partial function !!
-    pub fn lc_binding(&self) -> &Binder {
-        match self.as_ref() {
-            Local { binder, .. } => binder,
-            owise => errors::err_lc_binding(line!(), owise)
+    pub fn has_locals(self, ctx : &impl IsCtx<'a>) -> bool {
+        match self.read(ctx) {
+            Var {..} => false,
+            | Sort {..} | Const {..} => false,
+            | App { locals, .. }
+            | Pi { locals, ..} 
+            | Lambda { locals, ..}
+            | Let { locals, .. } => locals,
+            | Local {..} => true
         }
     }
 
 
-
-    /// Only used in the pretty printer.
-    pub fn swap_local_binding_name(&self, new_name : &Name) -> Expr {
-        match self.as_ref() {
-            Local { serial, binder, .. } => {
-                let new_binding = Binder::mk(new_name.clone(), binder.type_.clone(), binder.style);
-                let digest = hash64(&(serial, &binder));
-
-                Local { cache : ExprCache::mk(digest, 0, true),
-                      binder : new_binding,
-                      serial : *serial }.into()  // InnerLevel -> Level
-            },
-            owise => errors::err_swap_local_binding_name(line!(), owise),
-        }
-    }
-
-    /// !! Partial function !!  
-    /// If the expression is a Local, returns its unique identifier/serial number.
-    /// Else kills the program with a fatal error.
-    pub fn get_serial(&self) -> u64 {
-        match self.as_ref() {
-            Local { serial, .. } => *serial,
-            owise => errors::err_get_serial(line!(), owise)
-        }
-    }
-
-    /// This is the primitive joining of applying two expressions with the arrow
-    /// constructor. Given some `e1` and `e2`, constructs `e1 → e2` by turning
-    /// it into `Π (e1), e2` 
-    pub fn mk_arrow(&self, other : &Expr) -> Expr {
-        let binding = Binder::mk(mk_anon(), self.clone(), BinderStyle::Default);
-        mk_pi(binding, other.clone())
-    }
-
-
-    /// The goal here is to traverse an expression, replacing `Local` terms with `Var`
-    /// terms where possible, while caching terms we've already performed 
-    /// substitution on. 
-    /// It's a relatively generic traversal where we cache expressions to that we 
-    /// don't have to fully evaluate subtrees if we already know how they evaluate.
-    /// The 'interesting' case is when we run across a Local `L` in our tree; we look 
-    /// in the collection `lcs` for a term `L'` such that `L' = L`. If there isn't one,
-    /// just return `L`. If there IS one, we note the position/index of `L'` in `lcs`,
-    /// create a variable whose inner index is pos(L'), and return the newly created
-    /// variable.
-    /// `offset` is used to mark the transition from one binder's scope into another;
-    /// you can see that it only increments as we recurse into the body of a binder
-    /// (Lambda, Pi, or Let term).
-    pub fn abstract_<'e, I>(&self, locals : I) -> Expr 
-    where I : Iterator<Item = &'e Expr> + Clone {
-        if !self.has_locals() {
-            return self.clone() 
-        }
-        let mut cache = OffsetCache::new();
-        self.abstract_core(0usize, &mut cache, locals)
-    }
-
-    fn abstract_core<'e, I>(&self, offset : usize, cache : &mut OffsetCache, locals : I) -> Expr 
-    where I : Iterator<Item = &'e Expr> + Clone {
-        if !self.has_locals() {
-            self.clone()
-        } else if let Some(cached) = cache.get(&self, offset) {
-            cached.clone()
-        } else if let Local { serial, .. } = self.as_ref() {
-            locals.clone()
-            .position(|lc| lc.get_serial() == *serial)
-            .map_or_else(|| self.clone(), |position| {
-                mk_var(position + offset)
-            })
-        } else if let Some(cached) = cache.get(&self, offset) {
-            cached.clone()
-        } else {
-            let result = match self.as_ref() {
-                App { fun, arg, .. } => {
-                    let new_fun = fun.abstract_core(offset, cache, locals.clone());
-                    let new_arg = arg.abstract_core(offset, cache, locals);
-                    mk_app(new_fun, new_arg)
-                },
-                Lambda { binder, body, .. } => {
-                    let new_binder_ty = binder.type_.abstract_core(offset, cache, locals.clone());
-                    let new_body = body.abstract_core(offset + 1, cache, locals);
-                    mk_lambda(binder.swap_ty(new_binder_ty), new_body)
-                }
-                Pi { binder, body, .. } => {
-                    let new_binder_ty = binder.type_.abstract_core(offset, cache, locals.clone());
-                    let new_body = body.abstract_core(offset + 1, cache, locals);
-                    mk_pi(binder.swap_ty(new_binder_ty), new_body)
-                },
-                Let { binder, val, body, .. } => {
-                    let new_binder_ty = binder.type_.abstract_core(offset, cache, locals.clone());
-                    let new_val = val.abstract_core(offset, cache, locals.clone());
-                    let new_body = body.abstract_core(offset + 1, cache, locals);
-                    mk_let(binder.swap_ty(new_binder_ty), new_val, new_body)
-                },
-                owise => unreachable!("Illegal match item in Expr::abstract_core {:?}\n", owise)
-            };
-
-            cache.insert(self.clone(), result.clone(), offset);
-            result
-        }
-    }
-
-
-    pub fn instantiate_w_offset<'e, I>(&self, offset : usize, es : I) -> Expr 
-    where I : Iterator<Item = &'e Expr> + Clone {
-        let mut cache = OffsetCache::new();
-        self.instantiate_core(offset, &mut cache, es)
-    }
-
-    fn instantiate_core<'e, I>(&self, offset : usize, cache : &mut OffsetCache, es : I) -> Self 
-    where I : Iterator<Item = &'e Expr> + Clone {
-        if self.var_bound() as usize <= offset {
-            self.clone()
-        } else if let Var { dbj, .. } = self.as_ref() {
-            es.clone()
-              .nth(*dbj as usize - offset)
-              .cloned()
-              .unwrap_or_else(|| self.clone())
-        } else if let Some(cached) = cache.get(self, offset) {
-            cached.clone()
-        } else {
-            let calcd = match self.as_ref() {
-                App { fun, arg, .. } => {
-                    let new_fun = fun.instantiate_core(offset, cache, es.clone());
-                    let new_arg = arg.instantiate_core(offset, cache, es);
-                    mk_app(new_fun, new_arg)
-                },
-                | Lambda { binder, body, .. } => {
-                    let new_binder_ty = binder.type_.instantiate_core(offset, cache, es.clone());
-                    let new_body = body.instantiate_core(offset + 1, cache, es);
-                    mk_lambda(binder.swap_ty(new_binder_ty), new_body)
-                }
-                | Pi { binder, body, .. } => {
-                    let new_binder_ty = binder.type_.instantiate_core(offset, cache, es.clone());
-                    let new_body = body.instantiate_core(offset + 1, cache, es);
-                    mk_pi(binder.swap_ty(new_binder_ty), new_body)
-                },
-                Let { binder, val, body, .. } => {
-                    let new_binder_ty = binder.type_.instantiate_core(offset, cache, es.clone());
-                    let new_val = val.instantiate_core(offset, cache, es.clone());
-                    let new_body = body.instantiate_core(offset + 1, cache, es);
-                    mk_let(binder.swap_ty(new_binder_ty), new_val, new_body)
-                },
-                owise => unreachable!("Illegal match result in Expr::instantiate_core {:?}\n", owise)
-            };
-
-            cache.insert(self.clone(), calcd.clone(), offset);
-            calcd
-        }
-
-    }
-
-    /// This just performs variable substitution by going through
-    /// the `Level` items contained in `Sort` and `Const` expressions.
-    /// For all levels therein, attempts to replace `Level::Param`
-    /// items with something in the `substs` mapping, which maps
-    /// (Level::Param |-> Level)
-    pub fn instantiate_lparams<'l, I>(&self, substs : I) -> Expr 
-    where I : Iterator<Item = (&'l Level, &'l Level)> + Clone {
-        if substs.clone().any(|(l, r)| l != r) {
-            match self.as_ref() {
-                App { fun : lhs, arg : rhs, .. } => {
-                    let new_lhs = lhs.instantiate_lparams(substs.clone());
-                    let new_rhs = rhs.instantiate_lparams(substs);
-                    mk_app(new_lhs, new_rhs)
-                },
-                Lambda { binder, body, .. } => {
-                    let new_binder_ty = binder.type_.instantiate_lparams(substs.clone());
-                    let new_body = body.instantiate_lparams(substs);
-                    mk_lambda(binder.swap_ty(new_binder_ty), new_body)
-
-                }
-                Pi { binder, body, .. } => {
-                    let new_binder_ty = binder.type_.instantiate_lparams(substs.clone());
-                    let new_body = body.instantiate_lparams(substs);
-                    mk_pi(binder.swap_ty(new_binder_ty), new_body)
-                },
-
-                Let { binder, val, body, .. } => {
-                    let new_binder_ty = binder.type_.instantiate_lparams(substs.clone());
-                    let new_val = val.instantiate_lparams(substs.clone());
-                    let new_body = body.instantiate_lparams(substs);
-                    mk_let(binder.swap_ty(new_binder_ty), new_val, new_body)
-                },
-                Local { binder, .. } => {
-                    let new_binder_ty = binder.type_.instantiate_lparams(substs);
-                    binder.swap_ty(new_binder_ty).as_local()
-                },
-                Var {..} => self.clone(),
-                Sort { level : lvl, .. } => {
-                    let instd_level = lvl.instantiate(substs);
-                    mk_sort(instd_level)
-                },
-                Const { name, levels : lvls, .. } => {
-                    let new_levels = lvls.iter()
-                                         .map(|x| (x.instantiate(substs.clone())))
-                                         .collect::<Vec<Level>>();
-                    mk_const(name.clone(), new_levels)
-                }
-            }
-        } else {
-            self.clone()
-        }
-    }
-
-
-    /// Note for non-rust users, IntoIterator is idempotent over Iterators; if
-    /// we pass this something that's already an interator, nothing happens. 
-    /// But if we pass it something that isnt YET an iterator, it will turn 
-    /// it into one for us. Given a list of expressions [X_1, X_2, ... X_n] and 
-    /// some expression F, iteratively apply the `App` constructor to get :
-    ///```pseudo
-    /// App { ... App {App {F, X_1), X_2)...  X_n)
-    /// 
-    ///              App
-    ///            /    \
-    ///          App    X_n...
-    ///         ...
-    ///       /    \
-    ///      App    X_2...
-    ///    /    \
-    ///   F     X_1...
-    ///```
-    pub fn foldl_apps<'q, Q>(&self, apps : Q) -> Expr 
-    where Q : IntoIterator<Item = &'q Expr> {
-        let mut acc = self.clone();
-        for next in apps {
-            acc = mk_app(acc, next.clone())
-        }
-        acc
-    }
-
-    
-
-    /// From an already constructed tree, unfold all consecutive 
-    /// `App` constructors along their spine from right to left.
-    ///```pseudo
-    /// `App` nodes, and the bottom left expression `F`.
-    /// 
-    ///              App      =>   (F, [X_n subtree, X_2 subtree, X_1 subtree])
-    ///            /    \
-    ///          App    X_n...
-    ///         ...      
-    ///       /    \
-    ///      App    X_2...
-    ///    /    \    
-    ///   F     X_1...
-    ///```
-    pub fn unfold_apps(&self) -> (&Expr,  Vec<&Expr>) {
-        let (mut _fn, mut acc) = (self, Vec::with_capacity(40));
-        while let App { fun, arg, .. } = _fn.as_ref() {
-            acc.push(arg);
-            _fn = fun;
-        }
-        (_fn, acc)
-    }
-
-
-
-    // FIXME inefficient
-    pub fn unfold_apps_rev(&self) -> (&Expr, Vec<&Expr>) {
-        let (fun, mut args) = self.unfold_apps();
-        args.reverse();
-        (fun, args)
-    }
-
-
-    pub fn unfold_apps_fn(&self) -> &Expr {
-        let mut it = self;
-        while let App { fun, .. } = it.as_ref() {
-            it = fun;
-        }
-        it
-    }
-
-    /// Given two expressions `E` and `L`, where `L` is known to be a Local :
-    ///```pseudo
-    /// let E = E.abstract(L)
-    /// return (Π (L) (E'))
-    ///```
-    pub fn apply_pi(&self, domain : &Expr) -> Expr {
-        assert!(domain.as_ref().is_local());
-        let abstracted = self.clone().abstract_(Some(domain).into_iter());
-        mk_pi(Binder::from(domain), abstracted)
-    }
-
-
-    /// Given a list of Local expressions [L_1, L_2, ... L_n] and a 
-    /// body `E : Expr`, use your favorite method (fold_right is 
-    /// nice) and the Pi constructor to make :
-    ///
-    ///```pseudo
-    /// (Π L_1, (Π L_2, ... (Π L_n, E)))
-    ///```
-    ///
-    ///```pseudo
-    ///              Π 
-    ///           /    \
-    ///          L_1    Π 
-    ///               /   \
-    ///             L_2   ...
-    ///                    Π 
-    ///                  /  \
-    ///                L_n   E
-    ///```
-    /// same as fold_pis, but generic over iterators.
-    pub fn fold_pis<'q, Q>(&self, doms : Q) -> Expr 
-    where Q : Iterator<Item = &'q Expr> + DoubleEndedIterator {
-        let mut acc = self.clone();
-        for next in doms.rev() {
-            acc = acc.apply_pi(next)
-        }
-    
-        acc
-    }
-
-    /// This unfolds consecutive applications of `Pi` into the "core" term,
-    /// and a list of binders pulled from the Pi applications. This is one of the few
-    /// places where we use an in-place mutation since it's used iteratively and we don't
-    /// want a bunch of vector allocations for no reason.
-    /// An example of its application might look like :
-    ///```pseudo
-    ///  let t = Π α, (Π β, (Π γ, E))
-    ///  let binder_acc = []
-    ///  ...unfold_pis(t)
-    /// assert (t = E) && (binder_acc = [α, β, γ])
-    ///
-    pub fn unfold_pis(&mut self, binder_acc : &mut Vec<Expr>) {
-        while let Pi { binder, body, .. } = self.as_ref() {
-            let local = binder.clone().as_local();
-            let instd = body.instantiate(Some(&local).into_iter());
-            binder_acc.push(local);
-            std::mem::replace(self, instd);
-        }
-    }
-
-    /// Given two expressions `E` and `L`, where `L` is known to be a Local,
-    ///```pseudo
-    ///  let E' = E.abstract(L)
-    ///  return (λ L, E')
-    ///```
-    pub fn apply_lambda(&self, domain : &Expr) -> Expr {
-        assert!(domain.as_ref().is_local());
-        let abstracted = self.clone().abstract_(Some(domain).into_iter());
-        mk_lambda(Binder::from(domain), abstracted)
-    }
-
-    pub fn get_const_name(&self) -> Option<&Name> {
-        match self.as_ref() {
-            Const { name, .. } => Some(name),
-            _ => None
-        }
-    }
-
-    pub fn get_const_levels(&self) -> Option<&Vec<Level>> {
-        match self.as_ref() {
-            Const { levels, .. } => Some(levels),
-            _owise => None
-        }
-    }
-
-    pub fn try_const_fields(&self) -> Option<(&Name, &Vec<Level>)> {
-        match self.as_ref() {
+    pub fn try_const_info(self, ctx : &impl IsLiveCtx<'a>) -> Option<(NamePtr<'a>, LevelsPtr<'a>)> {
+        match self.read(ctx) {
             Const { name, levels, .. } => Some((name, levels)),
             _ => None
         }
     }
 
-    pub fn get_const_levels_inf(&self) -> &Vec<Level> {
-        match self.as_ref() {
-            Const { levels, .. } => levels,
-            _owise => panic!("const_level_inf")
+
+    pub fn telescope_size(self, ctx : &impl IsCtx<'a>) -> u16 {
+        match self.read(ctx) {
+            Pi { body, .. } => 1 + body.telescope_size(ctx),
+            _ => 0
+        }
+    }
+
+    pub fn local_serial_infal(self, ctx : &impl IsLiveCtx<'a>) -> LocalSerial {
+        match self.read(ctx) {
+            Local { serial, .. } => serial,
+            _ => panic!("can't take serial of a non-local expr")
+        }
+    }
+
+    pub fn local_type_infal(self, ctx : &impl IsCtx<'a>) -> Self {
+        match self.read(ctx) {
+            Local { b_type, .. } => b_type,
+            _ => panic!("Can't take local type from non-local!")
+        }
+    }
+
+    pub fn new_var(dbj : u16, ctx : &mut impl IsCtx<'a>) -> Self {
+        Var { dbj }.alloc(ctx)
+    }
+
+    pub fn new_const(
+        name : NamePtr<'a>, 
+        levels : LevelsPtr<'a>, 
+        ctx : &mut impl IsCtx<'a>
+    ) -> Self {
+        Const {
+            name,
+            levels
+        }.alloc(ctx)
+    }
+
+    pub fn new_app(self, arg : Self, ctx : &mut impl IsCtx<'a>) -> Self {
+        App {
+            fun : self,
+            arg,
+            var_bound : self.var_bound(ctx).max(arg.var_bound(ctx)),
+            locals : self.has_locals(ctx) || arg.has_locals(ctx),
+        }.alloc(ctx)
+    }
+
+    pub fn new_pi(
+        b_name : NamePtr<'a>,
+        b_type : Self,
+        b_style : BinderStyle,
+        body : Self,
+        ctx : &mut impl IsCtx<'a>
+    ) -> Self {
+        Pi {
+            b_name,
+            b_type,
+            b_style,
+            body,
+            var_bound : b_type.var_bound(ctx).max(safe_pred(body.var_bound(ctx))),
+            locals : b_type.has_locals(ctx) || body.has_locals(ctx)
+        }.alloc(ctx)
+    }    
+
+    pub fn new_lambda(
+        b_name : NamePtr<'a>,
+        b_type : Self,
+        b_style : BinderStyle,
+        body : Self,
+        ctx : &mut impl IsCtx<'a>
+    ) -> Self {
+        Lambda {
+            b_name,
+            b_type,
+            b_style,
+            body,
+            var_bound : b_type.var_bound(ctx).max(safe_pred(body.var_bound(ctx))),
+            locals : b_type.has_locals(ctx) || body.has_locals(ctx)
+        }.alloc(ctx)
+    }
+    
+    pub fn new_let(
+        b_name : NamePtr<'a>,
+        b_type : Self,
+        b_style : BinderStyle,
+        val : Self,
+        body : Self,
+        ctx : &mut impl IsCtx<'a>
+    ) -> Self {
+          Let {
+              b_name,
+              b_type,
+              b_style,
+              val,
+              body,
+              var_bound : b_type.var_bound(ctx)
+                          .max(val.var_bound(ctx))
+                          .max(safe_pred(body.var_bound(ctx))),
+            locals : b_type.has_locals(ctx) || body.has_locals(ctx) || val.has_locals(ctx)
+        }.alloc(ctx)              
+    }
+    
+    pub fn new_local(
+        b_name : NamePtr<'a>, 
+        b_type : Self,
+        b_style : BinderStyle,
+        ctx : &mut impl IsLiveCtx<'a>
+    ) -> ExprPtr<'a> {
+        Local {
+            b_name,
+            b_type,
+            b_style,
+            serial : ctx.next_local()
+        }.alloc(ctx)
+    }
+
+    pub fn subst(self, ks : LevelsPtr<'a>, vs : LevelsPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> Self {
+        fn subst_aux<'a>(e : ExprPtr<'a>, ks : LevelsPtr<'a>, vs : LevelsPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> ExprPtr<'a> {
+            if let Some(cached) = ctx.expr_cache().subst_cache.get(&(e, ks, vs)) {
+                *cached
+            } else {
+                let r = match e.read(ctx) {
+                    Var {..} => e,
+                    Sort { level } => level.subst(ks, vs, ctx).new_sort(ctx),
+                    Const { name, levels, .. } => {
+                        <ExprPtr>::new_const(name, levels.subst_many(ks, vs, ctx), ctx)
+                    },
+                    App { fun, arg, .. } => {
+                        let fun = subst_aux(fun, ks, vs, ctx);
+                        let arg = subst_aux(arg, ks, vs, ctx);
+                        <ExprPtr>::new_app(fun, arg, ctx)
+                    },
+                    Pi { b_name, b_type, b_style, body, .. } => {
+                        let b_type = subst_aux(b_type, ks, vs, ctx);
+                        let body   = subst_aux(body, ks, vs, ctx);
+                        <ExprPtr>::new_pi(b_name, b_type, b_style, body, ctx)
+                    }
+                    Lambda { b_name, b_type, b_style, body, .. } => {
+                        let b_type = subst_aux(b_type, ks, vs, ctx);
+                        let body   = subst_aux(body, ks, vs, ctx);
+                        <ExprPtr>::new_lambda(b_name, b_type, b_style, body, ctx)
+                    }
+                    Let { b_name, b_type, b_style, val, body, .. } => {
+                        let b_type = subst_aux(b_type, ks, vs, ctx);
+                        let val    = subst_aux(val, ks, vs, ctx);
+                        let body   = subst_aux(body, ks, vs, ctx);
+                        <ExprPtr>::new_let(b_name, b_type, b_style, val, body, ctx)
+                    },
+                    Local { b_name, b_type, b_style, .. } => {
+                        let b_type = subst_aux(b_type, ks, vs, ctx);
+                        <ExprPtr>::new_local(b_name, b_type, b_style, ctx)
+                    }
+                };
+
+                ctx.expr_cache().subst_cache.insert((e, ks, vs), r);
+                r
+            }
+        }
+
+        // There's technically no reason this has to be cleared.
+        // Saves some time.
+        //ctx.expr_cache().subst_cache.clear();
+
+        subst_aux(self, ks, vs, ctx)
+
+    }       
+
+    // Has (hopefully) the intuitive interface of from `f.foldl_apps([a, b, c])`
+    // returning (((f a) b) c)
+    pub fn foldl_apps(self, apps : ExprsPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> Self {
+        match apps.read(ctx) {
+            Nil => self,
+            Cons(hd, tl) => self.new_app(hd, ctx).foldl_apps(tl, ctx)
+        }
+    }
+
+    // Takes just the function (f) from `unfold_apps`. Slightly more efficient than
+    // `unfold_apps().0` since we don't do anything with the list.
+    pub fn unfold_apps_fun(self, ctx : &impl IsLiveCtx<'a>) -> Self {
+        match self.read(ctx) {
+            App { fun, .. } => fun.unfold_apps_fun(ctx),
+            _ => self
         }
     }
 
 
-    pub fn get_const_name_opt(&self) -> Option<&Name> {
-        match self.as_ref() {
-            Const { name, .. } => Some(name),
-            _owise => None
+    // Performs the opposite of foldl_apps; from `(((f a) b) c)`, produces
+    // `(f, [a, b, c])`.
+    pub fn unfold_apps(self, ctx : &mut impl IsLiveCtx<'a>) -> (Self, ExprsPtr<'a>) {
+        fn unfold_apps_aux<'a>(e : ExprPtr<'a>, sink : ExprsPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> (ExprPtr<'a>, ExprsPtr<'a>) {
+            match e.read(ctx) {
+                App { fun, arg, .. } => unfold_apps_aux(fun, Cons(arg, sink).alloc(ctx), ctx),
+                _ => (e, sink)
+            }
+        }
+        unfold_apps_aux(self, Nil::<Expr>.alloc(ctx), ctx)
+    }      
+
+    
+    pub fn calc_height(self, ctx : &mut impl IsLiveCtx<'a>) -> u16 {
+        pub fn calc_height_aux<'a>(e : ExprPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> u16 {
+            if let Some(cached) = ctx.expr_cache().height_cache.get(&e) {
+                *cached
+            } else {
+                let r = match e.read(ctx) {
+                    Const { name, .. } => match ctx.get_declar(&name) {
+                        Some(Definition { hint : Reg(n), .. }) => n,
+                        _ => 0
+                    },
+                    App { fun, arg, .. } => {
+                        calc_height_aux(fun, ctx)
+                        .max(calc_height_aux(arg, ctx))
+                    },
+                    | Pi { b_type, body, .. }
+                    | Lambda { b_type, body, .. } => {
+                        calc_height_aux(b_type, ctx)
+                        .max(calc_height_aux(body, ctx))
+                    },
+                    Let { b_type, val, body, .. } => {
+                        calc_height_aux(b_type, ctx)
+                        .max(calc_height_aux(val, ctx))
+                        .max(calc_height_aux(body, ctx))
+                    },
+                    Var {..} | Sort {..} => 0,
+                    Local {..} => panic!("calc_height should never receive a Local!"),
+                };
+                ctx.expr_cache().height_cache.insert(e, r);
+                r
+            }
+        }
+
+        ctx.expr_cache().height_cache.clear();
+        calc_height_aux(self, ctx) + 1
+    }
+
+
+
+    pub fn abstr1(self, local : ExprPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> Self {
+        let l = Cons(local, Nil::<Expr>.alloc(ctx)).alloc(ctx);
+        self.abstr(l, ctx)
+    }
+
+    pub fn abstr(self, locals : ExprsPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> ExprPtr<'a> {
+        fn abstr_aux<'a>(e : ExprPtr<'a>, locals : ExprsPtr<'a>, offset : u16, ctx : &mut impl IsLiveCtx<'a>) -> ExprPtr<'a> {
+            if !e.has_locals(ctx) {
+                e
+            } else if let Some(cached) = ctx.expr_cache().abstr_cache.get(&(e, offset)) {
+                *cached
+            } else {
+                let calcd = match e.read(ctx) {
+                    Local {..} => locals.pos(e, ctx)
+                                  .map(|pos| <ExprPtr>::new_var(pos as u16 + offset, ctx))
+                                  .unwrap_or(e),
+                    App { fun,  arg, .. } => {
+                        let fun = abstr_aux(fun, locals, offset, ctx);
+                        let arg = abstr_aux(arg, locals, offset, ctx);
+                        <ExprPtr>::new_app(fun, arg, ctx)
+                    },
+                    Pi { b_name, b_type, b_style, body, .. } => {
+                        let b_type = abstr_aux(b_type, locals, offset, ctx);
+                        let body = abstr_aux(body, locals, offset + 1, ctx);
+                        <ExprPtr>::new_pi(b_name, b_type, b_style, body, ctx)
+                    }
+                    Lambda { b_name, b_type, b_style, body, .. } => {
+                        let b_type = abstr_aux(b_type, locals, offset, ctx);
+                        let body = abstr_aux(body, locals, offset + 1, ctx);
+                        <ExprPtr>::new_lambda(b_name, b_type, b_style, body, ctx)
+                    }
+                    Let { b_name, b_type, b_style, val, body, .. } => {
+                        let b_type = abstr_aux(b_type, locals, offset, ctx);
+                        let val = abstr_aux(val, locals, offset, ctx);
+                        let body = abstr_aux(body, locals, offset + 1, ctx);
+                        <ExprPtr>::new_let(b_name, b_type, b_style, val, body, ctx)
+                    }
+                    _ => unreachable!()
+                };
+    
+                ctx.expr_cache().abstr_cache.insert((e, offset), calcd);
+                calcd
+            }
+        }        
+    
+        if !self.has_locals(ctx) {
+            self
+        } else {
+            ctx.expr_cache().abstr_cache.clear();
+            abstr_aux(self, locals, 0u16, ctx)
+        }
+    }        
+    
+    pub fn inst1(self, subst : ExprPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> Self {
+        let l = Cons(subst, Nil::<Expr>.alloc(ctx)).alloc(ctx);
+        self.inst(l, ctx)
+    }
+
+    pub fn inst(self, substs : ExprsPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> Self {
+        fn inst_aux<'a>(e : ExprPtr<'a>, substs : ExprsPtr<'a>, offset : u16, ctx : &mut impl IsLiveCtx<'a>) -> ExprPtr<'a> {
+            if e.var_bound(ctx) <= offset {
+                e
+            } else if let Some(cached) = ctx.expr_cache().inst_cache.get(&(e, offset)) {
+                *cached
+            } else {
+                let calcd = match e.read(ctx) {
+                    Var { dbj } => substs.get((dbj as usize) - (offset as usize), ctx).unwrap_or(e),
+                    App { fun,  arg, .. } => {
+                        let fun = inst_aux(fun, substs, offset, ctx);
+                        let arg = inst_aux(arg, substs, offset, ctx);
+                        fun.new_app(arg, ctx)
+                    },
+                    Pi { b_name, b_type, b_style, body, .. } => {
+                        let b_type = inst_aux(b_type, substs, offset, ctx);
+                        let body = inst_aux(body, substs, offset + 1, ctx);
+                        <ExprPtr>::new_pi(b_name, b_type, b_style, body, ctx)
+                    }
+                    Lambda { b_name, b_type, b_style, body, .. } => {
+                        let b_type = inst_aux(b_type, substs, offset, ctx);
+                        let body = inst_aux(body, substs, offset + 1, ctx);
+                        <ExprPtr>::new_lambda(b_name, b_type, b_style, body, ctx)
+                    }
+                    Let { b_name, b_type, b_style, val, body, .. } => {
+                        let b_type = inst_aux(b_type, substs, offset, ctx);
+                        let val = inst_aux(val, substs, offset, ctx);
+                        let body = inst_aux(body, substs, offset + 1, ctx);
+                        <ExprPtr>::new_let(b_name, b_type, b_style, val, body, ctx)
+                    }
+                    _ => unreachable!()
+                };
+                ctx.expr_cache().inst_cache.insert((e, offset), calcd);
+                calcd
+            }
+        }            
+
+        if self.var_bound(ctx) == 0 {
+            self
+        } else {
+            ctx.expr_cache().inst_cache.clear();
+            inst_aux(self, substs, 0u16, ctx)
+        }
+    }        
+
+    /*
+    The very specific task this does is, given an expression `E` and a list
+    of names `NS`, recursively search through `E` for a `Const { name, levels }`
+    `C`, whose name is ANY of the names in `NS`. If such a `C` exists,
+    return true, else return false.
+
+    This is used in the formation of inductive types, to determine whether 
+    a type is recursive, reflexive, contains only positive occurrences, and
+    has only valid applications.
+    */
+    pub fn has_ind_occ(self, haystack : NamesPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> bool {
+        
+        fn find_aux<'a>(e : ExprPtr<'a>, haystack : NamesPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> bool {
+            if let Some(cached) = ctx.expr_cache().find_cache.get(&e) {
+                *cached
+            } else {
+                let r = match e.read(ctx) {
+                    Var {..} | Sort {..} => false,
+                    Const { name, .. } => haystack.mem(name, ctx),
+                    App { fun, arg, .. } => find_aux(fun, haystack, ctx)
+                                          || find_aux(arg, haystack, ctx),
+                    | Pi { b_type, body, .. }
+                    | Lambda { b_type, body, .. } => find_aux(b_type, haystack, ctx)
+                                                   || find_aux(body, haystack, ctx),
+                    | Let { b_type, val, body, .. } => find_aux(b_type, haystack, ctx)
+                                                    || find_aux(val, haystack, ctx)
+                                                    || find_aux(body, haystack, ctx),
+                    | Local { b_type, .. } => find_aux(b_type, haystack, ctx)
+                };
+                ctx.expr_cache().find_cache.insert(e, r);
+                r
+            }
+        }
+
+        find_aux(self, haystack, ctx)
+    }    
+
+    pub fn apply_pi(self, body : Self, ctx : &mut impl IsLiveCtx<'a>) -> Self {
+        match self.read(ctx) {
+            Local { b_name, b_type, b_style, .. } => {
+                let body = body.abstr1(self, ctx);
+                <ExprPtr>::new_pi(b_name, b_type, b_style, body, ctx)
+            },
+            _ => unreachable!("Cannot apply pi with non-local domain type!")
         }
     }
 
-    /// Given a list of Local expressions [L_1, L_2, ... L_n] and a body `E : Expr`, 
-    /// use your favorite method (here we use a right fold) and the Lambda constructor to make :
-    ///```pseudo
-    /// (λ  L_1, (λ  L_2, ... (λ  L_n, E)))
-    ///
-    ///              λ 
-    ///           /    \
-    ///          L_1     λ 
-    ///                /   \
-    ///              L_2    ... 
-    ///                      λ 
-    ///                    /  \
-    ///                  L_n   E
-    ///```
-    /// same as fold_lambdas, but generic over iterators.
-    pub fn fold_lambdas<'q, Q>(&self, doms : Q) -> Expr 
-    where Q : Iterator<Item = &'q Expr> + DoubleEndedIterator {
-        let mut acc = self.clone();
-        for next in doms.rev() {
-            acc = acc.apply_lambda(next)
+    pub fn apply_lambda(self, body : Self, ctx : &mut impl IsLiveCtx<'a>) -> Self {
+        match self.read(ctx) {
+            Local { b_name, b_type, b_style, .. } => {
+                let body = body.abstr1(self, ctx);
+                <ExprPtr>::new_lambda(b_name, b_type, b_style, body, ctx)
+            },
+            _ => unreachable!("Cannot apply lambda with non-local domain type!")
         }
-        acc
-    }
-
+    }    
 }
 
-impl Hash for InnerExpr {
-    fn hash<H : Hasher>(&self, state : &mut H) {
-        self.get_digest().hash(state);
-    }
-}
+fn fmt_binder<'a>(b_name : NamePtr<'a>, b_type : ExprPtr<'a>, b_style : BinderStyle, ctx : &impl IsCtx<'a>) -> String {
+    let b_name = b_name.nanoda_dbg(ctx);
+    let b_type = b_type.nanoda_dbg(ctx);
+    match b_style {
+        Default => {
+            format!("({} : {})", b_name, b_type)
+        },
+        Implicit => {
+            format!("{{{} : {}}}", b_name, b_type)
 
-#[derive(Clone, PartialEq, Eq, Discrim, Get)]
-pub enum InnerExpr {
-    Var    { cache : ExprCache, dbj : usize },
-    Sort   { cache : ExprCache, level : Level },
-    Const  { cache : ExprCache, name : Name, levels : Vec<Level> },
-    App    { cache : ExprCache, fun : Expr,  arg : Expr },
-    Lambda { cache : ExprCache, binder : Binder, body : Expr } ,
-    Pi     { cache : ExprCache, binder : Binder, body : Expr },
-    Let    { cache : ExprCache, binder : Binder, val : Expr, body : Expr },
-    Local  { cache : ExprCache, binder : Binder, serial : u64 },
-}
+        },
+        StrictImplicit => {
+            format!("{{{{{} : {}}}}}", b_name, b_type)
 
-impl InnerExpr {
-    pub fn get_digest(&self) -> u64 {
-        self.get_cache().digest
-    }
-}
+        },
+        InstImplicit => {
+            format!("[{} : {}]", b_name, b_type)
 
-/// Caches an expression's hash digest, number of bound variables, and whether
-/// or not it contains locals. The important part of this is it's calculated
-/// as an expression tree is constructed, where each node's cache captures
-/// the information for itself and for its entire subtree, since IE the hash digest
-/// is the digest of its component nodes, which are in turn the comopsition of THEIR
-/// component nodes, etc. This is extremely important for performance reasons
-/// since we want to do things like use hash tables as caches. If we implemented things
-/// naively, we would be rehashing the entire tree every time we wanted to look a term
-/// up in a cache, and expression trees can get very, very large. Instead we tell
-/// all hash-keyed data structures to (more or less) pull the cache.digest value off
-/// and use that instead.
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct ExprCache {
-    digest : u64,
-    var_bound : u16,
-    has_locals : bool,
-}
-
-impl std::fmt::Debug for ExprCache {
-    fn fmt(&self, f : &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "")
-    }
-}
-
-
-impl ExprCache {
-    pub fn mk(digest : u64, var_bound : u16, has_locals : bool) -> Self {
-        ExprCache {
-            digest,
-            var_bound,
-            has_locals,
         }
     }
-
 }
 
-
-impl std::convert::AsRef<InnerExpr> for Expr {
-    fn as_ref(&self) -> &InnerExpr {
+impl<'a> HasNanodaDbg<'a> for Expr<'a> {
+    fn nanoda_dbg(self, ctx : &impl IsCtx<'a>) -> String {
         match self {
-            Expr(arc) => arc.as_ref()
-        }
-    }
-}
-
-impl From<InnerExpr> for Expr {
-    fn from(x : InnerExpr) -> Expr {
-        Expr(Arc::new(x))
-    }
-}
-
-
-// !! Partial function !!
-impl From<&Expr> for Binder {
-    fn from(e : &Expr) -> Binder {
-        match e.as_ref() {
-            Local { binder, .. } => binder.clone(),
-            owise => errors::err_binding_lc(line!(), owise),
-        }
-    }
-}
-
-
-/// Mapping of ((Expr × int) |-> Expr) that says "(expression A at offset B) 
-/// maps to (expression C)". There are multiple ways to do this, 
-/// but this way of doing itturned out to be (much to my surprise, 
-/// shout-outs to @GEbner) faster than (Expr x Int) -> Expr, probably 
-/// due in large part because of how tuples work in Rust. 
-
-pub struct OffsetCache(Vec<HashMap<Expr, Expr>>);
-
-impl OffsetCache {
-    pub fn new() -> Self {
-        OffsetCache(Vec::with_capacity(200))
-    }
-
-
-    pub fn get(&self, e : &Expr, offset : usize) -> Option<&Expr> {
-        match self {
-            OffsetCache(inner) => inner.get(offset)?.get(e)
-        }
-    }
-
-    pub fn insert(&mut self, e1 : Expr, e2 : Expr, offset : usize) {
-        let map_vec = match self {
-            OffsetCache(x) => x
-        };
-
-        while map_vec.len() <= offset {
-            map_vec.push(HashMap::with_capacity(50));
-        }
-
-        match map_vec.get_mut(offset) {
-            Some(v) => v.insert(e1, e2),
-            None => errors::err_offset_cache(line!(), offset, map_vec.len()),
-        };
-    }
-
-}
-
-/// For some expression `E`, traverse `E`, putting the `Name` field 
-/// of any constant into a set `S`. This is only used once, when compiling 
-/// a `Definition`; we get all of the names out of an expression's constant terms,
-/// and use them to look up the height of those definitions in the environment. 
-/// There's more information about definition height under tc::def_height().
-pub fn unique_const_names<'l, 's>(n : &'l Expr) -> HashSet<&'l Name> {
-    let mut acc = HashSet::with_capacity(80);
-    let mut cache = HashSet::with_capacity(200);
-    unique_const_names_core(n, &mut acc, &mut cache);
-    acc
-}
-
-pub fn unique_const_names_core<'l, 's>(n : &'l Expr, 
-                                       s : &'s mut HashSet<&'l Name>, 
-                                       cache : &'s mut HashSet<&'l Expr>) {
-    if cache.contains(n) {
-        return
-    } else {
-        match n.as_ref() {
+            Var { dbj } => format!("Var{}", dbj),
+            Sort { level } => format!("Sort {}", level.nanoda_dbg(ctx)),
+            Const { name, levels } => {
+                let name = name.nanoda_dbg(ctx);
+                let levels = levels.nanoda_dbg(ctx);
+                format!("Const ({}, {})", name, levels)
+            }
             App { fun, arg, .. } => {
-                unique_const_names_core(fun, s, cache);
-                unique_const_names_core(arg, s, cache);
+                let fun = fun.nanoda_dbg(ctx);
+                let arg = arg.nanoda_dbg(ctx);
+                format!("App ({}, {})", fun, arg)
             },
-            | Lambda { binder, body, .. }
-            | Pi { binder, body, .. } => {
-                unique_const_names_core(&binder.type_, s, cache);
-                unique_const_names_core(&body, s, cache);
+            Pi { b_name, b_type, b_style, body, .. } => {
+                let binder = fmt_binder(b_name, b_type, b_style, ctx);
+                let body = body.nanoda_dbg(ctx);
+                format!("Π {}, ({})", binder, body)
+            }
+            Lambda { b_name, b_type, b_style, body, .. } => {
+                let binder = fmt_binder(b_name, b_type, b_style, ctx);
+                let body = body.nanoda_dbg(ctx);
+                format!("λ {}, ({})", binder, body)
+            }
+            Let { b_name, b_type, b_style, val, body, .. } => {
+                let binder = fmt_binder(b_name, b_type, b_style, ctx);
+                let body = body.nanoda_dbg(ctx);
+                let val = val.nanoda_dbg(ctx);
+                format!("Let {} := {} in {}", binder, val, body)
+            },
+            Local { b_name, b_type, b_style, serial, .. } => {
+                let binder = fmt_binder(b_name, b_type, b_style, ctx);
+                let serial = match serial {
+                    LocalSerial(n) => n
+                };
 
-            },
-            Let { binder, val, body, .. } => {
-                unique_const_names_core(&binder.type_, s, cache);
-                unique_const_names_core(&val, s, cache);
-                unique_const_names_core(&body, s, cache);
-            },
-            Const { name, .. } => {
-                s.insert(name);
-            },
-            _ => (),
-        };
-        cache.insert(n);
-    }
-}
-
-/// Given some expression `E` and a set of levels `S_X`, collect all 
-/// Level::Param elements in `E` into a set `S_E`, and determine whether 
-/// or not `S_E` is a subset of `S_X`. This only gets used once, in 
-/// the process of checking the type field of a `Declaration`, in order 
-/// to ensure that all of the universe parameters being used in some
-/// declaration's type are properly declared in it's separate 
-/// `univ_params` field.
-pub fn univ_params_subset<'l, 's>(e : &'l Expr, other : &'s HashSet<&'l Level>) -> bool {
-    let mut const_names_in_e = HashSet::with_capacity(40);
-    univ_params_subset_core(e, &mut const_names_in_e);
-
-    const_names_in_e.is_subset(&other)
-}
-
-fn univ_params_subset_core<'l, 's>(e : &'l Expr, s : &'s mut HashSet<&'l Level>) {
-    match e.as_ref() {
-        App { fun, arg, .. } => {
-            univ_params_subset_core(fun, s);
-            univ_params_subset_core(arg, s);
-        },
-        | Lambda { binder, body, .. }
-        | Pi { binder, body, .. } => {
-            univ_params_subset_core(&binder.type_, s);
-            univ_params_subset_core(body, s);
-        },
-        Let { binder, val, body, .. } => {
-            univ_params_subset_core(&binder.type_, s);
-            univ_params_subset_core(val, s);
-            univ_params_subset_core(body, s);
-        },
-        Sort { level, .. } => { s.extend(unique_univ_params(level)); },
-        Const { levels, .. } => for l in levels {
-            s.extend(unique_univ_params(l));
-        },
-        _ => ()
-    }
-}
-
-
-
-impl std::fmt::Debug for InnerExpr {
-    fn fmt(&self, f : &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Var { dbj : idx, .. } => {
-                write!(f, "Var{}", idx)
-            },
-            Sort { level, .. } => {
-                write!(f, "Sort {:?}", level)
-            },
-            Const { name, levels, .. } => {
-                write!(f, "Const ({:?}, {:?})", name, levels)
-            },
-            App { fun, arg, .. } => {
-                write!(f, "App ({:?}, {:?})", fun, arg)
-            },
-            Lambda { binder, body, .. } => {
-                write!(f, "λ {:?}, ({:?})", binder, body)
-            },
-            Pi { binder, body, .. } => {
-                write!(f, "Π {:?}, ({:?})", binder, body)
-            },
-            Let { binder, val, body, .. } => {
-                write!(f, "let {:?} := {:?} in {:?}", binder, val, body)
-            },
-            Local { binder, .. } => {
-                //lt truncated = serial.to_string().chars().take(6).collect::<String>();
-                write!(f, "(serial of : {:?}", binder)
+                format!("ser({}) of {}", serial, binder)
             }
         }
     }
 }
 
-impl std::fmt::Debug for Binder {
-    fn fmt(&self, f : &mut std::fmt::Formatter) -> std::fmt::Result {
-        let s = match self.style {
-            BinderStyle::Default => format!("({} : {:?})", self.pp_name, self.type_),
-            BinderStyle::Implicit => format!("{{{} : {:?}}}", self.pp_name, self.type_),
-            BinderStyle::InstImplicit => format!("[{} : {:?}]", self.pp_name, self.type_),
-            BinderStyle::StrictImplicit => format!("{{{{{} : {:?}}}}}", self.pp_name, self.type_),
-        };
-        write!(f, "{}", s)
+impl<'a> ExprsPtr<'a> {
+    // `self` is the list of domains/binders. Applies such that arguments
+    // ([A, B, C], E) would make (Pi A : _, (Pi B : _, (Pi C : _, E)))
+    pub fn fold_pis(self, body : ExprPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> ExprPtr<'a> {
+        match self.read(ctx) {
+            Cons(hd, tl) => {
+                let inner = tl.fold_pis(body, ctx);
+                hd.apply_pi(inner, ctx)
+            },
+            Nil => body
+        }
     }
+
+    pub fn fold_lambdas(self, body : ExprPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> ExprPtr<'a> {
+        match self.read(ctx) {
+            Cons(hd, tl) => {
+                let inner = tl.fold_lambdas(body, ctx);
+                hd.apply_lambda(inner, ctx)
+            },
+            Nil => body
+        }
+    }
+
 }
-
-
-
-

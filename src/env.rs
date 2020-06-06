@@ -1,619 +1,689 @@
-use std::cmp::{ Ordering, Ordering::* };
+use crate::name::{ NamePtr, NamesPtr, StringPtr };
+use crate::level::LevelsPtr;
+use crate::expr::ExprPtr;
+use crate::tc::infer::InferFlag::*;
+use crate::quot::add_quot;
+use crate::inductive::IndBlock;
+use crate::utils::{ 
+    Tc, 
+    Ptr, 
+    Env, 
+    Live, 
+    IsCtx, 
+    IsLiveCtx, 
+    LiveZst, 
+    ListPtr, 
+    List::*, 
+    Store, 
+    HasNanodaDbg 
+};
 
-use std::sync::Arc;
-use hashbrown::HashMap;
-use parking_lot::RwLock;
-
-use crate::name::Name;
-use crate::level::Level;
-use crate::expr::{ Expr, unique_const_names };
-use crate::recursor::RecursorVal;
-use crate::inductive::newinductive::InductiveDeclar;
-use crate::inductive::addinductive::AddInductiveFn;
-use crate::tc::TypeChecker;
-use crate::utils::ShortCircuit::*;
-use crate::errors::{ NanodaResult, NanodaErr::* };
-use enum_tools::Get;
-
-use ConstantInfo::*;
-use ReducibilityHint::*;
 use Notation::*;
+use ReducibilityHint::*;
+use Declar::*;
+use DeclarSpec::*;
 
-pub type ArcEnv = Arc<RwLock<Env>>;
+pub type RecRulePtr<'a> = Ptr<'a, RecRule<'a>>;
+pub type RecRulesPtr<'a> = ListPtr<'a, RecRule<'a>>;
 
-// At some point in the future when mutuals and whatnot get added
-// Declaration will have to be a separately tracked thing again.
-#[derive(Clone)]
-pub struct Env {
-    pub constant_infos : HashMap<Name, ConstantInfo>,
-    pub notations : HashMap<Name, Notation>,
-    pub quot_is_init : bool,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Notation<'a> {
+    Prefix  { name : NamePtr<'a>, priority : usize, oper : StringPtr<'a> },
+    Infix   { name : NamePtr<'a>, priority : usize, oper : StringPtr<'a> },
+    Postfix { name : NamePtr<'a>, priority : usize, oper : StringPtr<'a> },
 }
 
-impl std::cmp::PartialEq for Env {
-    fn eq(&self, _other : &Env) -> bool { true }
-}
+impl<'a> Notation<'a> {
+    pub fn new_prefix(name : NamePtr<'a>, priority : usize, oper : StringPtr<'a>) -> Self {
+        Prefix { name, priority, oper }
+    }
 
-impl std::cmp::Eq for Env {}
+    pub fn new_infix(name : NamePtr<'a>, priority : usize, oper : StringPtr<'a>) -> Self {
+        Infix { name, priority, oper }
+    }
 
-impl std::fmt::Debug for Env {
-    fn fmt(&self, f : &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "ENV")
+    pub fn new_postfix(name : NamePtr<'a>, priority : usize, oper : StringPtr<'a>) -> Self {
+        Postfix { name, priority, oper }
     }
 }
 
-// Most of the `get_` methods on this have to clone and return 
-// by value since they're behind an RwLock.
-impl Env {
-    pub fn new_arc_env(num_mods : Option<usize>) -> ArcEnv {
-        Arc::new(RwLock::new(Env::new(num_mods.unwrap_or(10_000))))
-    }
+#[derive(Debug)]
+pub enum DeclarSpec<'a> {
+    AxiomSpec {
+        name : NamePtr<'a>,
+        type_ : ExprPtr<'a>,
+        uparams : LevelsPtr<'a>,
+        is_unsafe : bool,
+    },
+    DefinitionSpec {
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        val : ExprPtr<'a>,
+        is_unsafe : bool,
+    },
+    TheoremSpec {
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        val : ExprPtr<'a>,
+    },
+    OpaqueSpec {
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        val : ExprPtr<'a>,
+    },
+    QuotSpec,
+    InductiveSpec(IndBlock<'a>),
+}
 
-    fn new(num_mods : usize) -> Self {
-        Env {
-            constant_infos : HashMap::with_capacity(num_mods),
-            notations : HashMap::with_capacity(500),
-            quot_is_init : false,
+
+impl<'l, 'e : 'l> DeclarSpec<'e> {
+    pub fn new_axiom(name : NamePtr<'e>,
+                     uparams : LevelsPtr<'e>,
+                     type_ : ExprPtr<'e>,
+                     is_unsafe : bool) -> Self {
+        assert!(name.in_env() && uparams.in_env() && type_.in_env()); 
+        AxiomSpec {
+            name,
+            uparams,
+            type_,
+            is_unsafe,
         }
     }
 
-    pub fn num_items(&self) -> usize {
-        self.constant_infos.len()
-    }
+    pub fn new_def(name : NamePtr<'e>,
+                   uparams : LevelsPtr<'e>,
+                   type_ : ExprPtr<'e>,
+                   val : ExprPtr<'e>,
+                   is_unsafe : bool) -> Self {
+        assert!(name.in_env() && uparams.in_env() && type_.in_env() && val.in_env()); 
+        DefinitionSpec {
+            name,
+            uparams,
+            type_,
+            val,
+            is_unsafe,
+        }
+    }    
 
+    pub fn new_quot() -> Self {
+        QuotSpec
+    }    
 
-    pub fn add_constant_info(&mut self, c : ConstantInfo) {
-        self.constant_infos.insert(c.get_constant_base().name.clone(), c);
-    }
+    pub fn new_inductive(indblock : IndBlock<'e>) -> Self {
+        InductiveSpec(indblock)
+    }        
 
-    pub fn get_constant_info(&self, n : &Name) -> Option<ConstantInfo> {
-        self.constant_infos.get(n).cloned()
-    }
-
-
-    pub fn get_first_constructor_name(&self, n : &Name) -> Option<Name> {
-        match self.get_constant_info(n) {
-            Some(InductiveInfo(InductiveVal { cnstrs, .. })) => cnstrs.get(0).cloned(),
-            _ => None,
+    pub fn compile(self, compiler : &mut Live<'l, 'e>) {
+        match self {
+            AxiomSpec { name, uparams, type_, is_unsafe } => {
+                let d = Axiom {
+                    name,
+                    uparams,
+                    type_,
+                    is_unsafe,
+                };
+                compiler.admit_declar(d);
+            },
+            DefinitionSpec { name, uparams, type_, val, is_unsafe } => {
+                let d = Definition {
+                    name,
+                    uparams,
+                    type_,
+                    val,
+                    hint : Reg(val.calc_height(compiler)),
+                    is_unsafe,
+                };
+                compiler.admit_declar(d);
+            }
+            TheoremSpec {..} => {
+                unimplemented!("Theorem not yet implemented")
+            }
+            OpaqueSpec {..} => {
+                unimplemented!("Opaque not yet implemented")
+            },
+            QuotSpec => add_quot(compiler),
+            // Right now, the compilation step for inductive also includes
+            // all of their checks. Breaking them out would require making 
+            // annoying changes to the inductive module, and as things are now
+            // (it might change with mutuals) they're extremely cheap to check
+            // compared to definitions, so I'm just going to let it rock.
+            InductiveSpec(mut indblock) => {
+                indblock.declare_ind_types(compiler);
+                indblock.declare_cnstrs(compiler);
+                indblock.mk_elim_level(compiler);
+                indblock.init_k_target(compiler);
+                indblock.mk_local_indices(compiler);
+                indblock.mk_majors_wrapper(compiler);
+                indblock.mk_motives_wrapper(compiler);
+                indblock.mk_minors_wrapper(compiler);
+                indblock.declare_rec_rules(compiler);
+                indblock.declare_recursors(compiler);                
+            }
         }
     }
 
-    pub fn add_notation(&mut self, n : &Name, notation: Notation) {
-        match self.notations.get(n) {
-            Some(_) => (),
-            None => { self.notations.insert(n.clone(), notation); }
+
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RecRule<'a> {
+    pub cnstr_name : NamePtr<'a>,
+    pub num_fields : u16,
+    pub val : ExprPtr<'a>
+}
+
+
+impl<'a> RecRule<'a> {
+    pub fn new(cnstr_name : NamePtr<'a>, num_fields : u16, val : ExprPtr<'a>) -> Self {
+        RecRule {
+            cnstr_name,
+            num_fields,
+            val
         }
     }
 
-    pub fn get_recursor_val(&self, n : &Name) -> Option<RecursorVal> {
-        match self.constant_infos.get(n)? {
-            ConstantInfo::RecursorInfo(rec_val) => Some(rec_val.clone()),
+    pub fn insert_env<'e>(
+        self, 
+        env : &mut Env<'e>, 
+        live : &Store<LiveZst>
+    ) -> RecRulePtr<'e> {
+        RecRule {
+            cnstr_name : self.cnstr_name.insert_env(env, live),
+            num_fields : self.num_fields,
+            val : self.val.insert_env(env, live)
+        }.alloc(env)
+    }
+}
+
+fn get_rec_rule_aux<'a>(
+    rem_rules : ListPtr<'a, RecRule<'a>>,
+    c_name : NamePtr<'a>,
+    ctx : &impl IsLiveCtx<'a>
+) -> Option<RecRulePtr<'a>> {
+    match rem_rules.read(ctx) {
+        Cons(hd, _) if hd.read(ctx).cnstr_name == c_name => Some(hd),
+        Cons(_, tl) => get_rec_rule_aux(tl, c_name, ctx),
+        Nil => None
+    }
+}
+
+impl<'a> HasNanodaDbg<'a> for RecRule<'a> {
+    fn nanoda_dbg(self, ctx : &impl IsCtx<'a>) -> String {
+        format!("RecRule( cnstr_name : {}, num_fields : {}, val : {})", 
+        self.cnstr_name.nanoda_dbg(ctx), 
+        self.num_fields,
+        self.val.nanoda_dbg(ctx))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Declar<'a> {
+    Axiom {
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        is_unsafe : bool,
+    },
+    Definition {
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        val : ExprPtr<'a>,
+        hint : ReducibilityHint,
+        is_unsafe : bool,
+    },
+    Theorem {
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        val : ExprPtr<'a>,
+    },
+    Opaque {
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        val : ExprPtr<'a>,
+    },
+    Quot {
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+    },
+    Inductive {
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        num_params : u16,
+        all_ind_names : NamesPtr<'a>,
+        all_cnstr_names : NamesPtr<'a>,
+        //pub is_rec : bool,
+        //pub is_reflexive : bool,
+        is_unsafe : bool,
+    },
+    Constructor {
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        parent_name : NamePtr<'a>,
+        num_fields : u16,
+        minor_idx : u16,
+        num_params : u16,
+        is_unsafe : bool,        
+    },
+    Recursor {
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        all_names : NamesPtr<'a>,
+        num_params : u16,
+        num_indices : u16,
+        num_motives : u16,
+        num_minors : u16,
+        major_idx : u16,
+        rec_rules : ListPtr<'a, RecRule<'a>>,
+        is_k : bool,
+        is_unsafe : bool,
+    }
+}
+
+
+
+
+impl<'a> Declar<'a> {
+    pub fn get_hint(self) -> ReducibilityHint {
+        match self {
+            Definition { hint, .. } => hint,
+            owise => unreachable!("Only Definition declars have a reducibility hint! found {:#?}", owise)
+        }
+    }
+
+    pub fn rec_num_params(&self) -> Option<u16> {
+        match self {
+            Recursor { num_params, .. } => Some(*num_params),
             _ => None
         }
     }
 
-    pub fn ensure_not_dupe_name(&self, n : &Name) {
-        if self.constant_infos.contains_key(n) {
-            panic!("constant_base name {} was already declared!\n", n);
-        }
-    }
-}
-
-pub fn ensure_no_dupe_lparams(v : &Vec<Level>) -> NanodaResult<()> {
-    for (idx, elem) in v.iter().enumerate() {
-        let slice = &v[idx+1..];
-        if slice.contains(elem) {
-            return Err(DupeLparamErr(file!(), line!(), idx))
-        }
-    }
-    Ok(())
-}
-
-
-
-// declaration.h ~69; This is just stored in OTHER val items.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ConstantBase {
-    pub name : Name,
-    pub lparams : Vec<Level>,
-    pub type_ : Expr
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct AxiomVal {
-    pub constant_base : ConstantBase,
-    pub is_unsafe : bool
-}
-
-impl AxiomVal {
-    pub fn new(name : Name, lparams : Vec<Level>, type_ : Expr, is_unsafe : Option<bool>) -> Self {
-        let constant_base = ConstantBase::new(name, lparams, type_);
-        AxiomVal {
-            constant_base,
-            is_unsafe : is_unsafe.unwrap_or(false)
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DefinitionVal {
-    pub constant_base : ConstantBase,
-    pub value : Expr,
-    pub hint : ReducibilityHint,
-    pub is_unsafe : bool
-}
-
-impl DefinitionVal {
-    pub fn new(env : ArcEnv, name : Name, lvls : Vec<Level>, ty : Expr, value : Expr) -> Self {
-        let height_usize = match unique_const_names(&value)
-                           .iter()
-                           .filter_map(|name| env.read().get_hint(name))
-                           .filter_map(|hint| hint.as_usize())
-                           .max() {
-                               Some(h) => h + 1,
-                               _ => 1
-                           };
-
-        let hint = Regular(height_usize);
-        let constant_base = ConstantBase::new(name, lvls, ty);
-        DefinitionVal {
-            constant_base,
-            value,
-            hint,
-            is_unsafe : false
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TheoremVal {
-    pub constant_base : ConstantBase,
-    pub value : Expr
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct OpaqueVal {
-    pub constant_base : ConstantBase,
-    pub value : Expr
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct QuotVal {
-    pub constant_base : ConstantBase,
-}
-
-impl QuotVal {
-    pub fn from_const_val(c : ConstantBase) -> Self {
-        QuotVal {
-            constant_base : c,
+    pub fn rec_num_motives(&self) -> Option<u16> {
+        match self {
+            Recursor { num_motives, .. } => Some(*num_motives),
+            _ => None
         }
     }
 
-}
+    pub fn rec_num_minors(&self) -> Option<u16> {
+        match self {
+            Recursor { num_minors, .. } => Some(*num_minors),
+            _ => None
+        }
+    }
 
+    pub fn rec_major_idx(&self) -> Option<u16> {
+        match self {
+            Recursor { major_idx, .. } => Some(*major_idx),
+            _ => None
+        }
+    }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct InductiveVal {
-    constant_base : ConstantBase,
-    pub nparams : usize,
-    pub nindices : usize,
-    pub all : Vec<Name>,
-    pub cnstrs : Vec<Name>,
-    pub is_rec : bool,
-    pub is_unsafe : bool,
-    pub is_reflexive : bool
-}
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ConstructorVal {
-    constant_base : ConstantBase,
-    pub induct : Name,
-    pub cidx : usize,
-    pub nparams : usize,
-    pub nfields : usize,
-    pub is_unsafe : bool,
-}
+    pub fn rec_is_k(&self) -> Option<bool> {
+        match self {
+            Recursor { is_k, .. } => Some(*is_k),
+            _ => None
+        }
+    }
 
-impl ConstructorVal {
-    // declaration.cpp ~78
-    // extends constant_base
-    pub fn new(name : Name,
-               lparams : Vec<Level>,
-               type_ : Expr,
-               induct : Name,  
-               cidx : usize, 
-               nparams : usize, 
-               nfields : usize, 
-               is_unsafe : bool) -> Self {
-        let constant_base = ConstantBase::new(name.clone(), lparams.clone(), type_.clone());
+    pub fn get_rec_rule(
+        self, 
+        major : ExprPtr<'a>, 
+        ctx : &impl IsLiveCtx<'a>
+    ) -> Option<RecRulePtr<'a>> {
+        match self {
+            Recursor { rec_rules, .. } => {
+                let (c_name, _) = major.unfold_apps_fun(ctx).try_const_info(ctx)?;
+                get_rec_rule_aux(rec_rules, c_name, ctx)
+            },
+            _ => None
+        }
+    }    
 
-        ConstructorVal {
-            constant_base,
-            induct,
-            cidx,
-            nparams,
-            nfields,
+    pub fn new_axiom(
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        is_unsafe : bool
+    ) -> Self {
+        Axiom {
+            name,
+            uparams,
+            type_,
             is_unsafe
         }
     }
 
-}
-
-
-
-// CPP declaration.h ~424
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ConstantInfo {
-    AxiomInfo(AxiomVal),
-    DefinitionInfo(DefinitionVal),
-    TheoremInfo(TheoremVal),
-    OpaqueInfo(OpaqueVal),
-    QuotInfo(QuotVal),
-    InductiveInfo(InductiveVal),
-    ConstructorInfo(ConstructorVal),
-    RecursorInfo(RecursorVal),
-}
-
-
-
-impl ConstantInfo {
-
-    pub fn get_hint(&self) -> ReducibilityHint {
+    pub fn new_definition(
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        val : ExprPtr<'a>,
+        is_unsafe : bool,
+        live : &mut Live<'a, '_>
+    ) -> Self {
+        Definition {
+            name,
+            uparams,
+            type_,
+            val,
+            hint : Reg(val.calc_height(live)),
+            is_unsafe
+        }        
+    }    
+    pub fn name(&self) -> NamePtr<'a> {
         match self {
-            DefinitionInfo(DefinitionVal { hint, .. }) => *hint,
-            _ => unreachable!("Should never call 'get_hints' on a non-def ")
-        }
-    }
-    // While all 'Const' items have a type, only definitions and theorems 
-    // have a value level Expr item. (IE Pi x, lambda x...)
-    pub fn has_value(&self, _allow_opaque : Option<bool>) -> bool {
-        let allow_opaque = _allow_opaque.unwrap_or(false);
-
-        match self {
-            TheoremInfo(..) | DefinitionInfo(..) => true,
-            OpaqueInfo(..) if allow_opaque => true,
-            _ => false
+            | Axiom       { name, .. }
+            | Definition  { name, .. }
+            | Theorem     { name, .. }
+            | Opaque      { name, .. }
+            | Quot        { name, .. }
+            | Inductive   { name, .. }
+            | Constructor { name, .. }
+            | Recursor    { name, .. } => *name,
         }
     }
 
-    fn get_value_core(&self, maybe_debug_bool_allow_opaque : bool) -> Expr {
-        assert!(self.has_value(Some(maybe_debug_bool_allow_opaque)));
+    pub fn uparams(&self) -> LevelsPtr<'a> {
         match self {
-            TheoremInfo(TheoremVal { value, .. }) => value.clone(),
-            DefinitionInfo(DefinitionVal { value, .. }) => value.clone(),
-            OpaqueInfo(OpaqueVal { .. }) if maybe_debug_bool_allow_opaque => {
-                unreachable!("maybe_debug should always be false");
-                //value.clone()
-            },
-            _ => unreachable!()
+            | Axiom       { uparams, .. }
+            | Definition  { uparams, .. }
+            | Theorem     { uparams, .. }
+            | Opaque      { uparams, .. }
+            | Quot        { uparams, .. }
+            | Inductive   { uparams, .. }
+            | Constructor { uparams, .. }
+            | Recursor    { uparams, .. } => *uparams,
         }
     }
 
-    pub fn get_value(&self) -> Expr {
-        self.get_value_core(false)
-    }
-
-    pub fn get_value_option(&self) -> Option<Expr> {
+    pub fn type_(&self) -> ExprPtr<'a> {
         match self {
-            TheoremInfo(TheoremVal { value, .. }) => Some(value.clone()),
-            DefinitionInfo(DefinitionVal { value, .. }) => Some(value.clone()),
-            OpaqueInfo(OpaqueVal { value, .. }) => Some(value.clone()),
-            _ => None
+            | Axiom       { type_, .. }
+            | Definition  { type_, .. }
+            | Theorem     { type_, .. }
+            | Opaque      { type_, .. }
+            | Quot        { type_, .. }
+            | Inductive   { type_, .. }
+            | Constructor { type_, .. } 
+            | Recursor    { type_, .. } => *type_,
         }
     }
-
-    pub fn get_constant_base(&self) -> &ConstantBase {
-        match self {
-            AxiomInfo(x) => &x.constant_base,
-            DefinitionInfo(x) => &x.constant_base,
-            TheoremInfo(x) => &x.constant_base,
-            OpaqueInfo(x) => &x.constant_base,
-            InductiveInfo(x) => &x.constant_base,
-            ConstructorInfo(x) => &x.constant_base,
-            RecursorInfo(x) => &x.constant_base,
-            QuotInfo(x) => &x.constant_base,
-        }
-    }
-
-    pub fn get_name(&self) -> &Name {
-        &self.get_constant_base().name
-    }
-
-    pub fn get_lparams(&self) -> &Vec<Level> {
-        &self.get_constant_base().lparams
-    }
-
-    pub fn get_type(&self) -> &Expr {
-        &self.get_constant_base().type_
-    }
-
 
     pub fn is_unsafe(&self) -> bool {
         match self {
-            AxiomInfo(x) => x.is_unsafe,
-            DefinitionInfo(x) => x.is_unsafe,
-            TheoremInfo(_) => false,
-            OpaqueInfo(_) => false,
-            QuotInfo(_) => false,
-            InductiveInfo(x) => x.is_unsafe,
-            ConstructorInfo(x) => x.is_unsafe,
-            RecursorInfo(x) => x.is_unsafe,
-
+            Theorem  {..}
+            | Opaque {..}
+            | Quot   {..} => false,
+            | Axiom       { is_unsafe, .. }
+            | Definition  { is_unsafe, .. }
+            | Inductive   { is_unsafe, .. }
+            | Constructor { is_unsafe, .. }
+            | Recursor    { is_unsafe, .. } => *is_unsafe,
         }
     }
-}
 
-impl ConstantBase {
-    pub fn new(name : Name, lparams : Vec<Level>, type_ : Expr) -> Self {
-        ConstantBase {
+    pub fn new_inductive(
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        num_params : u16,
+        all_ind_names : NamesPtr<'a>,
+        all_cnstr_names : NamesPtr<'a>,
+        //is_rec : bool,
+        //is_reflexive : bool,
+        is_unsafe : bool
+    ) -> Self {
+        Inductive {
             name,
-            lparams,
-            type_
+            uparams,
+            type_,
+            num_params,
+            all_ind_names,
+            all_cnstr_names,
+            //is_rec,
+            //is_reflexive,
+            is_unsafe
         }
-    }
-}
+    }    
 
-impl InductiveVal {
-    // name must equal all_used(0)
-    // extends constant_base
-    pub fn new(name : Name,
-               lparams : Vec<Level>,
-               type_ : Expr,
-               nparams : usize,
-               nindices : usize,
-               all : Vec<Name>,
-               cnstrs : Vec<Name>,
-               is_rec : bool,
-               is_unsafe : bool,
-               is_reflexive : bool) -> Self {
-        assert!(&name == &all[0]);
-        let constant_base = ConstantBase::new(name, lparams, type_);
-        InductiveVal {
-            constant_base,
-            nparams,
-            nindices,
-            all,
-            cnstrs,
-            is_rec,
+    pub fn new_cnstr<'e>(
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        parent_name : NamePtr<'a>,
+        minor_idx : u16,
+        num_params : u16,
+        is_unsafe : bool,
+        ctx : &mut Live<'a, 'e>
+    ) -> Self {
+        Constructor {
+            name,
+            uparams,
+            type_,
+            parent_name,
+            num_fields : type_.telescope_size(ctx) - num_params,
+            minor_idx,
+            num_params,
+            is_unsafe
+        }
+    }      
+
+    pub fn new_recursor(
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        all_names : NamesPtr<'a>,
+        num_params : u16,
+        num_indices : u16,
+        num_motives : u16,
+        num_minors : u16,
+        major_idx : u16,
+        rec_rules : RecRulesPtr<'a>,
+        is_k : bool,
+        is_unsafe : bool
+    ) -> Self {
+        Recursor {
+            name,
+            uparams,
+            type_,
+            all_names,
+            num_params,
+            num_indices,
+            num_motives,
+            num_minors,
+            major_idx,
+            rec_rules,
+            is_k,
             is_unsafe,
-            is_reflexive
         }
-    }
-}
+    }       
 
-
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReducibilityHint {
-    Regular(usize),
-    Opaque,
-    Abbreviation,
-}
-
-impl ReducibilityHint {
-    pub fn as_usize(&self) -> Option<usize> {
+    pub fn insert_env<'e>(
+        self, 
+        env : &mut Env<'e>, 
+        live : &Store<'a, LiveZst>
+    ) -> Declar<'e> {
+        let name = self.name().insert_env(env, live);
+        let uparams = self.uparams().insert_env(env, live);
+        let type_ = self.type_().insert_env(env, live);
         match self {
-            Regular(x) => Some(*x),
-            _ => None
-        }
-    }
-   
-   pub fn compare(self, other : ReducibilityHint) -> Ordering {
-        match (self, other) {
-            (Regular(h1), Regular(h2)) if h1 == h2 => Equal,
-            (Regular(h1), Regular(h2)) if h1 > h2 => Greater,
-            (Regular(h1), Regular(h2)) if h1 < h2 => Less,
-            (Opaque, Opaque) | (Abbreviation, Abbreviation) => Equal,
-            (Opaque, _) => Less,
-            (_, Opaque) => Greater,
-            (Abbreviation, _) => Greater,
-            (_, Abbreviation) => Less,
-            _ => unreachable!()
-        }
-    }
-}
-
-impl Env {
-    pub fn init_quot(&mut self) {
-        self.quot_is_init = true;
-    }
-    pub fn get_hint(&self, name : &Name) -> Option<ReducibilityHint> {
-        match self.constant_infos.get(name) {
-            Some(DefinitionInfo(def_val)) => Some(def_val.hint),
-            Some(_) => None,
-            None => None
-        }
-    }
-}
-
-
-// Checking a `ConstantBase` consists of :
-// 1. Making sure it has no duplicate universe parameters
-// 2. Inferring its type with `checked_infer`
-// 3. Ensuring that the inferred type is a Sort (since ConstantBase is itself a type,
-//    its inferred type must therefore be a sort)
-pub fn check_constant_base(c : &ConstantBase, tc : &mut TypeChecker) -> NanodaResult<()> {
-    tc.env.read().ensure_not_dupe_name(&c.name);
-    ensure_no_dupe_lparams(&c.lparams)?;
-    assert!(!c.type_.has_locals());
-    c.type_
-     .checked_infer(c.lparams.clone(), tc)
-     .ensure_sort(tc);
-    Ok(())
-}
-
-pub fn check_constant_base_new_tc(env : ArcEnv, c : &ConstantBase, safe_only : bool) -> NanodaResult<()> {
-    let mut tc = TypeChecker::new(Some(safe_only), env.clone());
-    check_constant_base(c, &mut tc)
-}
-
-pub fn add_axiom(ax : AxiomVal, env : ArcEnv, _check : bool) -> NanodaResult<()> {
-    if _check {
-        check_constant_base_new_tc(env.clone(), &ax.constant_base, ax.is_unsafe)?
-    } 
-
-    Ok(env.write().add_constant_info(AxiomInfo(ax)))
-}
-
-// I'm not yet sure what all the nuances of Lean4's `unsafe` tag are;
-// if you're checking a Lean 3 export file, you won't come across any `unsafe`
-// definitions, so we'll be in the else branch.
-// Checking a safe definition consists of:
-// 1. checking its `constant_base` declaration 
-//       1a. Making sure it's name hasn't already been used 
-//       1b. Making sure it has no duplicate universe parameters
-//       1c. Making sure its declared type is well-formed
-// 2. inferring the type of its value
-// 3. ensuring that the inferred type of its value is definitionally equal
-//    to the type it claims to have.
-pub fn add_definition(def : DefinitionVal, env : ArcEnv, _check : bool) -> NanodaResult<()> {
-    // If it's unsafe, we need to add its `constant_base` to the environment,
-    // then we can check its value level stuff.
-    if def.is_unsafe {
-        if _check {
-            let safe_only = false;
-            let mut tc = TypeChecker::new(Some(safe_only), env.clone());
-            check_constant_base(&def.constant_base, &mut tc)?;
-        }
-
-        env.write().add_constant_info(DefinitionInfo(def.clone()));
-
-        if _check {
-            let safe_only = false;
-            let mut tc = TypeChecker::new(Some(safe_only), env.clone());
-            let val_type = def.value.checked_infer(def.constant_base.lparams.clone(), &mut tc);
-            if (val_type.check_def_eq(&def.constant_base.type_, &mut tc) == NeqShort) {
-                return Err(TcNeqErr(file!(), line!()))
+            Axiom { is_unsafe, .. } => {
+                Axiom { 
+                    name, 
+                    uparams, 
+                    type_, 
+                    is_unsafe 
+                }
+            },
+            Definition { val, hint, is_unsafe, ..  } => {
+                Definition {
+                    name,
+                    uparams,
+                    type_,
+                    val : val.insert_env(env, live),
+                    hint,
+                    is_unsafe,
+                }
+            },
+            Theorem { val, ..  } => {
+                Theorem {
+                    name,
+                    uparams,
+                    type_,
+                    val : val.insert_env(env, live),
+                }
+            },
+            Opaque { val, ..  } => {
+                Opaque {
+                    name,
+                    uparams,
+                    type_,
+                    val : val.insert_env(env, live),
+                }
+            },
+            Quot { .. } => {
+                Quot {
+                    name,
+                    uparams,
+                    type_
+                }
+            },
+            Inductive { num_params, all_ind_names, all_cnstr_names, is_unsafe, .. } => {
+                Inductive {
+                    name,
+                    uparams,
+                    type_,
+                    num_params,
+                    all_ind_names : all_ind_names.insert_env(env, live),
+                    all_cnstr_names : all_cnstr_names.insert_env(env, live),
+                    is_unsafe
+                }
+            },
+            Constructor { parent_name, num_fields, minor_idx, num_params, is_unsafe, .. } => {
+                Constructor {
+                    name,
+                    uparams,
+                    type_,
+                    parent_name : parent_name.insert_env(env, live),
+                    num_fields,
+                    minor_idx,
+                    num_params,
+                    is_unsafe
+                }
+            },
+            Recursor { all_names, num_params, num_indices, num_motives, num_minors, major_idx, rec_rules, is_k, is_unsafe, .. } => {
+                Recursor {
+                    name,
+                    uparams,
+                    type_,
+                    all_names : all_names.insert_env(env, live),
+                    num_params,
+                    num_indices,
+                    num_motives,
+                    num_minors,
+                    major_idx,
+                    rec_rules : rec_rules.insert_env(env, live),
+                    is_k,
+                    is_unsafe
+                }
             }
         }
-        Ok(())
-    } else {
-        if _check {
-            let mut tc = TypeChecker::new(None, env.clone());
-            check_constant_base(&def.constant_base, &mut tc)?;
-            let val_type = def.value.checked_infer(def.constant_base.lparams.clone(), &mut tc);
- 
-            if (val_type.check_def_eq(&def.constant_base.type_, &mut tc) == NeqShort) {
-                return Err(TcNeqErr(file!(), line!()))
-            } 
-        } 
-        Ok(env.write().add_constant_info(DefinitionInfo(def)))
-    }
-}
+    }        
 
-pub fn add_quot(quot : QuotVal, env : ArcEnv) -> NanodaResult<()> {
-    check_constant_base_new_tc(env.clone(), &quot.constant_base, false)?;
+    pub fn check<'l>(self, _should_check : bool, live : &mut Live<'l, 'a>) {
+        match self {
+            Axiom { name, uparams, type_, .. } => {
+                check_vitals(name, uparams, type_, live);
+            },            
+            Definition { name, uparams, type_, val, is_unsafe, .. } if !is_unsafe => {
+                {
+                    let mut tc = live.as_tc(Some(uparams), None);
+                    check_vitals_w_tc(name, uparams, type_, &mut tc);
+                    let val_type = val.infer(Check, &mut tc);
+                    val_type.assert_def_eq(type_, &mut tc);
+                }
+            },
+            //DefSpec { name, uparams, type_, val, is_unsafe } => {
+            Definition {..} => {
+                unimplemented!("unsafe declar");
+                //assert!(is_unsafe);
+                //if should_check {
+                //    // FIXME handle safe_only flag properly
+                //    let mut tc = live.get_tc(Some(uparams));
+                //    check_vitals_w_tc(name, uparams, type_, &mut tc);
+                //}
 
+                //let declar = Declar::new_definition(name, uparams, type_, val, is_unsafe, live);
+                //live.admit_declar(declar);
 
-    Ok(env.write().add_constant_info(QuotInfo(quot)))
-}
-
-
-
-// Exactly the same as the `is_safe` branch of add_definition
-#[allow(dead_code)]
-pub fn add_theorem(thm : TheoremVal, env : ArcEnv, _check : bool) -> NanodaResult<()> {
-    // FIXME there's a `TODO` in the CPP version here.
-    if _check {
-        let safe_only = false;
-        let mut tc = TypeChecker::new(Some(safe_only), env.clone());
-        check_constant_base(&thm.constant_base, &mut tc)?;
-
-        let val_type = thm.value.checked_infer(thm.constant_base.lparams.clone(), &mut tc);
-
-        if (val_type.check_def_eq(&thm.constant_base.type_, &mut tc) == NeqShort) {
-            return Err(TcNeqErr(file!(), line!()))
+                //if should_check {
+                //    let mut tc = live.get_tc(Some(uparams));
+                //    let val_type = val.infer(Check, &mut tc);
+                //    assert!(val_type.def_eq(type_, &mut tc).is_eq_short());
+                //}
+            },        
+            
+            // All of these are done in `compile` right now.
+            // See the comment in that method.
+            Quot {..} => (),
+            Inductive {..} => (),
+            Constructor {..} => (),
+            Recursor {..} => (),
+            Theorem {..} => unimplemented!("Theorem not implemented in lean3!"),
+            Opaque {..} => unimplemented!("Opaque not implemented in lean3!")
         }
-    }
-    Ok(env.write().add_constant_info(TheoremInfo(thm)))
+    }    
 }
 
 
-
-
-// Exactly the same as the `is_safe` branch of add_definition.
-#[allow(dead_code)]
-fn add_opaque(opaque : OpaqueVal, env : ArcEnv, _check : bool) -> NanodaResult<()> {
-    if _check {
-        let safe_only = false;
-        let mut tc = TypeChecker::new(Some(safe_only), env.clone());
-        check_constant_base(&opaque.constant_base, &mut tc)?;
-
-        let val_type = opaque.value.checked_infer(opaque.constant_base.lparams.clone(), &mut tc);
-
-        if (val_type.check_def_eq(&opaque.constant_base.type_, &mut tc) == NeqShort) {
-            return Err(TcNeqErr(file!(), line!()))
-        }
+impl<'a> HasNanodaDbg<'a> for Declar<'a> {
+    fn nanoda_dbg(self, _ctx : &impl IsCtx<'a>) -> String {
+        unimplemented!()
     }
-
-    Ok(env.write().add_constant_info(OpaqueInfo(opaque)))
 }
 
-// because they're mutual, they need a special procedure that's essentially
-// batch application of the `is_unsafe` branch of add_definition :
-// 1. check `constant_base` cores,
-// 2. then add all definitions to env
-// 3. check the types of the definitions' values match their ascribed types.
-#[allow(dead_code)]
-fn add_mutual(defs : Vec<DefinitionVal>, env : ArcEnv, _check : bool) -> NanodaResult<()> {
-    if _check {
-        let safe_only = false;
-        let mut tc = TypeChecker::new(Some(safe_only), env.clone());
-
-        for def in defs.iter() {
-            if (!def.is_unsafe) {
-                panic!("mutual definition was not marked as `meta`; this is verboten.")
-            }
-            check_constant_base(&def.constant_base, &mut tc)?;
-        }
-    }
-
-    for def in defs.iter().cloned() {
-        env.write().add_constant_info(DefinitionInfo(def));
-    }
-
-    if _check {
-        let safe_only = false;
-        let mut tc = TypeChecker::new(Some(safe_only), env.clone());
-        for def in defs.iter() {
-            let val_type = def.value.checked_infer(def.constant_base.lparams.clone(), &mut tc);
-            if (val_type.check_def_eq(&def.constant_base.type_, &mut tc) == NeqShort) {
-                panic!("error when checking val of mutual def {}", &def.constant_base.name);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-// The tracing attribute on this one is over `AddInductiveFn::add_inductive_core`
-pub fn add_inductive(ind : InductiveDeclar, env : ArcEnv, _check : bool) -> NanodaResult<()> {
-    AddInductiveFn::new(ind.name, 
-                        ind.lparams, 
-                        ind.num_params, 
-                        ind.is_unsafe, 
-                        ind.types, 
-                        env).add_inductive_core()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReducibilityHint {
+    Opaq,
+    Reg(u16),
+    Abbrev,
 }
 
 
-#[derive(Clone, PartialEq, Get)]
-pub enum Notation {
-    Prefix  { name : Name, priority : usize, oper : String },
-    Infix   { name : Name, priority : usize, oper : String },
-    Postfix { name : Name, priority : usize, oper : String },
+// We reuse the typechecker for definitions, so the inference
+// will be a cache hit.
+pub fn check_vitals_w_tc<'t, 'l : 't, 'e : 'l>(
+    name : NamePtr<'l>,
+    uparams : LevelsPtr<'l>,
+    type_ : ExprPtr<'l>,
+    tc : &mut Tc<'t, 'l, 'e>
+) {
+    assert!(name.in_env());
+    assert!(uparams.in_env());
+    assert!(type_.in_env());
+    assert!(uparams.no_dupes(tc));
+    assert!(!type_.has_locals(tc));
+    let inferred_type = type_.infer(Check, tc);
+    inferred_type.ensure_sort(tc);
 }
 
-
-impl Notation {
-    pub fn new_prefix(name : Name, priority : usize, oper : String) -> Self {
-        Prefix { name, priority, oper }
-    }
-
-    pub fn new_infix(name : Name, priority : usize, oper : String) -> Self {
-        Infix { name, priority, oper }
-    }
-
-    pub fn new_postfix(name : Name, priority : usize, oper : String) -> Self {
-        Postfix { name, priority, oper }
-    }
-}
+pub fn check_vitals<'t, 'l : 't, 'e : 'l>(
+    name : NamePtr<'l>,
+    uparams : LevelsPtr<'l>,
+    type_ : ExprPtr<'l>,
+    /*safe_only : Option<bool>,*/ 
+    live : &mut Live<'l, 'e>
+) {
+    let mut tc = live.as_tc(Some(uparams), None);
+    check_vitals_w_tc(name, uparams, type_, &mut tc);
+}    

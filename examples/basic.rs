@@ -1,32 +1,45 @@
 
-use std::path::PathBuf;
-use std::fs::read_to_string;
+use nanoda_lib::parser::Parser;
 
-use nanoda_lib::env::Env;
-use nanoda_lib::serial_parser::LineParser;
 
 fn main() {
-    //let export_file_path = PathBuf::from("examples/short_lean_export.out");
-    let export_file_path = PathBuf::from("/home/hkse/vmShared/mathlib_export.out");
-    let export_file_string = match read_to_string(&export_file_path) {
-        Ok(s) => s,
-        Err(e) => {
-            println!("example failed to open the Lean export file \
-                      it was supposed to read. Please check that the file \
-                      nanoda_lib/examples/short_lean_export.out exists, and that \
-                      you run the example from the directory nanoda_lib/. \
-                      error details : {}", e);
-            std::process::exit(-1)
+    use std::time::Instant;
+    use std::io::BufReader;
+    use std::path::PathBuf;
+
+    let mut args = std::env::args();
+    let _ = args.next();
+    let num_threads = match args.next() {
+        None => panic!("The first argument to the example must be \
+        the number of threads. Please see the readme for an example"),
+        Some(n) => match n.parse::<usize>() {
+            Err(e) => panic!("Error parsing number of threads : {}", e),
+            Ok(n) => n
         }
     };
 
-    let env = Env::new_arc_env(Some(1000));
+    let export_path = match args.next() {
+        None => panic!("The second argument to the example must be \
+        an absolute path to the export file. Please see the readme for \
+        an example"),
+        Some(p) => PathBuf::from(p)
+    };
 
+    let open_options = std::fs::OpenOptions::new()
+                       .read(true)
+                       .truncate(false)
+                       .open(&export_path);
 
-    if let Err(e) =  LineParser::parse_check_all(export_file_string, env.clone()) {
-        println!("Sorry, the example failed with the following error : {}\n", e)
-    }
+    let buf_reader : BufReader<std::fs::File> = match open_options {
+        Ok(s) => std::io::BufReader::new(s),
+        Err(e) => {
+            panic!("Failed to open export file {:#?}\n Err : {}", export_path, e)
+        }
+    };
 
-    let _n = env.read().num_items();
-    println!("Example executed successfully! {} items were checked!", _n);
+    let start = Instant::now();
+    let mut parser = Parser::new(num_threads, buf_reader);
+    let num_declars = parser.parser_loop();
+    let time = start.elapsed();
+    println!("Checked {} declarations in {:#?}\n", num_declars, time)
 }

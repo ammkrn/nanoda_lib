@@ -1,250 +1,102 @@
-use std::sync::Arc;
+use crate::level::{ LevelPtr, Level::* };
+use crate::utils::{ 
+    alloc_str, 
+    Ptr, 
+    ListPtr, 
+    IsCtx, 
+    IsLiveCtx, 
+    Store, 
+    Env, 
+    LiveZst, 
+    HasNanodaDbg 
+};
 
-use hashbrown::HashSet;
 
-use InnerName::*;
+use Name::*;
 
-/// `Name` is an Arc wrapper for the `InnerName` enum, which together represent Lean's hierarchical names, where
-/// hierarchical just means "nested namespaces that can be accessed with a dot", like `nat.rec`. They have a very 
-/// similar structure to an inductive `List` type, with `Anon`, the anonymous name acting as `Nil`, 
-/// while `Str` and `Num` act like `cons`, but specialized to consing string and integer elements respectively.
-/// Name values always begin with `Anon`, and can contain any combination of `Str` and `Num` applications, 
-/// IE (in pseudo-code) `Num n (Str s (Num n' (Str s' (Anon))))` would be a valid construction.
-#[derive(Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
-pub struct Name(Arc<InnerName>);
+pub type StringPtr<'a> = Ptr<'a, String>;
+pub type NamePtr<'a> = Ptr<'a, Name<'a>>;
+pub type NamesPtr<'a> = ListPtr<'a, Name<'a>>;
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
-pub enum InnerName {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Name<'a> {
     Anon,
-    Str(Name, String),
-    Num(Name, u64),
+    Str(NamePtr<'a>, StringPtr<'a>),
+    Num(NamePtr<'a>, u64),
 }
 
-pub fn mk_anon() -> Name {
-    Name(Arc::new(InnerName::Anon))
-}
-
-
-impl Name {
-    pub fn is_anon(&self) -> bool {
+impl<'a> Name<'a> {
+    // This is the jankiest once since we have to deal with String.
+    pub fn insert_env<'e>(self, env : &mut Env<'e>, live : &Store<LiveZst>) -> NamePtr<'e> {
         match self {
-            Name(x) => match x.as_ref() {
-                Anon => true,
-                _ => false
-            }
-        }
-    }
-
-    pub fn replace_prefix(&self, prefix : &Name, new_prefix : &Name) -> Name {
-        match self.as_ref() {
-            Anon => mk_anon(),
-            Str(pfx, hd) => {
-                let hd_name = Name::from(hd.as_str());
-                // "A.B.D == D"
-                if &hd_name == prefix {
-                    let new_head = new_prefix.clone();
-                    let new_base = pfx.replace_prefix(prefix, new_prefix);
-                    new_base.concat(&new_head)
-                } else {
-                    // no match; no need to replace
-                    pfx.replace_prefix(prefix, new_prefix).extend_str(hd)
-
+            Anon => unreachable!("Anon should always begin in the environment!"),
+            Str(pfx, sfx) => {
+                let pfx = pfx.insert_env(env, live);
+                match sfx {
+                    Ptr::E(index, _, z) => {
+                        let sfx2 = env.store.strings.extend_safe(index, z);
+                        assert_eq!(sfx, sfx2);
+                        Str(pfx, sfx2).alloc(env)
+                    },
+                    Ptr::L(index, h, z) => {
+                        let sfx = live.strings.get_elem(index, h, z).clone();
+                        pfx.new_str(sfx, env)
+                    }
                 }
             },
-            Num(pfx, hd) => {
-                let hd_name = Name::from(*hd);
-                if &hd_name == prefix {
-                    // match; replace
-                    let new_head = new_prefix.clone();
-                    let new_base = pfx.replace_prefix(prefix, new_prefix);
-                    new_base.concat(&new_head)
-                } else {
-                    // no need to replace
-                    pfx.replace_prefix(prefix, new_prefix).extend_num(*hd)
-                }
-            }
-
+            Num(pfx, sfx) => pfx.insert_env(env, live).new_num(sfx, env)
         }
     }
+}
 
 
-    pub fn mk_rec_name(&self) -> Name {
-        self.extend_str("rec")
+impl<'a> NamePtr<'a> {
+
+    pub fn new_str(self, s : String, ctx : &mut impl IsCtx<'a>) -> NamePtr<'a> {
+        Str(self, alloc_str(s, ctx)).alloc(ctx)
     }
 
-
-    /// Extend some hierarchical name with a string. IE `nat` => `nat.rec`
-    pub fn extend_str(&self, hd : &str) -> Self {
-        Str(self.clone(), String::from(hd)).into()    // InnerName -> Name
+    pub fn new_num(self, n : u64, ctx : &mut impl IsCtx<'a>) -> NamePtr<'a> {
+        Num(self, n).alloc(ctx)
     }
 
-    /// Extend some hierarchical name with an integer. IE `prod` => `prod.3`
-    pub fn extend_num(&self, hd : u64) -> Self {
-        Num(self.clone(), hd).into()                  // InnerName -> Name
+    pub fn new_param(self, ctx : &mut impl IsCtx<'a>) -> LevelPtr<'a> {
+        Param(self).alloc(ctx)
     }
 
-    pub fn get_prefix(&self) -> &Name {
-        match self.as_ref() {
+    pub fn get_prefix(self, ctx : &impl IsLiveCtx<'a>) -> NamePtr<'a> {
+        match self.read(ctx) {
             Anon => self,
-            | Str(pfx, _) 
+            | Str(pfx, _)
             | Num(pfx, _) => pfx
         }
     }
 
 
-    /// Given a suggested prefix and a set of names we want to avoid collisions with,
-    /// extend the suggestion with an incrementing integer until we get a name that doesn't collide with
-    /// any of the names given in `forbidden`. This implementation relies on the laziness of iterators.
-    pub fn fresh_name(suggested : &str, forbidden : HashSet<&Name>) -> Self {
-        let base = Name::from(suggested);
-        if !forbidden.contains(&base) {
-            return base
-        }
-        (0u64..).into_iter()
-                .map(|n| base.extend_num(n))
-                .filter(|candidate| !forbidden.contains(candidate))
-                .next()
-                .unwrap()
-
-    }
-
-
-    pub fn is_recursor(&self) -> bool {
-        match self.as_ref() {
-            Anon => false,
-            Str(pfx, s) => {
-                s.as_str() == "rec"
-                || pfx.is_recursor()
-            },
-            Num(pfx, _) => pfx.is_recursor()
-        }
-    }
-
-    pub fn concat(&self, n : &Name) -> Name {
-        match n.as_ref() {
-            Anon => self.clone(),
-            Str(pfx, hd) => {
-                let inner = self.concat(pfx);
-                inner.extend_str(hd)
-            },
-            Num(pfx, hd) => {
-                let inner = self.concat(pfx);
-                inner.extend_num(*hd)
-            }
-        }
-    }
 
 }
 
 
 
-
-/// Convenience function to get the `InnerName` from a `Name`    
-impl std::convert::AsRef<InnerName> for Name {
-    fn as_ref(&self) -> &InnerName {
+impl<'a> HasNanodaDbg<'a> for Name<'a> {
+    fn nanoda_dbg(self, ctx : &impl IsCtx<'a>) -> String {
         match self {
-            Name(x) => x.as_ref()
-        }
-    }
-}
-
-/// Convenience function for converting an Arc<InnerName> into its newtype `Name`
-impl From<Arc<InnerName>> for Name {
-    fn from(x : Arc<InnerName>) -> Name {
-        Name(x)
-    }
-}
-// Convenience function for converting an InnerName to a Name
-impl From<InnerName> for Name {
-    fn from(x : InnerName) -> Name {
-        Name(Arc::new(x))
-    }
-}
-
-/// Creates a Name value from a string slice. 
-impl From<&str> for Name {
-    fn from(s : &str) -> Name {
-        mk_anon().extend_str(s)
-    }
-}
-
-impl From<u64> for Name {
-    fn from(n : u64) -> Name {
-        mk_anon().extend_num(n)
-    }
-}
-
-
-/// Hierarchical names should display from left to right, with a `.` separating elements, and the anonymous name
-/// should display as an empty string.
-/// IE the formatted version of Anon ++ Str(list) ++ Str(cases_on) ++ Num(777) should display as
-/// `list.cases_on.777`
-impl std::fmt::Debug for Name {
-    fn fmt(&self, f : &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self.as_ref() {
-            Anon => write!(f, ""),
-            Str(pfx, hd) => match pfx.as_ref() {
-                Anon     => write!(f, "{}", hd),
-                owise        => write!(f, "{}.{}", owise, hd)
+            Anon => String::new(),
+            Str(pfx, sfx) if pfx.read(ctx) == Anon => {
+                sfx.read(ctx).clone()
+            }
+            Str(pfx, sfx) => {
+                format!("{}.{}", pfx.nanoda_dbg(ctx), sfx.read(ctx))
+            }
+            Num(pfx, sfx) if pfx.read(ctx) == Anon => {
+                sfx.to_string()
             },
-            Num(pfx, hd) => match pfx.as_ref() {
-                Anon     => write!(f, "{}", hd),
-                owise        => write!(f, "{}.{}", owise, hd)
+            Num(pfx, sfx) => {
+                format!("{}.{}", pfx.nanoda_dbg(ctx), sfx.to_string())
             }
         }
     }
 }
 
 
-impl std::fmt::Display for Name {
-    fn fmt(&self, f : &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self.as_ref() {
-            Anon => write!(f, ""),
-            Str(pfx, hd) => match pfx.as_ref() {
-                Anon     => write!(f, "{}", hd),
-                owise        => write!(f, "{}.{}", owise, hd)
-            },
-            Num(pfx, hd) => match pfx.as_ref() {
-                Anon     => write!(f, "{}", hd),
-                owise        => write!(f, "{}.{}", owise, hd)
-            }
-        }
-    }
-}
-
-
-impl std::fmt::Display for InnerName {
-    fn fmt(&self, f : &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Anon => write!(f, ""),
-            Str(pfx, hd) => match pfx.as_ref() {
-                Anon     => write!(f, "{}", hd),
-                owise        => write!(f, "{}.{}", owise, hd)
-            },
-            Num(pfx, hd) => match pfx.as_ref() {
-                Anon     => write!(f, "{}", hd),
-                owise        => write!(f, "{}.{}", owise, hd)
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod name_tests {
-    use super::*;
-
-    #[test]
-    fn nametest1() {
-        let n1 = Name::from("A").extend_str("B").extend_num(12).extend_str("H");
-        let target = Name::from("A").extend_str("C").extend_num(777).extend_str("H");
-        let n2 = Name::from("B");
-        let n3 = Name::from("C");
-        let n4 = Name::from(12);
-        let n5 = Name::from(777);
-
-        let n1_ = n1.replace_prefix(&n2, &n3);
-        let n2_ = n1_.replace_prefix(&n4, &n5);
-        assert_eq!(n2_, target);
-    }
-}
 

@@ -1,122 +1,98 @@
-use crate::chain;
-use crate::name::Name;
-use crate::level::{ mk_param, };
-use crate::env::{ ConstantBase, QuotVal };
-use crate::expr::{ BinderStyle::*, 
-                   mk_prop, 
-                   mk_local, 
-                   mk_const, 
-                   mk_app, 
-                   mk_sort };
+use crate::utils::{ Live, List };
+use crate::name::{ Name, Name::* };
+use crate::level::{ Level::*, LevelsPtr, Level };
+use crate::expr::{ ExprPtr, BinderStyle, BinderStyle::* };
+use crate::env::Declar::*;
+use crate::{ app, param, arrow, fold_pis, name, sort };
 
-/*
-The 'builtin' flag on all of the quot ConstantBases should be set to true.
-*/
-pub struct Quot {
-    pub inner : Vec<QuotVal>
-}
+pub fn add_quot<'l, 'e : 'l>(live : &mut Live<'l, 'e>) {
+    let prop = Zero.alloc(live).new_sort(live);
+    let sort_u = sort!("u", live);
+    let sort_v = sort!("v", live);
+    let quot_name = name!("quot", live);
+    let quot_mk_name = name!(["quot", "mk"], live.mut_env());
+    let quot_lift_name = name!(["quot", "lift"], live.mut_env());
+    let quot_ind_name = name!(["quot", "ind"], live.mut_env());
 
-impl Quot {
-    pub fn new() -> Self {
-        let prop = mk_prop();
-        let param_u = || mk_param("u");
-        let param_v = || mk_param("v");
-        let params_u = || vec![param_u()];
-        let params_uv = || vec![param_u(), param_v()];
-        let sort_u = mk_sort(mk_param("u"));
-        let _A = mk_local("A", mk_sort(param_u()), Implicit);
-        let _B = mk_local("B", mk_sort(mk_param("v")), Implicit);
-        let _R = mk_local("R", _A.mk_arrow(&_A.mk_arrow(&prop)), Default); 
-        let _f = mk_local("f", _A.mk_arrow(&_B), Default);
-        let _a = mk_local("a", _A.clone(), Default);
-        let _b = mk_local("b", _A.clone(), Default);
+    // local for `{A : Sort u}`
+    let A = <ExprPtr>::new_local(name!("A", live), sort_u, Implicit, live);
+    // local for `{B : Sort v}`
+    let B = <ExprPtr>::new_local(name!("B", live), sort_v, Implicit, live);
+    // local for `(r : A -> A -> Sort u)`
+    let r = <ExprPtr>::new_local(name!("r", live), arrow!([A, A, prop], live), Default, live);
+    // local for `(f : A -> B)`
+    let f = <ExprPtr>::new_local(name!("f", live), arrow!([A, B], live), Default, live);
+    // local for `(a1 : A)`
+    let a = <ExprPtr>::new_local(name!("a", live), A, Default, live);
+    // local for `(b : A)`
+    let b = <ExprPtr>::new_local(name!("b", live), A, Default, live);
 
+    // quot : Π {A : Sort u}, (A → A → Prop) → Sort u
+    let quot = Quot {
+        name : quot_name,
+        uparams : param!(["u"], live),
+        type_ : fold_pis!([A, r, sort_u], live),
+    };
 
-        let quot_const_univ_u = || mk_const("quot", vec![param_u()]);
-        let quot_mk_const_univ_u = || mk_const(Name::from("quot").extend_str("mk"), vec![param_u()]);
-        let quot_pi_app = sort_u.fold_pis(chain![&_A, &_R]);
+    let quot_const = <ExprPtr>::new_const(quot.name(), quot.uparams(), live);
 
-        // First introduction rule. in Lean : 
-        // quot : Π {α : Sort u}, (α → α → Prop) → Sort u
-        let quot = ConstantBase::new(Name::from("quot"),
-                                        params_u().clone(),
-                                        quot_pi_app);
+    // `@quot A r`; gets used frequently hereafter
+    let quot_A_r = app!([quot_const, A, r], live);
 
-        let quot_mk_f_a = mk_const("quot", params_u()).foldl_apps(vec![&_A, &_R]);
+    // quot.mk : Π {A : Sort u} (r : A → A → Prop), A → @quot A r
+    let quot_mk = Quot {
+        name : quot_mk_name,
+        uparams : param!(["u"], live),
+        type_ : fold_pis!([A, r, arrow!([A, quot_A_r], live)], live)
+    };
 
-        let quot_mk_f = _A.mk_arrow(&quot_mk_f_a);
-            
-        // Second introduction rule. In lean : 
-        // quot.mk : Π {α : Sort u} (r : α → α → Prop), α → @quot α r
-        let quot_mk = ConstantBase::new(
-            Name::from("quot").extend_str("mk"),
-            params_u().clone(),
-            quot_mk_f.fold_pis(chain![&_A, &_R]),
-        );
+    let quot_mk_const = <ExprPtr>::new_const(quot_mk.name(), quot_mk.uparams(), live);
+    let eq_const = <ExprPtr>::new_const(name!("eq", live), param!(["v"], live), live);
 
-        let eq_const = mk_const("eq", vec![param_v()]);
-        let app1 = mk_app(_f.clone(), _a.clone());
-        let app2 = mk_app(_f.clone(), _b.clone());
-        let eq_app = eq_const.foldl_apps(vec![&_B, &app1, &app2]);
-        let eq_lhs = _R.foldl_apps(vec![&_a, &_b]);
+    // @eq B (f a) = (f b)
+    let eq_app = app!([eq_const, B, app!([f, a], live), app!([f, b], live)], live);
 
-        let inner_app = eq_lhs.mk_arrow(&eq_app);
-        let lower_const = quot_const_univ_u();
-        let lower_apps = lower_const.foldl_apps(vec![&_A, &_R]);
-        let lhs_pis = inner_app.fold_pis(chain![&_a, &_b]);
-        let triple_arrow = lhs_pis.mk_arrow(&(lower_apps.mk_arrow(&_B)));
-        let pis_together = triple_arrow.fold_pis(chain![&_A, &_R, &_B, &_f]);
+    // (∀ (a b : A), r a b → f a = f b) 
+    let lift_inner = fold_pis!([a, b, arrow!([app!([r, a, b], live), eq_app], live)], live);
 
 
-        // Third introduction rule. In lean : 
-        // quot.lift : Π {α : Sort u} {r : α → α → Prop} {β : Sort v} (f : α → β), 
-        //               (∀ (a b : α), r a b → f a = f b) → quot r → β
-        let quot_lift = ConstantBase::new(
-            quot.name.extend_str("lift"),
-            params_uv().clone(),
-            pis_together,
-        );
+    // quot.lift : Π {A : Sort u} {r : A → A → Prop} {B : Sort v} (f : A → B),
+    //   (∀ (a b : A), r a b → f a = f b) → @quot A r → B  
+    let quot_lift = Quot {
+        name : quot_lift_name,
+        uparams : param!(["u", "v"], live),
+        type_ : fold_pis!([A, r, B, f, arrow!([lift_inner, quot_A_r, B], live)], live)
+    };
 
-        let B2_arrows_lhs = quot_const_univ_u().foldl_apps(vec![&_A, &_R]);
-        let _B2 = mk_local("B",
-                                 B2_arrows_lhs.mk_arrow(&prop),
-                                 Implicit);
-        let _q = mk_local("q",
-                                quot_const_univ_u().foldl_apps(vec![&_A, &_R]),
-                                Default);
+    // {B : @quot A r → Prop}
+    let B_local = <ExprPtr>::new_local(name!("B", live), arrow!([quot_A_r, prop], live), Implicit, live);
 
-        let ind_pi_1_inner = quot_mk_const_univ_u().foldl_apps(vec![&_A, &_R, &_a]);
-        let ind_pi_1_mid = _B2.foldl_apps(Some(&ind_pi_1_inner));
-        let ind_pi_1 = ind_pi_1_mid.fold_pis(chain![&_a]);
-        let B2_q = _B2.foldl_apps(vec![&_q]);
-        let ind_pi_2 = B2_q.fold_pis(chain![&_q]);
-        let ind_arrows = ind_pi_1.mk_arrow(&ind_pi_2);
+    // (q : @quot A r)
+    let q_local = <ExprPtr>::new_local(name!("q", live), quot_A_r, Default, live);
 
-        // Last introduction rule. In Lean : 
-        // quot.ind : ∀ {α : Sort u} {r : α → α → Prop} {β : @quot α r → Prop},
-        //            (∀ (a : α), β (@quot.mk α r a)) → ∀ (q : @quot α r), β q
-        let quot_ind = ConstantBase::new(
-            quot.name.extend_str("ind"),
-            params_u().clone(),
-            ind_arrows.fold_pis(chain![&_A, &_R, &_B2]),
-        );
+    // @quot.mk A r a
+    let quot_mk_app = app!([quot_mk_const, A, r, a], live);
 
-        let const_eq_v = mk_const("eq", vec![param_v()]);
+    // (∀ (a : A), B (@quot.mk A r a))
+    let lhs = fold_pis!([a, app!([B_local, quot_mk_app], live)], live);
+    //  ∀ (q : @quot A r), B q
+    let rhs = fold_pis!([q_local, app!([B_local, q_local], live)], live);
 
 
-        let _h = mk_local("h",
-                                const_eq_v.foldl_apps(vec![&_b, &app1, &app2]),
-                                Default);
+    // quot.ind : ∀ {A : Sort u} {r : A → A → Prop} {B : @quot A r → Prop},
+    //           (∀ (a : A), B (@quot.mk A r a)) → ∀ (q : @quot A r), B q    
+    let quot_ind = Quot {
+        name : quot_ind_name,
+        uparams : param!(["u"], live),
+        type_ : fold_pis!([A, r, B_local, arrow!([lhs, rhs], live)], live),
+    };
 
-        let quot_items = vec![
-            QuotVal::from_const_val(quot),
-            QuotVal::from_const_val(quot_mk),
-            QuotVal::from_const_val(quot_ind),
-            QuotVal::from_const_val(quot_lift),
-        ];
-        Quot {
-            inner : quot_items
-        }
-    }
+    live.admit_declar(quot);
+    live.admit_declar(quot_mk);
+    live.admit_declar(quot_lift);
+    live.admit_declar(quot_ind);
 
+    live.mut_env().quot_mk = Some(quot_mk_name);
+    live.mut_env().quot_lift = Some(quot_lift_name);
+    live.mut_env().quot_ind = Some(quot_ind_name);
 }
