@@ -1,6 +1,11 @@
-/target
-Cargo.lock
-callgrind*
-test.out
-*.scratch
-examples/example_trace
+/nanoda_spec/*.olean
+/nanoda_spec/_target
+/nanoda_spec/leanpkg.path
+
+/nanoda_lib/target/
+/nanoda_lib/macro_output.rs
+/nanoda_lib/Cargo.lock
+
+/nanoda_macros/target/
+/nanoda_macros/macro_output.rs
+/nanoda_macros/Cargo.lock
