@@ -24,8 +24,8 @@ instance : decidable_eq Bstyle := by tactic.mk_dec_eq_instance
 
 /-
 `let` and `local` are reserved keywords in Lean. 
-Escaping literals with « » is fucking bullshit,
-so let and local are just renamed to letE and localE respectively.
+Escaping literals with « » is very frustrating, so let
+and local are just renamed to letE and localE respectively.
 -/
 inductive Expr
 | var (dbj : nat) : Expr
@@ -143,24 +143,9 @@ def mkLocal (b_n : Name)
             (serial : nat)
             : Expr := localE b_n b_t b_s serial
 
+-- Tracking/managing this is up to the implementation.
 inductive nextSerial : nat -> Prop
             
--- inductive varBound : Expr -> nat -> Prop
--- | var (dbj : nat) : varBound (mkVar dbj) (dbj + 1)
--- | sort (l : Level) : varBound (mkSort l) 0
--- | const (n : Name) (ls : list Level) : varBound (mkConst n ls) 0
--- | app (f a : Expr) (n1 n2 : nat) : varBound f n1 
---                                    -> varBound a n2 
---                                    -> varBound (mkApp f a) (max n1 n2)
--- | pi (b_n : Name)
---      (b_t : Expr)
---      (b_s : Bstyle)
---      (body : Expr)
---      
-
- 
-       
-       
 inductive isApp : Expr -> bool -> Prop
 | var (dbj : nat) : isApp (mkVar dbj) ff
 | sort (l : Level) : isApp (mkSort l) ff
@@ -192,12 +177,6 @@ inductive isLambda : Expr -> bool -> Prop
 | lambda (b_n : Name) (b_t body : Expr) (b_s : Bstyle) : isLambda (mkLambda b_n b_t b_s body) tt
 | letE (b_n : Name) (b_t val body : Expr) (b_s : Bstyle) : isLambda (mkLet b_n b_t b_s val body) ff
 | localE (b_n : Name) (b_t : Expr) (b_s : Bstyle) (serial : nat) : isLambda (mkLocal b_n b_t b_s serial) ff
-
-
-
-
-
-
 
 
 inductive instAux : Expr -> list Expr -> nat -> Expr -> Prop
@@ -576,7 +555,6 @@ inductive foldlApps : Expr -> list Expr -> Expr -> Prop
 
 
 
--- cursor, sink, inner_fun, all_args
 inductive unfoldAppsAux : Expr -> list Expr -> Expr -> list Expr -> Prop
 | base (f : Expr) (args : list Expr) : isApp f ff -> unfoldAppsAux f args f args
 | step (f : Expr)
@@ -588,7 +566,6 @@ inductive unfoldAppsAux : Expr -> list Expr -> Expr -> list Expr -> Prop
          -> unfoldAppsAux (mkApp f a) (sink) base_f all_args
 
 def unfoldApps (e base_f : Expr) (all_args : list Expr) := unfoldAppsAux e [] base_f all_args
-
 
 
 inductive telescope_size : Expr -> nat -> Prop
