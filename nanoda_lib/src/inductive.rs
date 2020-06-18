@@ -4,6 +4,7 @@ use crate::level::{ LevelPtr, LevelsPtr, Level };
 use crate::expr::{ ExprPtr, ExprsPtr, Expr, Expr::*, BinderStyle::* };
 use crate::env::{ Declar, RecRule, RecRulePtr, RecRulesPtr }; 
 use crate::tc::infer::InferFlag::*;
+use crate::trace::IsTracer;
 use crate::name;
 
 #[derive(Debug)]
@@ -119,4 +120,53 @@ impl<'a> IndBlock<'a> {
             rec_rules : None,
         }
     }
+}
+
+
+
+impl<'l, 'e : 'l> IndBlock<'l> {
+    // Conditions are 
+    // 1. non-mutual
+    // 2. is prop
+    // 3. has only one constructor
+    // 4. the constructor has zero arguments.
+    // The main example is eq; it's an inductive prop
+    // with one constructor (eq.refl), where eq.refl
+    // takes zero arguments (the second `a` is just a re-use of the
+    // parameter (a : A), and not a constructor argument.)
+    pub fn init_k_target(&mut self, live : &mut Live<'l, 'e, impl 'e + IsTracer>) {
+        unimplemented!()
+        //let k_target = if self.ind_types.len(live) > 1 {
+        //    false
+        //} else if !self.block_codom().is_zero(live) {
+        //    false
+        //} else if self.cnstr_types.len(live) != 1 {
+        //    false
+        //} else {
+        //    let only_cnstr = self.cnstr_types.get(0, live).expect("Failed to get checked `0` elem in init_k_target");
+        //    self.init_k_target_aux(only_cnstr, self.num_params, live)
+        //};
+
+        //self.k_target = Some(k_target);
+    }
+
+    // Checks whether the constructor has 0 arguments by checking
+    // whether the telescope with the block params removed is still
+    // a Pi.
+    pub fn init_k_target_aux(
+        &self, 
+        cnstr_cursor : ExprPtr<'l>, 
+        rem_params : u16, 
+        live : &mut Live<'l, 'e, impl 'e + IsTracer>
+    ) -> bool {
+        unimplemented!()
+        //match cnstr_cursor.read(live) {
+        //    Pi { body, .. } if rem_params != 0 => self.init_k_target_aux(body, rem_params - 1, live),
+        //    Pi {..} => false,
+        //    _ => {
+        //        assert_eq!(rem_params, 0);
+        //        true
+        //    }
+        //}
+    }        
 }

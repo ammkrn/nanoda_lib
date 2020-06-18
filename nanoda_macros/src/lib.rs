@@ -27,6 +27,39 @@ use syn::{
     token::Semi,
 };
 
+struct TryMethod {
+    method_call : syn::ExprMethodCall
+}
+
+impl TryMethod {
+}
+
+// Parse the top level #[is_step(..)] key value pairs.
+// Includes the step's tag, the return type, and the name of the trace formatting
+// function to be used from the `IsTracer` trait.
+impl Parse for TryMethod {
+    fn parse(input : ParseStream) -> ParseResult<TryMethod> {
+        let parsed = match syn::MetaNameValue::parse(input) {
+            //Ok(syn::MetaNameValue { lit, .. }) => {
+            //    panic!()
+            //},
+            
+            Ok(syn::MetaNameValue { lit : syn::Lit::Str(lit_str), .. }) => {
+                match lit_str.parse::<syn::ExprMethodCall>() {
+                    Ok(method_call) => method_call,
+                    Err(e) => panic!("Failed to parse method call from str lit : {}\n", e),
+                }
+            },
+            Err(e) => panic!("Failed to parse Trace Attribute as #[trace(trace_loc, step)]. Error : {}", e),
+            _ => panic!("Failed to parse string lit in method call parser"),
+        };        
+
+        Ok(TryMethod { method_call : parsed })
+
+    }
+}
+
+
 struct StepKv {
     step_tag : String,
     result_type : syn::Type,
@@ -531,6 +564,45 @@ fn mk_step_fun(
     item_impl
 }
 
+fn mk_try_fun(mut fun : syn::ItemFn, method_call : syn::ExprMethodCall) -> syn::ItemFn {
+    fun.attrs.clear();
+    fun.vis = syn::Visibility::Inherited;
+    let base_fun_ident = fun.sig.ident.clone();
+    let try_fun_ident = format_ident!("try_{}", base_fun_ident);
+    fun.sig.ident = try_fun_ident;
+
+    let target_tc_arg : syn::Expr = parse_quote!(tc);
+    let pfinder_arg : syn::Expr = parse_quote!(&mut pfinder);
+    let pfinder_method_call = {
+        let mut pfinder_method_call = method_call.clone();
+        let tc_arg = pfinder_method_call.args.last_mut().expect(
+            "Failed to get last arg of try method call"
+        );
+        assert_eq!(&target_tc_arg, tc_arg);
+        std::mem::replace(tc_arg, pfinder_arg);
+        pfinder_method_call
+    };
+
+    let try_block : syn::Block = parse_quote!(
+        {
+            let mut pfinder = tc.as_pfinder();
+            let maybe_result = #pfinder_method_call;
+
+            if maybe_result.is_some() {
+                let result = #method_call;
+                assert!(result.is_some());
+                result
+            } else {
+                pfinder.restore_snapshot();
+                None
+            }
+        }
+    );
+
+    fun.block = Box::new(try_block);
+    fun
+}
+
 
 fn remove_generic_bounds(mut g : syn::Generics) -> syn::Generics {
     for elem in g.params.iter_mut() {
@@ -561,6 +633,17 @@ fn has_lifetime(item_enum : &syn::ItemEnum) -> bool {
 }
 
 
+#[proc_macro_attribute]
+pub fn has_try(attr : TokenStream, input : TokenStream) -> TokenStream {
+    let try_method = parse_macro_input!(attr as TryMethod);
+    let base_fun = parse_macro_input!(input as syn::ItemFn);
+    let try_fun = mk_try_fun(base_fun.clone(), try_method.method_call);
+
+    TokenStream::from(quote! {
+        #base_fun
+        #try_fun
+    })
+}
 
 #[proc_macro_attribute]
 pub fn is_step(attr : TokenStream, input : TokenStream) -> TokenStream {

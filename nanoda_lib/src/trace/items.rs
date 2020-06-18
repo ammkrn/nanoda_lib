@@ -3,7 +3,7 @@ use crate::utils::{ Ptr, List, List::*, ListPtr, IsCtx, IsLiveCtx };
 use crate::name::{ NamePtr, NamesPtr, Name, StringPtr, Name::* };
 use crate::level::{ LevelPtr, LevelsPtr, Level, Level::* };
 use crate::expr::{ ExprPtr, ExprsPtr, Expr, Expr::*, BinderStyle, LocalSerial };
-use crate::tc::eq::ShortCircuit;
+use crate::tc::eq::{ DeltaResult, ShortCircuit };
 use crate::trace_item;
 use crate::trace::IsTracer;
 use crate::trace::steps::{ Step, StepIdx };
@@ -66,6 +66,25 @@ impl HasPtrRepr for bool {
         match self {
             true => format!("t"),
             false => format!("f")
+        }
+    }
+}
+
+impl HasPtrRepr for ShortCircuit {
+    fn ptr_repr(self) -> String {
+        match self {
+            ShortCircuit::EqShort => format!("eq"),
+            ShortCircuit::NeqShort => format!("ne"),
+        }
+    }
+}
+
+
+impl<'a> HasPtrRepr for DeltaResult<'a> {
+    fn ptr_repr(self) -> String {
+        match self {
+            DeltaResult::Short(s) => s.ptr_repr(),
+            DeltaResult::Exhausted(e1, e2) => (e1, e2).ptr_repr(),
         }
     }
 }
@@ -184,6 +203,12 @@ impl<'a, A : HasPrefix> HasPtrRepr for ListPtr<'a, A> {
     }
 }
 
+//impl<'a> HasPtrRepr for Declar<'a> {
+//    fn ptr_repr(self) -> String {
+//        
+//    }
+//}
+
 impl<H> HasPtrRepr for Step<H> {
     fn ptr_repr(self) -> String {
         match self {
@@ -192,6 +217,7 @@ impl<H> HasPtrRepr for Step<H> {
         }
     }
 }
+
 
 impl HasPtrRepr for StepIdx {
     fn ptr_repr(self) -> String {

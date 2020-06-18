@@ -172,7 +172,7 @@ pub trait IsTracer {
     fn trace_rec_rule<'a>(rr : RecRulePtr<'a>, ctx : &mut impl IsCtx<'a>) {
         let mut sink = rr.ptr_repr();
         let rr_ = rr.read(ctx);
-        let inner = format!(".{}.{}.{}", rr_.cnstr_name.ptr_repr(), rr_.num_fields.ptr_repr(), rr_.val.ptr_repr());
+        let inner = format!(".{}.{}.{}", rr_.ctor_name.ptr_repr(), rr_.num_fields.ptr_repr(), rr_.val.ptr_repr());
         sink.push_str(inner.as_str());
         ctx.mut_mgr().write_line(sink.as_bytes())
     }
@@ -200,7 +200,7 @@ pub trait IsTracer {
             Inductive { 
                 num_params, 
                 all_ind_names, 
-                all_cnstr_names, 
+                all_ctor_names, 
                 is_unsafe,
                 .. 
             } => {
@@ -211,7 +211,7 @@ pub trait IsTracer {
                 type_, 
                 num_params, 
                 all_ind_names.ptr_repr(),
-                all_cnstr_names.ptr_repr(),
+                all_ctor_names.ptr_repr(),
                 is_unsafe,
                )
             }
@@ -404,7 +404,38 @@ pub trait IsTracer {
     mk_trace_step! { trace_whnf_lambda, 'a, WhnfLambda<'a> }
     mk_trace_step! { trace_whnf_sort, 'a, WhnfSort<'a> }
     mk_trace_step! { trace_whnf_let, 'a, WhnfLet<'a> }
+    mk_trace_step! { trace_reduce_quot_lift, 'a, ReduceQuotLift<'a> }
+    mk_trace_step! { trace_reduce_quot_ind, 'a, ReduceQuotInd<'a> }
+    mk_trace_step! { trace_reduce_ind_rec, 'a, ReduceIndRec<'a> }
+    mk_trace_step! { trace_mk_nullary_ctor, 'a, MkNullaryCtor<'a> }
+    mk_trace_step! { trace_to_ctor_when_k, 'a, ToCtorWhenK<'a> }
+    mk_trace_step! { trace_get_rec_rule, 'a, GetRecRule<'a> }
+    mk_trace_step! { trace_get_rec_rule_aux, 'a, GetRecRuleAux<'a> }
     mk_trace_step! { trace_whnf_core, 'a, WhnfCore<'a> }
+    mk_trace_step! { trace_whnf, 'a, Whnf<'a> }
+    mk_trace_step! { trace_unfold_def, 'a, UnfoldDef<'a> }
+    mk_trace_step! { trace_is_delta, 'a, IsDelta<'a> }
+
+    mk_trace_step! { trace_def_eq, 'a, DefEq<'a> }
+    mk_trace_step! { trace_def_eq_sort, 'a, DefEqSort<'a> }
+    mk_trace_step! { trace_def_eq_pi, 'a, DefEqPi<'a> }
+    mk_trace_step! { trace_def_eq_lambda, 'a, DefEqLambda<'a> }
+    mk_trace_step! { trace_is_sort_zero, 'a, IsSortZero<'a> }
+    mk_trace_step! { trace_is_proposition, 'a, IsProposition<'a> }
+    mk_trace_step! { trace_is_proof, 'a, IsProof<'a> }
+    mk_trace_step! { trace_proof_irrel_eq, 'a, ProofIrrelEq<'a> }
+    mk_trace_step! { trace_args_eq, 'a, ArgsEq<'a> }
+    mk_trace_step! { trace_args_eq_aux, 'a, ArgsEqAux<'a> }
+    mk_trace_step! { trace_delta_check, 'a, DeltaCheck<'a> }
+    mk_trace_step! { trace_lazy_delta_step, 'a, LazyDeltaStep<'a> }
+    mk_trace_step! { trace_def_eq_const, 'a, DefEqConst<'a> }
+    mk_trace_step! { trace_def_eq_local, 'a, DefEqLocal<'a> }
+    mk_trace_step! { trace_def_eq_app, 'a, DefEqApp<'a> }
+    mk_trace_step! { trace_def_eq_eta, 'a, DefEqEta<'a> }
+
+    mk_trace_step! { trace_infer, 'a, Infer<'a> }
+
+    mk_trace_step! { trace_admit_declar, 'a, AdmitDeclar<'a> }
 
 
     fn ptr_index<'a, A>(ptr : Ptr<'a, A>) -> usize {

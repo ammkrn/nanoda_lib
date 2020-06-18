@@ -289,24 +289,6 @@ impl<'a> Cache<'a, PfinderZst> {
             whnf_cache_len   : self.tc_cache.whnf_cache.len(),
         }
     }
-
-    pub fn restore_snapshot(&mut self, snapshot : Snapshot) {
-        fn restore_aux<K : Hash + Eq, V>(map : &mut FxIndexMap<K, V>, target : usize) {
-            while map.len() > target {
-                map.pop();
-            }
-        }
-
-        restore_aux(&mut self.expr_cache.abstr_cache, snapshot.abstr_cache_len);
-        restore_aux(&mut self.expr_cache.inst_cache, snapshot.inst_cache_len);
-        restore_aux(&mut self.expr_cache.subst_cache, snapshot.subst_cache_len);
-        restore_aux(&mut self.expr_cache.height_cache, snapshot.height_cache_len);
-        restore_aux(&mut self.expr_cache.find_cache, snapshot.find_cache_len);
-        restore_aux(&mut self.tc_cache.infer_cache, snapshot.infer_cache_len);
-        restore_aux(&mut self.tc_cache.eq_cache, snapshot.eq_cache_len);
-        restore_aux(&mut self.tc_cache.whnf_cache, snapshot.whnf_cache_len);
-    }
-
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -323,7 +305,7 @@ pub struct Snapshot {
 //#[derive(Debug)]
 pub struct Env<'e, T : IsTracer> {
     pub store : Store<'e, EnvZst>,
-    pub declars : FxIndexMap<NamePtr<'e>, Declar<'e>>,
+    pub declars : FxIndexMap<NamePtr<'e>, (DeclarPtr<'e>, Step<AdmitDeclar<'e>>)>,
     pub notations : FxHashMap<NamePtr<'e>, Notation<'e>>,
     pub next_local : u64,
     pub quot_mk : Option<NamePtr<'e>>,
@@ -566,7 +548,7 @@ pub trait IsCtx<'a> {
     fn live_store(&self) -> Option<&Store<'a, LiveZst>>;
     fn pfinder_store(&self) -> Option<&Store<'a, PfinderZst>>;
     fn mut_store(&mut self) -> &mut Store<'a, Self::Writable>;
-    fn get_declar(&self, n : NamePtr) -> Option<Declar<'a>>;
+    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'a>, Step<AdmitDeclar<'a>>)>;
     fn mut_mgr(&mut self) -> &mut TraceMgr<Self::Tracer>;
 }
 
@@ -592,7 +574,7 @@ where T : 'e + IsTracer {
         &mut self.store
     }
 
-    fn get_declar(&self, n : NamePtr) -> Option<Declar<'e>> {
+    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'e>, Step<AdmitDeclar<'e>>)> {
         self.declars.get(&n).copied()
     }
     
@@ -624,7 +606,7 @@ where T : 'l + IsTracer {
     }
 
     
-    fn get_declar(&self, n : NamePtr) -> Option<Declar<'l>> {
+    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'l>, Step<AdmitDeclar<'l>>)> {
         self.env.declars.get(&n).copied()
     }
 
@@ -658,7 +640,7 @@ where T : 'l + IsTracer {
         &mut self.live.store
     }
 
-    fn get_declar(&self, n : NamePtr) -> Option<Declar<'l>> {
+    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'l>, Step<AdmitDeclar<'l>>)> {
         self.live.env.declars.get(&n).copied()
     }
     
@@ -690,7 +672,7 @@ where T : 'l + IsTracer {
     }
 
 
-    fn get_declar(&self, n : NamePtr) -> Option<Declar<'l>> {
+    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'l>, Step<AdmitDeclar<'l>>)> {
         self.live.env.declars.get(&n).copied()
     }
     

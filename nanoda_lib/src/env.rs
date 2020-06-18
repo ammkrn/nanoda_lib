@@ -5,6 +5,7 @@ use crate::tc::infer::InferFlag::*;
 use crate::quot::add_quot;
 use crate::inductive::IndBlock;
 use crate::trace::IsTracer;
+use crate::trace::steps::*;
 use crate::utils::{ 
     Tc, 
     Ptr, 
@@ -126,15 +127,15 @@ impl<'l, 'e : 'l> DeclarSpec<'e> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RecRule<'a> {
-    pub cnstr_name : NamePtr<'a>,
+    pub ctor_name : NamePtr<'a>,
     pub num_fields : u16,
     pub val : ExprPtr<'a>
 }
 
 impl<'a> RecRule<'a> {
-    pub fn new(cnstr_name : NamePtr<'a>, num_fields : u16, val : ExprPtr<'a>) -> Self {
+    pub fn new(ctor_name : NamePtr<'a>, num_fields : u16, val : ExprPtr<'a>) -> Self {
         RecRule {
-            cnstr_name,
+            ctor_name,
             num_fields,
             val
         }
@@ -146,7 +147,7 @@ impl<'a> RecRule<'a> {
         live : &Store<LiveZst>
     ) -> RecRulePtr<'e> {
         RecRule {
-            cnstr_name : self.cnstr_name.insert_env(env, live),
+            ctor_name : self.ctor_name.insert_env(env, live),
             num_fields : self.num_fields,
             val : self.val.insert_env(env, live)
         }.alloc(env)
@@ -157,8 +158,8 @@ impl<'a> RecRule<'a> {
 
 impl<'a> HasNanodaDbg<'a> for RecRule<'a> {
     fn nanoda_dbg(self, ctx : &impl IsCtx<'a>) -> String {
-        format!("RecRule( cnstr_name : {}, num_fields : {}, val : {})", 
-        self.cnstr_name.nanoda_dbg(ctx), 
+        format!("RecRule( ctor_name : {}, num_fields : {}, val : {})", 
+        self.ctor_name.nanoda_dbg(ctx), 
         self.num_fields,
         self.val.nanoda_dbg(ctx))
     }
@@ -203,9 +204,7 @@ pub enum Declar<'a> {
         type_ : ExprPtr<'a>,
         num_params : u16,
         all_ind_names : NamesPtr<'a>,
-        all_cnstr_names : NamesPtr<'a>,
-        //pub is_rec : bool,
-        //pub is_reflexive : bool,
+        all_ctor_names : NamesPtr<'a>,
         is_unsafe : bool,
     },
     Constructor {
@@ -236,6 +235,178 @@ pub enum Declar<'a> {
 
 
 
+
+impl<'a> RecRulesPtr<'a> {
+    pub fn get_rec_rule_aux(
+        self,
+        major_name : NamePtr<'a>,
+        ctx : &mut impl IsCtx<'a>
+    ) -> Option<(RecRulePtr<'a>, Step<GetRecRuleAux<'a>>)> {
+        match self.read(ctx) {
+            Nil => None,
+            Cons(hd, tl) if hd.read(ctx).ctor_name == major_name => {
+                Some(GetRecRuleAux::Base {
+                    major_name,
+                    num_fields : hd.read(ctx).num_fields,
+                    val : hd.read(ctx).val,
+                    tl,
+                    ind_arg1 : self,
+                    ind_arg3 : hd
+                }.step(ctx))
+            },
+            Cons(x, tl) => {
+                let (rule, h1) = tl.get_rec_rule_aux(major_name, ctx)?;
+                Some(GetRecRuleAux::Step{
+                    major_name,
+                    rules : self,
+                    x,
+                    rule,
+                    h1,
+                }.step(ctx))
+            }
+
+        }
+    }
+
+    pub fn get_rec_rule(
+        self, 
+        major : ExprPtr<'a>, 
+        ctx : &mut impl IsLiveCtx<'a>
+    ) -> Option<(RecRulePtr<'a>, Step<GetRecRule<'a>>)> {
+        let ((major_fun, major_args), h1) = major.unfold_apps(ctx);
+        let (major_name, major_levels) = major_fun.try_const_info(ctx)?;
+        let (rule, h2) = self.get_rec_rule_aux(major_name, ctx)?;
+        Some(GetRecRule::ByAux {
+            major,
+            major_name,
+            major_levels,
+            major_args,
+            rrs : self,
+            rule,
+            h1,
+            h2,
+        }.step(ctx))
+    }    
+}
+
+
+impl<'a> DeclarPtr<'a> {
+    pub fn get_hint(self, ctx : &impl IsCtx<'a>) -> ReducibilityHint {
+        match self.read(ctx) {
+            Definition { hint, .. } => hint,
+            owise => unreachable!("Only Definition declars have a reducibility hint! found {:#?}", owise)
+        }
+    }
+
+    pub fn rec_all_names(&self, ctx : &impl IsCtx<'a>) -> Option<NamesPtr<'a>> {
+        match self.read(ctx) {
+            Recursor { all_names, .. } => Some(all_names),
+            _ => None
+        }
+    }
+
+    pub fn rec_num_params(&self, ctx : &impl IsCtx<'a>) -> Option<u16> {
+        match self.read(ctx) {
+            Recursor { num_params, .. } => Some(num_params),
+            _ => None
+        }
+    }
+
+    
+    pub fn rec_num_indices(&self, ctx : &impl IsCtx<'a>) -> Option<u16> {
+        match self.read(ctx) {
+            Recursor { num_indices, .. } => Some(num_indices),
+            _ => None
+        }
+    }
+
+    pub fn rec_num_motives(&self, ctx : &impl IsCtx<'a>) -> Option<u16> {
+        match self.read(ctx) {
+            Recursor { num_motives, .. } => Some(num_motives),
+            _ => None
+        }
+    }
+
+    pub fn rec_num_minors(&self, ctx : &impl IsCtx<'a>) -> Option<u16> {
+        match self.read(ctx) {
+            Recursor { num_minors, .. } => Some(num_minors),
+            _ => None
+        }
+    }
+
+    pub fn rec_major_idx(&self, ctx : &impl IsCtx<'a>) -> Option<u16> {
+        match self.read(ctx) {
+            Recursor { major_idx, .. } => Some(major_idx),
+            _ => None
+        }
+    }
+    
+    pub fn rec_rules(&self, ctx : &impl IsCtx<'a>) -> Option<RecRulesPtr<'a>> {
+        match self.read(ctx) {
+            Recursor { rec_rules, .. } => Some(rec_rules),
+            _ => None
+        }
+    }
+
+    pub fn rec_is_k(&self, ctx : &impl IsCtx<'a>) -> Option<bool> {
+        match self.read(ctx) {
+            Recursor { is_k, .. } => Some(is_k),
+            _ => None
+        }
+    }
+
+    pub fn name(&self, ctx : &impl IsCtx<'a>) -> NamePtr<'a> {
+        match self.read(ctx) {
+            | Axiom       { name, .. }
+            | Definition  { name, .. }
+            | Theorem     { name, .. }
+            | Opaque      { name, .. }
+            | Quot        { name, .. }
+            | Inductive   { name, .. }
+            | Constructor { name, .. }
+            | Recursor    { name, .. } => name,
+        }
+    }
+
+    pub fn uparams(&self, ctx : &impl IsCtx<'a>) -> LevelsPtr<'a> {
+        match self.read(ctx) {
+            | Axiom       { uparams, .. }
+            | Definition  { uparams, .. }
+            | Theorem     { uparams, .. }
+            | Opaque      { uparams, .. }
+            | Quot        { uparams, .. }
+            | Inductive   { uparams, .. }
+            | Constructor { uparams, .. }
+            | Recursor    { uparams, .. } => uparams,
+        }
+    }
+
+    pub fn type_(&self, ctx : &impl IsCtx<'a>) -> ExprPtr<'a> {
+        match self.read(ctx) {
+            | Axiom       { type_, .. }
+            | Definition  { type_, .. }
+            | Theorem     { type_, .. }
+            | Opaque      { type_, .. }
+            | Quot        { type_, .. }
+            | Inductive   { type_, .. }
+            | Constructor { type_, .. } 
+            | Recursor    { type_, .. } => type_,
+        }
+    }
+
+    pub fn is_unsafe(&self, ctx : &impl IsCtx<'a>) -> bool {
+        match self.read(ctx) {
+            Theorem  {..}
+            | Opaque {..}
+            | Quot   {..} => false,
+            | Axiom       { is_unsafe, .. }
+            | Definition  { is_unsafe, .. }
+            | Inductive   { is_unsafe, .. }
+            | Constructor { is_unsafe, .. }
+            | Recursor    { is_unsafe, .. } => is_unsafe,
+        }
+    }
+}
 
 impl<'a> Declar<'a> {
     pub fn get_hint(self) -> ReducibilityHint {
@@ -331,7 +502,7 @@ impl<'a> Declar<'a> {
             | Constructor { is_unsafe, .. }
             | Recursor    { is_unsafe, .. } => *is_unsafe,
         }
-    }
+    }    
 
     pub fn insert_env<'e>(
         self, 
@@ -383,14 +554,14 @@ impl<'a> Declar<'a> {
                     type_
                 }.alloc(env)
             },
-            Inductive { num_params, all_ind_names, all_cnstr_names, is_unsafe, .. } => {
+            Inductive { num_params, all_ind_names, all_ctor_names, is_unsafe, .. } => {
                 Inductive {
                     name,
                     uparams,
                     type_,
                     num_params,
                     all_ind_names : all_ind_names.insert_env(env, live),
-                    all_cnstr_names : all_cnstr_names.insert_env(env, live),
+                    all_ctor_names : all_ctor_names.insert_env(env, live),
                     is_unsafe
                 }.alloc(env)
             },
@@ -423,7 +594,7 @@ impl<'a> Declar<'a> {
                 }.alloc(env)
             }
         }
-    }        
+    }         
 
 
 }
