@@ -27,42 +27,9 @@ use syn::{
     token::Semi,
 };
 
-struct TryMethod {
-    method_call : syn::ExprMethodCall
-}
-
-impl TryMethod {
-}
-
-// Parse the top level #[is_step(..)] key value pairs.
-// Includes the step's tag, the return type, and the name of the trace formatting
-// function to be used from the `IsTracer` trait.
-impl Parse for TryMethod {
-    fn parse(input : ParseStream) -> ParseResult<TryMethod> {
-        let parsed = match syn::MetaNameValue::parse(input) {
-            //Ok(syn::MetaNameValue { lit, .. }) => {
-            //    panic!()
-            //},
-            
-            Ok(syn::MetaNameValue { lit : syn::Lit::Str(lit_str), .. }) => {
-                match lit_str.parse::<syn::ExprMethodCall>() {
-                    Ok(method_call) => method_call,
-                    Err(e) => panic!("Failed to parse method call from str lit : {}\n", e),
-                }
-            },
-            Err(e) => panic!("Failed to parse Trace Attribute as #[trace(trace_loc, step)]. Error : {}", e),
-            _ => panic!("Failed to parse string lit in method call parser"),
-        };        
-
-        Ok(TryMethod { method_call : parsed })
-
-    }
-}
-
-
 struct StepKv {
     step_tag : String,
-    result_type : syn::Type,
+    result_type : Option<syn::Type>,
     fun_name : syn::Ident,
 }
 
@@ -70,7 +37,7 @@ impl StepKv {
 
     fn new(
         step_tag : String,
-        result_type : syn::Type,
+        result_type : Option<syn::Type>,
         fun_name : syn::Ident,
     ) -> Self {
         StepKv {
@@ -80,47 +47,48 @@ impl StepKv {
         }
     }
 
-    fn mk_tag_str_fun(
-        &self, 
-        enum_ident : &syn::Ident, 
-        enum_generics : &syn::Generics,
-        nobound_generics : &syn::Generics
-    ) -> syn::ItemImpl {
-        let tag_string = &self.step_tag;
 
-        match USED_IDS.lock() {
-            Ok(mut guard) => {
-                match guard.get(tag_string) {
-                    Some(overloaded_enum_string) =>  {
-                        panic!(
-                            "Step identifier {} was found to be overloaded.
-                            When assigning it to step {}, it was also assigned \
-                            to {}", tag_string, enum_ident.to_string(), overloaded_enum_string
-                        );
 
-                    },
-                    None => { guard.insert(tag_string.clone(), enum_ident.to_string()); }
-                }
-            }
-            Err(e) => {
-                panic!(
-                    "Failed to get mutex guard (used to ensure step IDs are not \
-                    overloaded. Error : {}", e
-                );
+}
+
+fn mk_tag_str_fun(
+    tag_string : &String,
+    enum_ident : &syn::Ident, 
+    enum_generics : &syn::Generics,
+    nobound_generics : &syn::Generics
+) -> syn::ItemImpl {
+
+    match USED_IDS.lock() {
+        Ok(mut guard) => {
+            match guard.get(tag_string) {
+                Some(overloaded_enum_string) =>  {
+                    panic!(
+                        "Step identifier {} was found to be overloaded.
+                        When assigning it to step {}, it was also assigned \
+                        to {}", tag_string, enum_ident.to_string(), overloaded_enum_string
+                    );
+
+                },
+                None => { guard.insert(tag_string.clone(), enum_ident.to_string()); }
             }
         }
-
-
-        let impl_block = parse_quote! {
-            impl#enum_generics #enum_ident#nobound_generics {
-                fn tag(&self) -> &'static str {
-                    #tag_string
-                }
-            }
-        };
-        impl_block
+        Err(e) => {
+            panic!(
+                "Failed to get mutex guard (used to ensure step IDs are not \
+                overloaded. Error : {}", e
+            );
+        }
     }
 
+
+    let impl_block = parse_quote! {
+        impl#enum_generics #enum_ident#nobound_generics {
+            fn tag(&self) -> &'static str {
+                #tag_string
+            }
+        }
+    };
+    impl_block
 }
 
 
@@ -178,7 +146,7 @@ impl Parse for StepKv {
         }
 
         let step_tag = step_tag.expect("Failed to get step tag from macro attribute");
-        let result_type = result_type.expect("Failed to get result type from macro attribute");
+        //let result_type = result_type.expect("Failed to get result type from macro attribute");
         let fun_ident = fun_ident.expect("Failed to get fun ident from macro attribute");
 
         Ok(StepKv::new(step_tag, result_type, fun_ident))
@@ -510,8 +478,81 @@ fn mk_default_trace(
 
 // need a minor attribute that creates a function `get_result()` for 
 // each enum variant.
+//fn mk_step_fun(
+//    
+//    parsed_enum : &syn::ItemEnum, 
+//    // IE ExprPtr<'a>
+//    return_type : Option<&syn::Type>,
+//    // IE `trace_combining()`
+//    trace_fun_name : &syn::Ident,
+//    enum_generics : &syn::Generics,
+//    nobound_generics : &syn::Generics,
+//    has_lifetime : bool,
+//) -> syn::ItemImpl {
+//    match return_type {
+//        None => mk_step_fun_no_result(
+//            parsed_enum,
+//            trace_fun_name,
+//            enum_generics,
+//            nobound_generics,
+//            has_lifetime
+//        ),
+//        Some(return_type) => mk_step_fun_with_result(
+//            parsed_enum,
+//            return_type,
+//            trace_fun_name,
+//            enum_generics,
+//            nobound_generics,
+//            has_lifetime
+//        )
+//    }
+//}
 
-fn mk_step_fun(
+fn mk_step_fun_no_result(
+    parsed_enum : &syn::ItemEnum, 
+    trace_fun_name : &syn::Ident,
+    enum_generics : &syn::Generics,
+    nobound_generics : &syn::Generics,
+    has_lifetime : bool,
+) -> syn::ItemImpl {
+    let enum_ident = parsed_enum.ident.clone();
+
+    let generics : syn::Generics = match has_lifetime {
+        false => {
+            let g : syn::Generics = parse_quote!(<'a, CTX : IsCtx<'a>>);
+            g
+        },
+        true => {
+            let g : syn::Generics = parse_quote!(<CTX : IsCtx<'a>>);
+            g
+        }
+    };
+
+    let step_idx_ident = format_ident!("step_idx__");
+    let item_impl : syn::ItemImpl = parse_quote! {
+        impl#enum_generics #enum_ident#nobound_generics {
+            pub fn step_only#generics(self, ctx : &mut CTX) -> Step<Self> {
+                if (<CTX as IsCtx>::IS_PFINDER || <CTX as IsCtx>::Tracer::NOOP) {
+                    Step::new_pfind()
+                } else {
+                    // the trace function returns the step_idx since that :
+                    // 1. Prevents us from needing to coordinate two copies, (which would
+                    //    be the case since it needs to be used in two distinct locations
+                    // 2. Allows for users to decide how/when it's going to be set
+                    //    since the location we're setting it now is an overridable
+                    //    default trait method.
+                    let #step_idx_ident = <CTX as IsCtx>::Tracer::#trace_fun_name(self, ctx);
+                    Step::new_live(#step_idx_ident)
+                }
+            }
+        }
+    };
+
+    item_impl
+}
+
+
+fn mk_step_fun_with_result(
     parsed_enum : &syn::ItemEnum, 
     // IE ExprPtr<'a>
     return_type : &syn::Type,
@@ -564,6 +605,208 @@ fn mk_step_fun(
     item_impl
 }
 
+
+fn remove_generic_bounds(mut g : syn::Generics) -> syn::Generics {
+    for elem in g.params.iter_mut() {
+        match elem {
+            syn::GenericParam::Type(type_param) => {
+                type_param.colon_token = None;
+                type_param.bounds.clear();
+                type_param.eq_token = None;
+                type_param.default = None;
+            },
+            _ => continue
+        }
+    }
+    g
+}
+
+fn has_lifetime(item_enum : &syn::ItemEnum) -> bool {
+    item_enum
+    .generics
+    .params
+    .iter()
+    .any(|generic_param| {
+        match generic_param {
+            syn::GenericParam::Lifetime(..) => true,
+            _ => false,
+        }
+    })
+}
+
+
+
+#[proc_macro_attribute]
+pub fn is_step(attr : TokenStream, input : TokenStream) -> TokenStream {
+    // gives the step tag and the result type
+
+    // Parse the enum's general tag, and return type.
+    let parsed_kvs = parse_macro_input!(attr as StepKv);
+
+    match parsed_kvs.result_type {
+        Some(result_type) => handle_macro_with_return(
+            parsed_kvs.step_tag, 
+            result_type, 
+            parsed_kvs.fun_name,
+            input
+        ),
+        None => handle_macro_no_return(
+            parsed_kvs.step_tag, 
+            parsed_kvs.fun_name,
+            input
+        )
+    }
+
+
+
+}
+
+fn handle_macro_with_return(
+    step_tag : String,
+    result_type : syn::Type,
+    fun_name : syn::Ident,
+    input : TokenStream,
+) -> TokenStream {
+    
+    let mut parsed_enum = parse_macro_input!(input as ItemEnum);
+    let nobound_generics = remove_generic_bounds(parsed_enum.generics.clone());
+    let has_lifetime = has_lifetime(&parsed_enum);
+    // assert that the stated result type and the actual one decorated match.
+    let result_fun = mk_get_result_fun(
+        &mut parsed_enum.variants,
+        &parsed_enum.ident,
+        &parsed_enum.generics,
+        &nobound_generics,
+    );
+
+    // remove minor attributes and create function that returns the
+    // constructor's string tag.
+    let ctor_tag_impl_block = collect_minor_attrs(
+        &mut parsed_enum.variants, 
+        &parsed_enum.ident,
+        &parsed_enum.generics,
+        &nobound_generics
+
+    );
+
+
+    // make the function that returns the enum tag as a string.
+    let tag_str_impl = mk_tag_str_fun(
+        &step_tag,
+        &parsed_enum.ident, 
+        &parsed_enum.generics,
+        &nobound_generics
+    );
+
+    let default_trace = mk_default_trace(
+        &parsed_enum,
+        &parsed_enum.generics,
+        &nobound_generics,
+        has_lifetime,
+    );
+
+    let step_fun = mk_step_fun_with_result(
+        &parsed_enum, 
+        &result_type,
+        &fun_name,
+        &parsed_enum.generics,
+        &nobound_generics,
+        has_lifetime
+    );
+
+    TokenStream::from(quote! {
+        #parsed_enum
+        #result_fun
+        #tag_str_impl
+        #ctor_tag_impl_block
+        #step_fun
+        #default_trace
+    })
+}
+
+fn handle_macro_no_return(
+    step_tag : String,
+    fun_name : syn::Ident,
+    input : TokenStream,
+) -> TokenStream {
+
+    let mut parsed_enum = parse_macro_input!(input as ItemEnum);
+    let nobound_generics = remove_generic_bounds(parsed_enum.generics.clone());
+    let has_lifetime = has_lifetime(&parsed_enum);
+
+    // assert that the stated result type and the actual one decorated match.
+
+    // remove minor attributes and create function that returns the
+    // constructor's string tag.
+    let ctor_tag_impl_block = collect_minor_attrs(
+        &mut parsed_enum.variants, 
+        &parsed_enum.ident,
+        &parsed_enum.generics,
+        &nobound_generics
+    );
+
+
+    // make the function that returns the enum tag as a string.
+    let tag_str_impl = mk_tag_str_fun(
+        &step_tag,
+        &parsed_enum.ident, 
+        &parsed_enum.generics,
+        &nobound_generics
+    );
+
+    let default_trace = mk_default_trace(
+        &parsed_enum,
+        &parsed_enum.generics,
+        &nobound_generics,
+        has_lifetime,
+    );
+
+    let step_fun = mk_step_fun_no_result(
+        &parsed_enum, 
+        &fun_name,
+        &parsed_enum.generics,
+        &nobound_generics,
+        has_lifetime
+    );
+
+    TokenStream::from(quote! {
+        #parsed_enum
+        #tag_str_impl
+        #ctor_tag_impl_block
+        #step_fun
+        #default_trace
+    })    
+
+}
+
+struct TryMethod {
+    method_call : syn::ExprMethodCall
+}
+
+impl TryMethod {
+}
+
+// Parse the top level #[is_step(..)] key value pairs.
+// Includes the step's tag, the return type, and the name of the trace formatting
+// function to be used from the `IsTracer` trait.
+impl Parse for TryMethod {
+    fn parse(input : ParseStream) -> ParseResult<TryMethod> {
+        let parsed = match syn::MetaNameValue::parse(input) {
+            Ok(syn::MetaNameValue { lit : syn::Lit::Str(lit_str), .. }) => {
+                match lit_str.parse::<syn::ExprMethodCall>() {
+                    Ok(method_call) => method_call,
+                    Err(e) => panic!("Failed to parse method call from str lit : {}\n", e),
+                }
+            },
+            Err(e) => panic!("Failed to parse Trace Attribute as #[trace(trace_loc, step)]. Error : {}", e),
+            _ => panic!("Failed to parse string lit in method call parser"),
+        };        
+
+        Ok(TryMethod { method_call : parsed })
+
+    }
+}
+
 fn mk_try_fun(mut fun : syn::ItemFn, method_call : syn::ExprMethodCall) -> syn::ItemFn {
     fun.attrs.clear();
     fun.vis = syn::Visibility::Inherited;
@@ -603,36 +846,6 @@ fn mk_try_fun(mut fun : syn::ItemFn, method_call : syn::ExprMethodCall) -> syn::
     fun
 }
 
-
-fn remove_generic_bounds(mut g : syn::Generics) -> syn::Generics {
-    for elem in g.params.iter_mut() {
-        match elem {
-            syn::GenericParam::Type(type_param) => {
-                type_param.colon_token = None;
-                type_param.bounds.clear();
-                type_param.eq_token = None;
-                type_param.default = None;
-            },
-            _ => continue
-        }
-    }
-    g
-}
-
-fn has_lifetime(item_enum : &syn::ItemEnum) -> bool {
-    item_enum
-    .generics
-    .params
-    .iter()
-    .any(|generic_param| {
-        match generic_param {
-            syn::GenericParam::Lifetime(..) => true,
-            _ => false,
-        }
-    })
-}
-
-
 #[proc_macro_attribute]
 pub fn has_try(attr : TokenStream, input : TokenStream) -> TokenStream {
     let try_method = parse_macro_input!(attr as TryMethod);
@@ -643,72 +856,4 @@ pub fn has_try(attr : TokenStream, input : TokenStream) -> TokenStream {
         #base_fun
         #try_fun
     })
-}
-
-#[proc_macro_attribute]
-pub fn is_step(attr : TokenStream, input : TokenStream) -> TokenStream {
-    // gives the step tag and the result type
-    let mut parsed_enum = parse_macro_input!(input as ItemEnum);
-    let nobound_generics = remove_generic_bounds(parsed_enum.generics.clone());
-    let has_lifetime = has_lifetime(&parsed_enum);
-
-    let result_fun = mk_get_result_fun(
-        &mut parsed_enum.variants,
-        &parsed_enum.ident,
-        &parsed_enum.generics,
-        &nobound_generics,
-    );
-
-    // remove minor attributes and create function that returns the
-    // constructor's string tag.
-    let ctor_tag_impl_block = collect_minor_attrs(
-        &mut parsed_enum.variants, 
-        &parsed_enum.ident,
-        &parsed_enum.generics,
-        &nobound_generics
-
-    );
-
-    // Parse the enum's general tag, and return type.
-    let parsed_kvs = parse_macro_input!(attr as StepKv);
-
-    // make the function that returns the enum tag as a string.
-    let tag_str_impl = parsed_kvs.mk_tag_str_fun(
-        &parsed_enum.ident, 
-        &parsed_enum.generics,
-        &nobound_generics
-    );
-
-    let default_trace = mk_default_trace(
-        &parsed_enum,
-        &parsed_enum.generics,
-        &nobound_generics,
-        has_lifetime,
-    );
-
-    let step_fun = mk_step_fun(
-        &parsed_enum, 
-        &parsed_kvs.result_type, 
-        &parsed_kvs.fun_name,
-        &parsed_enum.generics,
-        &nobound_generics,
-        has_lifetime
-    );
-
-    TokenStream::from(quote! {
-        #parsed_enum
-        #result_fun
-        #tag_str_impl
-        #ctor_tag_impl_block
-        #step_fun
-        #default_trace
-    })
-
-
-
-
-
-
-
-
 }

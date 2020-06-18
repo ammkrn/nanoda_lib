@@ -2699,22 +2699,18 @@ pub enum UnfoldDef<'a> {
 }
 
 
-#[is_step(tag="EQ", result_type = "ShortCircuit", fun = "trace_def_eq")]
+#[is_step(tag="EQ", fun = "trace_def_eq")]
 #[derive(Debug, Clone, Copy)]
 pub enum DefEq<'a> {
     #[R]
     PtrEq {
         l : ExprPtr<'a>,
         r : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit
     },
     #[H]
     CacheHit {
         l : ExprPtr<'a>,
         r : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
         h1 : Step<DefEq<'a>>,
     },
     #[S]
@@ -2723,8 +2719,6 @@ pub enum DefEq<'a> {
         r : ExprPtr<'a>,
         lw : ExprPtr<'a>,
         rw : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
         h1 : Step<WhnfCore<'a>>,
         h2 : Step<WhnfCore<'a>>,
         h3 : Step<DefEqSort<'a>>,
@@ -2735,8 +2729,6 @@ pub enum DefEq<'a> {
         r : ExprPtr<'a>,
         lw : ExprPtr<'a>,
         rw : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
         h1 : Step<WhnfCore<'a>>,
         h2 : Step<WhnfCore<'a>>,
         h3 : Step<DefEqPi<'a>>,
@@ -2747,8 +2739,6 @@ pub enum DefEq<'a> {
         r : ExprPtr<'a>,
         lw : ExprPtr<'a>,
         rw : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
         h1 : Step<WhnfCore<'a>>,
         h2 : Step<WhnfCore<'a>>,
         h3 : Step<DefEqLambda<'a>>,
@@ -2759,8 +2749,6 @@ pub enum DefEq<'a> {
         r : ExprPtr<'a>,
         lw : ExprPtr<'a>,
         rw : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
         h1 : Step<WhnfCore<'a>>,
         h2 : Step<WhnfCore<'a>>,
         h3 : Step<ProofIrrelEq<'a>>,
@@ -2771,8 +2759,6 @@ pub enum DefEq<'a> {
         r : ExprPtr<'a>,
         lw : ExprPtr<'a>,
         rw : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
         h1 : Step<WhnfCore<'a>>,
         h2 : Step<WhnfCore<'a>>,
         h3 : Step<LazyDeltaStep<'a>>,
@@ -2785,8 +2771,6 @@ pub enum DefEq<'a> {
         rw : ExprPtr<'a>,
         l_d : ExprPtr<'a>,
         r_d : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
         h1 : Step<WhnfCore<'a>>,
         h2 : Step<WhnfCore<'a>>,
         h3 : Step<LazyDeltaStep<'a>>,
@@ -2800,8 +2784,6 @@ pub enum DefEq<'a> {
         rw : ExprPtr<'a>,
         l_d : ExprPtr<'a>,
         r_d : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
         h1 : Step<WhnfCore<'a>>,
         h2 : Step<WhnfCore<'a>>,
         h3 : Step<LazyDeltaStep<'a>>,
@@ -2815,8 +2797,6 @@ pub enum DefEq<'a> {
         rw : ExprPtr<'a>,
         l_d : ExprPtr<'a>,
         r_d : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
         h1 : Step<WhnfCore<'a>>,
         h2 : Step<WhnfCore<'a>>,
         h3 : Step<LazyDeltaStep<'a>>,
@@ -2830,8 +2810,6 @@ pub enum DefEq<'a> {
         rw : ExprPtr<'a>,
         l_d : ExprPtr<'a>,
         r_d : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
         h1 : Step<WhnfCore<'a>>,
         h2 : Step<WhnfCore<'a>>,
         h3 : Step<LazyDeltaStep<'a>>,
@@ -2845,20 +2823,16 @@ pub enum DefEq<'a> {
         rw : ExprPtr<'a>,
         l_d : ExprPtr<'a>,
         r_d : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
         h1 : Step<WhnfCore<'a>>,
         h2 : Step<WhnfCore<'a>>,
         h3 : Step<LazyDeltaStep<'a>>,
         h4 : Step<DefEqEta<'a>>,
     },
-    #[N]
-    Ne {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit
-    }
+    //#[N]
+    //Ne {
+    //    l : ExprPtr<'a>,
+    //    r : ExprPtr<'a>,
+    //}
 }
 
 #[is_step(tag="ET", result_type = "ShortCircuit", fun = "trace_def_eq_eta")]

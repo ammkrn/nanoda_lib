@@ -37,9 +37,15 @@ pub enum DeltaResult<'a> {
     Exhausted(ExprPtr<'a>, ExprPtr<'a>),
 }
 
-// Option<Either>
+// sub-functions return
+// Option<EqCtorResult<DefEqPi>>
+// if let Some(eq_cotr_res) = try_def_eq_pi(self, other, tc)
+// match eq_ctor_res {
+//   NeShort => return None
+//   EqShort(ss, step) => {..}
+//}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TryEqResult<S> {
+pub enum EqCtorResult<S> {
     EqShort(ShortCircuit, Step<S>),
     NeShort,
 }
@@ -48,6 +54,13 @@ pub enum TryEqResult<S> {
 I think there's still value to caching Neq
 Maybe not
 */
+
+#[macro_export]
+macro_rules! ne_if_none {
+    ( $x:expr ) => {
+
+    };
+}
 
 #[macro_export]
 macro_rules! wrap_def_eq {
@@ -92,7 +105,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         self,
         other : Self,
         tc : &mut TC,
-    ) -> Option<((), Step<DefEq<'l>>)> {
+    ) -> Option<Step<DefEq<'l>>> {
         unimplemented!()
         /*
         if self == other {
@@ -316,6 +329,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         other : Self,
         tc : &mut impl IsTc<'t, 'l, 'e>
     ) -> Option<(ShortCircuit, Step<DefEqPi<'l>>)> {
+    //) -> Option<CtorEqResult<DefEqPi<'l>>> {
         match (self.read(tc), other.read(tc)) {
             (Pi {..}, Pi {..}) => {
                 Some(self.def_eq_pi(other, Nil::<Expr>.alloc(tc), tc))
@@ -331,6 +345,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         doms : ExprsPtr<'l>,
         tc : &mut impl IsTc<'t, 'l, 'e> 
     ) -> (ShortCircuit, Step<DefEqPi<'l>>) {
+    //) -> EqCtorResult {
         match (self.read(tc), other.read(tc)) {
             (
                 Pi { b_name : n1, b_type : t1, b_style : s1, body : b1, .. },
@@ -339,6 +354,12 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 let (t1_prime, h1) = t1.inst(doms, tc);
                 let (t2_prime, h2) = t2.inst(doms, tc);
                 let (ss_binders, h3) = t1_prime.def_eq(t2_prime, tc);
+                /*
+                let h3 = match t1_prime.def_eq(t2_prime, tc) {
+                    None => return EqCtorResult::NeShort,
+                    Some(h3) => h3
+                };
+                */
                 if let NeShort = ss_binders {
                     DefEqPi::StepNe {
                         lbn : n1,
@@ -435,26 +456,32 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 let (t1_prime, h1) = t1.inst(doms, tc);
                 let (t2_prime, h2) = t2.inst(doms, tc);
                 let (ss_binders, h3) = t1_prime.def_eq(t2_prime, tc);
+                let h3 = neq_if_none! { tl_prime.def_eq(t2_prime, tc) };
+                //let h3 = match tl_prime.def_eq(t2_prime, tc) {
+                //    Some(h3) => h3,
+                //    None => return NeShort
+                //}
                 if let NeShort = ss_binders {
-                    DefEqLambda::StepNe {
-                        lbn : n1,
-                        lbt : t1,
-                        lbs : s1,
-                        lbo : b1,
-                        rbn : n2,
-                        rbt : t2,
-                        rbs : s2,
-                        rbo : b2,
-                        lbt_prime : t1_prime,
-                        rbt_prime : t2_prime,
-                        doms,
-                        ss : ss_binders,
-                        h1,
-                        h2,
-                        h3,
-                        ind_arg1 : self,
-                        ind_arg2 : other,
-                    }.step(tc)
+                    unimplemented!()
+                   // DefEqLambda::StepNe {
+                   //     lbn : n1,
+                   //     lbt : t1,
+                   //     lbs : s1,
+                   //     lbo : b1,
+                   //     rbn : n2,
+                   //     rbt : t2,
+                   //     rbs : s2,
+                   //     rbo : b2,
+                   //     lbt_prime : t1_prime,
+                   //     rbt_prime : t2_prime,
+                   //     doms,
+                   //     ss : ss_binders,
+                   //     h1,
+                   //     h2,
+                   //     h3,
+                   //     ind_arg1 : self,
+                   //     ind_arg2 : other,
+                   // }.step(tc)
                 } else {
                     let local = <ExprPtr>::new_local(n1, t1_prime, s1, tc);
                     let (ss_bodies, h4) = b1.def_eq_pi(b2, Cons(local, doms).alloc(tc), tc);
