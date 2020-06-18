@@ -74,7 +74,7 @@ impl HasPtrRepr for ShortCircuit {
     fn ptr_repr(self) -> String {
         match self {
             ShortCircuit::EqShort => format!("eq"),
-            ShortCircuit::NeqShort => format!("ne"),
+            ShortCircuit::NeShort => format!("ne"),
         }
     }
 }

@@ -427,7 +427,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
 
         let (new_ctor_app, h3) = e_type.mk_nullary_ctor(recursor.rec_num_params(tc)?, tc)?;
         let (new_type, h4) = new_ctor_app.infer(InferOnly, tc);
-        let (eq_result, h5) = e_type.def_eq(new_type, tc);
+        let (eq_result, h5) = e_type.def_eq(new_type, tc)?;
 
         if let EqShort = eq_result {
             Some(ToCtorWhenK::Base {
@@ -455,7 +455,10 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 h5,
             }.step(tc))
         } else {
-            None
+            unreachable!(
+                "Should no longer be able to actually get a NeShort result; \
+                it's supposed to just be `None` now"
+            )
         }
     }
 

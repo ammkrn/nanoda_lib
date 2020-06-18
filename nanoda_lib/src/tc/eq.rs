@@ -14,6 +14,7 @@ use crate::utils::{
     List::*,
     ListPtr,
     Env,
+    IsCtx,
     IsTc,
     Tc,
     Pfinder,
@@ -26,7 +27,7 @@ use DeltaResult::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShortCircuit {
     EqShort,
-    NeqShort
+    NeShort
 }
 
 
@@ -36,43 +37,101 @@ pub enum DeltaResult<'a> {
     Exhausted(ExprPtr<'a>, ExprPtr<'a>),
 }
 
+// Option<Either>
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TryEqResult<S> {
+    EqShort(ShortCircuit, Step<S>),
+    NeShort,
+}
+
+/*
+I think there's still value to caching Neq
+Maybe not
+*/
+
+#[macro_export]
+macro_rules! wrap_def_eq {
+    ( $ss:ident, $step:expr ) => {
+        match $ss {
+            NeShort => {
+                assert!(<TC as IsCtx>::IS_PFINDER);
+                None
+            },
+            EqShort => {
+                Some($step)
+            }
+        }
+    };
+}
 
 impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
-    //#[has_try(method = "self.def_eq(other, tc)")]
-    pub fn def_eq(
+    /*
+    Returns an option; the actual printing Tc should never
+    encounter a NeShort value, since the branches it takes
+    have either been cleared by a Pfinder, or are a hard error.
+
+
+    I think it's fine to leave NeShort cache values in without clearing them
+    between Pfinders?
+
+
+    match the short cirsuit;
+    if it's NeShort,
+    assert you have a Pfinder,
+    and then return None
+    
+
+    The "sub-methods" like DefEqPi shoudl be able to return NeShort,
+    but DefEq itself should not be able to in this version, since we're
+    not going to cache NeShort results.
+
+    
+    */
+    #[has_try(method = "self.def_eq(other, tc)")]
+    pub fn def_eq<TC : IsTc<'t, 'l, 'e>>(
         self,
         other : Self,
-        tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (ShortCircuit, Step<DefEq<'l>>) {
+        tc : &mut TC,
+    ) -> Option<((), Step<DefEq<'l>>)> {
+        unimplemented!()
+        /*
         if self == other {
-            DefEq::PtrEq {
+            Some(DefEq::PtrEq {
                 l : self,
                 r : other,
                 ss : EqShort
-            }.step(tc)
+            }.step(tc))
         } else if let Some((ss, h1)) = tc.check_eq_cache(self, other) {
-            DefEq::CacheHit {
+            Some(DefEq::CacheHit {
                 l : self,
                 r : other,
                 ss,
                 h1,
-            }.step(tc)
+            }.step(tc))
         } else {
             let (result, step) = {
                 let (lw, h1) = self.whnf_core(tc);
                 let (rw, h2) = other.whnf_core(tc);
 
-                if let Some((ss, h3)) = lw.try_def_eq_sort(rw, tc) {
-                    DefEq::Sort {
-                        l : self,
-                        r : other,
-                        lw,
-                        rw,
-                        ss,
-                        h1,
-                        h2,
-                        h3
-                    }.step(tc)
+                if let Some(x) = lw.try_def_eq_sort(rw, tc) {
+                    match x {
+                        NeShort => {
+                            assert!(<TC as IsCtx>::IS_PFINDER);
+                            None
+                        }
+                        (EqShort, h3) => {
+                            Some(DefEq::Sort {
+                                l : self,
+                                r : other,
+                                lw,
+                                rw,
+                                ss,
+                                h1,
+                                h2,
+                                h3
+                            }.step(tc))
+                        }
+                    }
                 } else if let Some((ss, h3)) = lw.try_def_eq_pi(rw, tc) {
                     DefEq::Pi {
                         l : self,
@@ -196,18 +255,32 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                                 DefEq::Ne {
                                     l : self,
                                     r : other,
-                                    ss : NeqShort
+                                    ss : NeShort
                                 }.step(tc)
                             }
                         }
                     }
                 }
             };
+
+            match result {
+                None => {
+                    //assert!(<TC as IsCtx>::IS_PFINDER);
+                    //tc.insert_eq_cache(self, other, result, step);
+                    None
+                },
+                Some((NeShort, _)) => {
+                    unimplemented!()
+                }
+                Some((EqShort, step)) => {
+                    tc.insert_eq_cache(self, other, result, step);
+                    Some((result, step))
+                }
+            }
             
-            tc.insert_eq_cache(self, other, result, step);
-            (result, step)
         }
 
+        */
     }
 
     fn try_def_eq_sort(
@@ -220,7 +293,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 let (ssb, h1) = l1.eq_antisymm(l2, tc);
                 let ss = match ssb {
                     true => EqShort,
-                    false => NeqShort
+                    false => NeShort
                 };
                 Some(DefEqSort::Base {
                     l1,
@@ -237,7 +310,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
 
     // `try` is different here since this wrapper function
     // implements try-like behavior, and we want to return
-    // NeqShort if they're both Pis AND not equal.
+    // NeShort if they're both Pis AND not equal.
     fn try_def_eq_pi(
         self,
         other : Self,
@@ -266,7 +339,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 let (t1_prime, h1) = t1.inst(doms, tc);
                 let (t2_prime, h2) = t2.inst(doms, tc);
                 let (ss_binders, h3) = t1_prime.def_eq(t2_prime, tc);
-                if let NeqShort = ss_binders {
+                if let NeShort = ss_binders {
                     DefEqPi::StepNe {
                         lbn : n1,
                         lbt : t1,
@@ -333,7 +406,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
     
     // `try` is different here since this wrapper function
     // implements try-like behavior, and we want to return
-    // NeqShort if they're both lambdas AND they're not equal.
+    // NeShort if they're both lambdas AND they're not equal.
     fn try_def_eq_lambda(
         self,
         other : Self,
@@ -362,7 +435,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 let (t1_prime, h1) = t1.inst(doms, tc);
                 let (t2_prime, h2) = t2.inst(doms, tc);
                 let (ss_binders, h3) = t1_prime.def_eq(t2_prime, tc);
-                if let NeqShort = ss_binders {
+                if let NeShort = ss_binders {
                     DefEqLambda::StepNe {
                         lbn : n1,
                         lbt : t1,
@@ -496,11 +569,11 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 let ((r_fun, r_args), h2) = other.unfold_apps(tc);
                 let (funs_ss, h3) = l_fun.def_eq(r_fun, tc);
                 match funs_ss {
-                    NeqShort => None,
+                    NeShort => None,
                     EqShort => {
                         let (ss, h4) = args_eq(l_args, r_args, tc);
                         match ss {
-                            NeqShort => None,
+                            NeShort => None,
                             EqShort => {
                                 Some(DefEqApp::Base {
                                     l_fun,
@@ -541,7 +614,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                         let new_lambda = <ExprPtr>::new_lambda(rbn, rbt, rbs, new_body, tc);
                         let (ss, h3) = self.def_eq(new_lambda, tc);
                         match ss {
-                            NeqShort => None,
+                            NeShort => None,
                             EqShort => {
                                 Some(DefEqEta::Base {
                                     r : other,
@@ -904,7 +977,7 @@ pub fn args_eq<'t, 'l : 't, 'e : 'l>(
             rs,
             ls_len,
             rs_len,
-            ss : NeqShort,
+            ss : NeShort,
             h1,
             h2,
         }.step(tc)
@@ -928,13 +1001,13 @@ pub fn args_eq_aux<'t, 'l : 't, 'e : 'l>(
         (Cons(x, xs), Cons(y, ys)) => {
             let (hds_eq, h1) = x.def_eq(y, tc);
             match hds_eq {
-                NeqShort => {
+                NeShort => {
                     ArgsEqAux::BaseHdsNe {
                         l : x,
                         r : y,
                         ls_tl : xs,
                         rs_tl : ys,
-                        ss : NeqShort,
+                        ss : NeShort,
                         h1,
                         ind_arg1 : ls,
                         ind_arg2 : rs,

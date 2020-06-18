@@ -2954,8 +2954,8 @@ pub enum DefEqPi<'a> {
         h2 : Step<Inst<'a>>,
         h3 : Step<DefEq<'a>>,
     },
-    #[N]
-    StepNe {
+    #[E]
+    StepEq {
         lbn : NamePtr<'a>,
         lbt : ExprPtr<'a>,
         lbs : BinderStyle,
@@ -2972,8 +2972,29 @@ pub enum DefEqPi<'a> {
         h1 : Step<Inst<'a>>,
         h2 : Step<Inst<'a>>,
         h3 : Step<DefEq<'a>>,
+        h4 : Step<DefEqPi<'a>>,
         ind_arg1 : ExprPtr<'a>,
         ind_arg2 : ExprPtr<'a>,
+    }    
+}
+
+
+#[is_step(tag="EL", result_type = "ShortCircuit", fun = "trace_def_eq_lambda")]
+#[derive(Debug, Clone, Copy)]
+pub enum DefEqLambda<'a> {
+    #[B]
+    Base {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_prime : ExprPtr<'a>,
+        r_prime : ExprPtr<'a>,
+        doms : ExprsPtr<'a>,
+        #[result]
+        ss : ShortCircuit,
+        h1 : Step<Inst<'a>>,
+        h2 : Step<Inst<'a>>,
+        h3 : Step<DefEq<'a>>,
+
     },
     #[E]
     StepEq {
@@ -2998,6 +3019,7 @@ pub enum DefEqPi<'a> {
         ind_arg2 : ExprPtr<'a>,
     }    
 }
+
 
 #[is_step(tag="EA", result_type = "ShortCircuit", fun = "trace_def_eq_app")]
 #[derive(Debug, Clone, Copy)]
@@ -3019,70 +3041,6 @@ pub enum DefEqApp<'a> {
         ind_arg2 : ExprPtr<'a>,
     }
 }
-
-#[is_step(tag="EL", result_type = "ShortCircuit", fun = "trace_def_eq_lambda")]
-#[derive(Debug, Clone, Copy)]
-pub enum DefEqLambda<'a> {
-    #[B]
-    Base {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        l_prime : ExprPtr<'a>,
-        r_prime : ExprPtr<'a>,
-        doms : ExprsPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<DefEq<'a>>,
-
-    },
-    #[N]
-    StepNe {
-        lbn : NamePtr<'a>,
-        lbt : ExprPtr<'a>,
-        lbs : BinderStyle,
-        lbo : ExprPtr<'a>,
-        rbn : NamePtr<'a>,
-        rbt : ExprPtr<'a>,
-        rbs : BinderStyle,
-        rbo : ExprPtr<'a>,
-        lbt_prime : ExprPtr<'a>,
-        rbt_prime : ExprPtr<'a>,
-        doms : ExprsPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<DefEq<'a>>,
-        ind_arg1 : ExprPtr<'a>,
-        ind_arg2 : ExprPtr<'a>,
-    },
-    #[E]
-    StepEq {
-        lbn : NamePtr<'a>,
-        lbt : ExprPtr<'a>,
-        lbs : BinderStyle,
-        lbo : ExprPtr<'a>,
-        rbn : NamePtr<'a>,
-        rbt : ExprPtr<'a>,
-        rbs : BinderStyle,
-        rbo : ExprPtr<'a>,
-        lbt_prime : ExprPtr<'a>,
-        rbt_prime : ExprPtr<'a>,
-        doms : ExprsPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<DefEq<'a>>,
-        h4 : Step<DefEqPi<'a>>,
-        ind_arg1 : ExprPtr<'a>,
-        ind_arg2 : ExprPtr<'a>,
-    }    
-}
-
-
 
 #[is_step(tag="SZ", result_type = "bool", fun = "trace_is_sort_zero")]
 #[derive(Debug, Clone, Copy)]
