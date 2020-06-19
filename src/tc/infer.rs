@@ -145,7 +145,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         match as_pi
                  .read(tc) {
             Pi { b_type, body, .. } => {
-                arg.infer(InferOnly, tc).assert_def_eq(b_type, tc);
+                arg.infer(Check, tc).assert_def_eq(b_type, tc);
                 body.inst1(arg, tc)
             },
             _ => unreachable!("infer_app_aux, non-pi fun")
