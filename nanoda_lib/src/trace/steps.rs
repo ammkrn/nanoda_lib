@@ -3,7 +3,8 @@ use crate::utils::{ Ptr, List, List::*, ListPtr, IsCtx, IsLiveCtx };
 use crate::name::{ NamePtr, NamesPtr, Name, StringPtr, Name::* };
 use crate::level::{ LevelPtr, LevelsPtr, Level, Level::* };
 use crate::expr::{ ExprPtr, ExprsPtr, Expr, Expr::*, BinderStyle, LocalSerial };
-use crate::tc::eq::{ DeltaResult, ShortCircuit };
+use crate::tc::infer::InferFlag;
+use crate::tc::eq::{ EqResult, DeltaResult }; 
 use crate::trace::IsTracer;
 use crate::trace::items::{ HasPrefix, HasPtrRepr };
 use crate::env::{ 
@@ -873,6 +874,30 @@ pub enum SubstLMany<'a> {
         ind_arg2 : LevelsPtr<'a>,
     }
 }
+
+#[is_step(tag = "FI", result_type = "LevelPtr<'a>", fun = "trace_fold_imaxs")]
+#[derive(Debug, Clone, Copy)]
+pub enum FoldImaxs<'a> {
+    #[B]
+    Base {
+        #[result]
+        sink : LevelPtr<'a>,
+        ind_arg1 : LevelsPtr<'a>,
+
+
+    },
+    #[S]
+    Step {
+        hd : LevelPtr<'a>,
+        tl : LevelsPtr<'a>,
+        r : LevelPtr<'a>,
+        #[result]
+        out : LevelPtr<'a>,
+        ind_arg1 : LevelsPtr<'a>,
+        h1 : Step<FoldImaxs<'a>>,
+    }
+}
+
 
 #[is_step(tag = "QC", result_type = "bool", fun = "trace_leq_core")]
 #[derive(Debug, Clone, Copy)]
@@ -2698,332 +2723,12 @@ pub enum UnfoldDef<'a> {
     },
 }
 
-
-#[is_step(tag="EQ", fun = "trace_def_eq")]
-#[derive(Debug, Clone, Copy)]
-pub enum DefEq<'a> {
-    #[R]
-    PtrEq {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-    },
-    #[H]
-    CacheHit {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        h1 : Step<DefEq<'a>>,
-    },
-    #[S]
-    Sort {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        lw : ExprPtr<'a>,
-        rw : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<DefEqSort<'a>>,
-    },
-    #[P]
-    Pi {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        lw : ExprPtr<'a>,
-        rw : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<DefEqPi<'a>>,
-    },
-    #[P]
-    Lambda {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        lw : ExprPtr<'a>,
-        rw : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<DefEqLambda<'a>>,
-    },
-    #[I]
-    ProofIrrelEq {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        lw : ExprPtr<'a>,
-        rw : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<ProofIrrelEq<'a>>,
-    },
-    #[D]
-    DeltaShort {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        lw : ExprPtr<'a>,
-        rw : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<LazyDeltaStep<'a>>,
-    },
-    #[C]
-    EqConst {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        lw : ExprPtr<'a>,
-        rw : ExprPtr<'a>,
-        l_d : ExprPtr<'a>,
-        r_d : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<LazyDeltaStep<'a>>,
-        h4 : Step<DefEqConst<'a>>,
-    },
-    #[X]
-    EqLocal {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        lw : ExprPtr<'a>,
-        rw : ExprPtr<'a>,
-        l_d : ExprPtr<'a>,
-        r_d : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<LazyDeltaStep<'a>>,
-        h4 : Step<DefEqLocal<'a>>,
-    },
-    #[A]
-    EqApp {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        lw : ExprPtr<'a>,
-        rw : ExprPtr<'a>,
-        l_d : ExprPtr<'a>,
-        r_d : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<LazyDeltaStep<'a>>,
-        h4 : Step<DefEqApp<'a>>,
-    },
-    #[U]
-    EtaLr {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        lw : ExprPtr<'a>,
-        rw : ExprPtr<'a>,
-        l_d : ExprPtr<'a>,
-        r_d : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<LazyDeltaStep<'a>>,
-        h4 : Step<DefEqEta<'a>>,
-    },
-    #[V]
-    EtaRl {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        lw : ExprPtr<'a>,
-        rw : ExprPtr<'a>,
-        l_d : ExprPtr<'a>,
-        r_d : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<LazyDeltaStep<'a>>,
-        h4 : Step<DefEqEta<'a>>,
-    },
-    //#[N]
-    //Ne {
-    //    l : ExprPtr<'a>,
-    //    r : ExprPtr<'a>,
-    //}
-}
-
-#[is_step(tag="ET", result_type = "ShortCircuit", fun = "trace_def_eq_eta")]
-#[derive(Debug, Clone, Copy)]
-pub enum DefEqEta<'a> {
-    #[B]
-    Base {
-        r : ExprPtr<'a>,
-        lbn : NamePtr<'a>,
-        rbn : NamePtr<'a>,
-        lbt : ExprPtr<'a>,
-        rbt : ExprPtr<'a>,        
-        lbs : BinderStyle,
-        rbs : BinderStyle,
-        lbo : ExprPtr<'a>,
-        rbo : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<Infer<'a>>,
-        h2 : Step<Whnf<'a>>,
-        h3 : Step<DefEq<'a>>,
-        ind_arg1 : ExprPtr<'a>,
-    }
-}
-
-#[is_step(tag="ES", result_type = "ShortCircuit", fun = "trace_def_eq_sort")]
-#[derive(Debug, Clone, Copy)]
-pub enum DefEqSort<'a> {
-    #[B]
-    Base {
-        l1 : LevelPtr<'a>,
-        l2 : LevelPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<EqAntisymm<'a>>,
-        ind_arg1 : ExprPtr<'a>,
-        ind_arg2 : ExprPtr<'a>,
-    }
-
-}
-
-#[is_step(tag="EC", result_type = "ShortCircuit", fun = "trace_def_eq_const")]
-#[derive(Debug, Clone, Copy)]
-pub enum DefEqConst<'a> {
-    #[B]
-    Base {
-        l_name : NamePtr<'a>,
-        r_name : NamePtr<'a>,
-        l_levels : LevelsPtr<'a>,
-        r_levels : LevelsPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<EqAntisymmMany<'a>>,
-        ind_arg1 : ExprPtr<'a>,
-        ind_arg2 : ExprPtr<'a>,
-    }
-}
-
-
-#[is_step(tag="EX", result_type = "ShortCircuit", fun = "trace_def_eq_local")]
-#[derive(Debug, Clone, Copy)]
-pub enum DefEqLocal<'a> {
-    #[B]
-    Base {
-        lbn : NamePtr<'a>,
-        rbn : NamePtr<'a>,
-        lbs : BinderStyle,
-        rbs : BinderStyle,
-        lbt : ExprPtr<'a>,
-        rbt : ExprPtr<'a>,
-        l_serial : LocalSerial,
-        r_serial : LocalSerial,
-        #[result]
-        ss : ShortCircuit,
-        ind_arg1 : ExprPtr<'a>,
-        ind_arg2 : ExprPtr<'a>,
-    }
-}
-
-#[is_step(tag="EP", result_type = "ShortCircuit", fun = "trace_def_eq_pi")]
-#[derive(Debug, Clone, Copy)]
-pub enum DefEqPi<'a> {
-    #[B]
-    Base {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        l_prime : ExprPtr<'a>,
-        r_prime : ExprPtr<'a>,
-        doms : ExprsPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<DefEq<'a>>,
-    },
-    #[E]
-    StepEq {
-        lbn : NamePtr<'a>,
-        lbt : ExprPtr<'a>,
-        lbs : BinderStyle,
-        lbo : ExprPtr<'a>,
-        rbn : NamePtr<'a>,
-        rbt : ExprPtr<'a>,
-        rbs : BinderStyle,
-        rbo : ExprPtr<'a>,
-        lbt_prime : ExprPtr<'a>,
-        rbt_prime : ExprPtr<'a>,
-        doms : ExprsPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<DefEq<'a>>,
-        h4 : Step<DefEqPi<'a>>,
-        ind_arg1 : ExprPtr<'a>,
-        ind_arg2 : ExprPtr<'a>,
-    }    
-}
-
-
-#[is_step(tag="EL", result_type = "ShortCircuit", fun = "trace_def_eq_lambda")]
-#[derive(Debug, Clone, Copy)]
-pub enum DefEqLambda<'a> {
-    #[B]
-    Base {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        l_prime : ExprPtr<'a>,
-        r_prime : ExprPtr<'a>,
-        doms : ExprsPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<DefEq<'a>>,
-
-    },
-    #[E]
-    StepEq {
-        lbn : NamePtr<'a>,
-        lbt : ExprPtr<'a>,
-        lbs : BinderStyle,
-        lbo : ExprPtr<'a>,
-        rbn : NamePtr<'a>,
-        rbt : ExprPtr<'a>,
-        rbs : BinderStyle,
-        rbo : ExprPtr<'a>,
-        lbt_prime : ExprPtr<'a>,
-        rbt_prime : ExprPtr<'a>,
-        doms : ExprsPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<DefEq<'a>>,
-        h4 : Step<DefEqPi<'a>>,
-        ind_arg1 : ExprPtr<'a>,
-        ind_arg2 : ExprPtr<'a>,
-    }    
-}
-
-
-#[is_step(tag="EA", result_type = "ShortCircuit", fun = "trace_def_eq_app")]
-#[derive(Debug, Clone, Copy)]
-pub enum DefEqApp<'a> {
-    #[B]
-    Base {
-        l_fun : ExprPtr<'a>,
-        r_fun : ExprPtr<'a>,
-        l_args : ExprsPtr<'a>,
-        r_args : ExprsPtr<'a>,
-        funs_ss : ShortCircuit,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<UnfoldAppsAux<'a>>,
-        h2 : Step<UnfoldAppsAux<'a>>,
-        h3 : Step<DefEq<'a>>,
-        h4 : Step<ArgsEq<'a>>,
-        ind_arg1 : ExprPtr<'a>,
-        ind_arg2 : ExprPtr<'a>,
-    }
-}
-
-#[is_step(tag="SZ", result_type = "bool", fun = "trace_is_sort_zero")]
+#[is_step(tag="SZ", fun = "trace_is_sort_zero")]
 #[derive(Debug, Clone, Copy)]
 pub enum IsSortZero<'a> {
     #[B]
     Base {
         e : ExprPtr<'a>,
-        #[result]
-        b : bool,
         h1 : Step<Whnf<'a>>,
     }
 }
@@ -3057,7 +2762,7 @@ pub enum IsProof<'a> {
 }
 
 
-#[is_step(tag="PI", result_type = "ShortCircuit", fun = "trace_proof_irrel_eq")]
+#[is_step(tag="IR", fun = "trace_proof_irrel_eq")]
 #[derive(Debug, Clone, Copy)]
 pub enum ProofIrrelEq<'a> {
     #[B]
@@ -3066,8 +2771,6 @@ pub enum ProofIrrelEq<'a> {
         r : ExprPtr<'a>,
         l_type : ExprPtr<'a>,
         r_type : ExprPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
         h1 : Step<IsProof<'a>>,
         h2 : Step<IsProof<'a>>,
         h3 : Step<DefEq<'a>>,
@@ -3075,74 +2778,10 @@ pub enum ProofIrrelEq<'a> {
 }
 
 
-#[is_step(tag="AF", result_type = "ShortCircuit", fun = "trace_args_eq")]
-#[derive(Debug, Clone, Copy)]
-pub enum ArgsEq<'a> {
-    #[B]
-    Base {
-        ls : ExprsPtr<'a>,
-        rs : ExprsPtr<'a>,
-        ls_len : usize,
-        rs_len : usize,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<Len<'a, Expr<'a>>>,
-        h2 : Step<Len<'a, Expr<'a>>>,
-    },
-    #[S]
-    Step {
-        ls : ExprsPtr<'a>,
-        rs : ExprsPtr<'a>,
-        ls_len : usize,
-        rs_len : usize,
-        #[result]
-        ss  : ShortCircuit,
-        h1 : Step<Len<'a, Expr<'a>>>,
-        h2 : Step<Len<'a, Expr<'a>>>,
-        h3 : Step<ArgsEqAux<'a>>,
-    }
-}
 
-#[is_step(tag="FX", result_type = "ShortCircuit", fun = "trace_args_eq_aux")]
+#[is_step(tag="LD", result_type = "DeltaResult<'a>", fun = "trace_lazy_delta_step")]
 #[derive(Debug, Clone, Copy)]
-pub enum ArgsEqAux<'a> {
-    #[N]
-    BaseNil {
-        #[result]
-        ss : ShortCircuit,
-        ind_arg1 : ExprsPtr<'a>,
-        ind_arg2 : ExprsPtr<'a>,
-    },
-    #[M]
-    BaseHdsNe {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        ls_tl : ExprsPtr<'a>,
-        rs_tl : ExprsPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<DefEq<'a>>,
-        ind_arg1 : ExprsPtr<'a>,
-        ind_arg2 : ExprsPtr<'a>,
-    },
-    #[T]
-    StepHdsEq {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        ls_tl : ExprsPtr<'a>,
-        rs_tl : ExprsPtr<'a>,
-        #[result]
-        ss : ShortCircuit,
-        h1 : Step<DefEq<'a>>,
-        h2 : Step<ArgsEqAux<'a>>,
-        ind_arg1 : ExprsPtr<'a>,
-        ind_arg2 : ExprsPtr<'a>,
-    }
-}
-
-#[is_step(tag="DC", result_type = "DeltaResult<'a>", fun = "trace_delta_check")]
-#[derive(Debug, Clone, Copy)]
-pub enum DeltaCheck<'a> {
+pub enum LazyDeltaStep<'a> {
     #[S]
     Sort {
         l : ExprPtr<'a>,
@@ -3167,19 +2806,6 @@ pub enum DeltaCheck<'a> {
         result : DeltaResult<'a>,
         h1 : Step<DefEqLambda<'a>>,
     },
-    #[S]
-    Step {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        #[result]
-        result : DeltaResult<'a>,
-        h1 : Step<LazyDeltaStep<'a>>,
-    }
-}
-
-#[is_step(tag="LD", result_type = "DeltaResult<'a>", fun = "trace_lazy_delta_step")]
-#[derive(Debug, Clone, Copy)]
-pub enum LazyDeltaStep<'a> {
     #[NN]
     NoneNone {
         l : ExprPtr<'a>,
@@ -3199,7 +2825,7 @@ pub enum LazyDeltaStep<'a> {
         h1 : Step<IsDelta<'a>>,
         h2 : Step<UnfoldDef<'a>>,
         h3 : Step<WhnfCore<'a>>,
-        h4 : Step<DeltaCheck<'a>>,
+        h4 : Step<LazyDeltaStep<'a>>,
     },
     #[NS]
     NoneSome {
@@ -3213,7 +2839,7 @@ pub enum LazyDeltaStep<'a> {
         h1 : Step<IsDelta<'a>>,
         h2 : Step<UnfoldDef<'a>>,
         h3 : Step<WhnfCore<'a>>,
-        h4 : Step<DeltaCheck<'a>>,
+        h4 : Step<LazyDeltaStep<'a>>,
     },
     #[LT]
     Lt {
@@ -3231,7 +2857,7 @@ pub enum LazyDeltaStep<'a> {
         h2 : Step<IsDelta<'a>>,
         h3 : Step<UnfoldDef<'a>>,
         h4 : Step<WhnfCore<'a>>,
-        h5 : Step<DeltaCheck<'a>>,
+        h5 : Step<LazyDeltaStep<'a>>,
     },
     #[GT]
     Gt {
@@ -3249,20 +2875,28 @@ pub enum LazyDeltaStep<'a> {
         h2 : Step<IsDelta<'a>>,
         h3 : Step<UnfoldDef<'a>>,
         h4 : Step<WhnfCore<'a>>,
-        h5 : Step<DeltaCheck<'a>>,
+        h5 : Step<LazyDeltaStep<'a>>,
     },
-    #[S]
-    EqShort {
+    #[E]
+    Extensional {
         l : ExprPtr<'a>,
         r : ExprPtr<'a>,
+        lc_name : NamePtr<'a>,
+        rc_name : NamePtr<'a>,
+        lc_levels : LevelsPtr<'a>,
+        rc_levels : LevelsPtr<'a>,
+        l_args : ExprsPtr<'a>,
+        r_args : ExprsPtr<'a>,
         l_def : DeclarPtr<'a>,
         r_def : DeclarPtr<'a>,
         #[result]
         result : DeltaResult<'a>,
-        h1 : Step<UnfoldAppsAux<'a>>,
-        h2 : Step<UnfoldAppsAux<'a>>,
-        h3 : Step<ArgsEq<'a>>,
-        h4 : Step<EqAntisymmMany<'a>>,
+        h1 : Step<IsDelta<'a>>,
+        h2 : Step<IsDelta<'a>>,
+        h3 : Step<UnfoldAppsAux<'a>>,
+        h4 : Step<UnfoldAppsAux<'a>>,
+        h5 : Step<ArgsEq<'a>>,
+        h6 : Step<EqAntisymmMany<'a>>,
     },
     #[O]
     Owise {
@@ -3280,20 +2914,788 @@ pub enum LazyDeltaStep<'a> {
         h2 : Step<UnfoldDef<'a>>,
         h3 : Step<WhnfCore<'a>>,
         h4 : Step<WhnfCore<'a>>,
-        h5 : Step<DeltaCheck<'a>>,
+        h5 : Step<LazyDeltaStep<'a>>,
     }
 }
+
+#[is_step(tag="EQ", fun = "trace_def_eq")]
+#[derive(Debug, Clone, Copy)]
+pub enum DefEq<'a> {
+    #[R]
+    PtrEq {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+    },
+    #[H]
+    CacheHit {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        h1 : Step<DefEq<'a>>,
+    },
+    #[S]
+    Sort {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_w : ExprPtr<'a>,
+        r_w : ExprPtr<'a>,
+        h1 : Step<WhnfCore<'a>>,
+        h2 : Step<WhnfCore<'a>>,
+        h3 : Step<DefEqSort<'a>>,
+    },
+    #[P]
+    Pi {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_w : ExprPtr<'a>,
+        r_w : ExprPtr<'a>,
+        h1 : Step<WhnfCore<'a>>,
+        h2 : Step<WhnfCore<'a>>,
+        h3 : Step<DefEqPi<'a>>,
+    },
+    #[P]
+    Lambda {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_w : ExprPtr<'a>,
+        r_w : ExprPtr<'a>,
+        h1 : Step<WhnfCore<'a>>,
+        h2 : Step<WhnfCore<'a>>,
+        h3 : Step<DefEqLambda<'a>>,
+    },
+    #[I]
+    ProofIrrelEq {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_w : ExprPtr<'a>,
+        r_w : ExprPtr<'a>,
+        h1 : Step<WhnfCore<'a>>,
+        h2 : Step<WhnfCore<'a>>,
+        h3 : Step<ProofIrrelEq<'a>>,
+    },
+    #[D]
+    DeltaShort {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_w : ExprPtr<'a>,
+        r_w : ExprPtr<'a>,
+        h1 : Step<WhnfCore<'a>>,
+        h2 : Step<WhnfCore<'a>>,
+        h3 : Step<LazyDeltaStep<'a>>,
+    },
+    #[C]
+    EqConst {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_w : ExprPtr<'a>,
+        r_w : ExprPtr<'a>,
+        l_d : ExprPtr<'a>,
+        r_d : ExprPtr<'a>,
+        h1 : Step<WhnfCore<'a>>,
+        h2 : Step<WhnfCore<'a>>,
+        h3 : Step<LazyDeltaStep<'a>>,
+        h4 : Step<DefEqConst<'a>>,
+    },
+    #[X]
+    EqLocal {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_w : ExprPtr<'a>,
+        r_w : ExprPtr<'a>,
+        l_d : ExprPtr<'a>,
+        r_d : ExprPtr<'a>,
+        h1 : Step<WhnfCore<'a>>,
+        h2 : Step<WhnfCore<'a>>,
+        h3 : Step<LazyDeltaStep<'a>>,
+        h4 : Step<DefEqLocal<'a>>,
+    },
+    #[A]
+    EqApp {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_w : ExprPtr<'a>,
+        r_w : ExprPtr<'a>,
+        l_d : ExprPtr<'a>,
+        r_d : ExprPtr<'a>,
+        h1 : Step<WhnfCore<'a>>,
+        h2 : Step<WhnfCore<'a>>,
+        h3 : Step<LazyDeltaStep<'a>>,
+        h4 : Step<DefEqApp<'a>>,
+    },
+    #[U]
+    EtaLr {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_w : ExprPtr<'a>,
+        r_w : ExprPtr<'a>,
+        l_d : ExprPtr<'a>,
+        r_d : ExprPtr<'a>,
+        h1 : Step<WhnfCore<'a>>,
+        h2 : Step<WhnfCore<'a>>,
+        h3 : Step<LazyDeltaStep<'a>>,
+        h4 : Step<DefEqEta<'a>>,
+    },
+    #[V]
+    EtaRl {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_w : ExprPtr<'a>,
+        r_w : ExprPtr<'a>,
+        l_d : ExprPtr<'a>,
+        r_d : ExprPtr<'a>,
+        h1 : Step<WhnfCore<'a>>,
+        h2 : Step<WhnfCore<'a>>,
+        h3 : Step<LazyDeltaStep<'a>>,
+        h4 : Step<DefEqEta<'a>>,
+    },
+}
+
+#[is_step(tag="ES", fun = "trace_def_eq_sort")]
+#[derive(Debug, Clone, Copy)]
+pub enum DefEqSort<'a> {
+    #[B]
+    Base {
+        l1 : LevelPtr<'a>,
+        l2 : LevelPtr<'a>,
+        h1 : Step<EqAntisymm<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+        ind_arg2 : ExprPtr<'a>,
+    }
+}
+
+
+#[is_step(tag="EL", fun = "trace_def_eq_lambda")]
+#[derive(Debug, Clone, Copy)]
+pub enum DefEqLambda<'a> {
+    #[B]
+    Base {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_prime : ExprPtr<'a>,
+        r_prime : ExprPtr<'a>,
+        doms : ExprsPtr<'a>,
+        h1 : Step<Inst<'a>>,
+        h2 : Step<Inst<'a>>,
+        h3 : Step<DefEq<'a>>,
+    },
+    #[E]
+    Step {
+        ln : NamePtr<'a>,
+        rn : NamePtr<'a>,
+        lt : ExprPtr<'a>,
+        rt : ExprPtr<'a>,
+        ls : BinderStyle,
+        rs : BinderStyle,
+        lb : ExprPtr<'a>,
+        rb : ExprPtr<'a>,
+        lt_prime : ExprPtr<'a>,
+        rt_prime : ExprPtr<'a>,
+        doms : ExprsPtr<'a>,
+        local : ExprPtr<'a>,
+        h1 : Step<Inst<'a>>,
+        h2 : Step<Inst<'a>>,
+        h3 : Step<DefEq<'a>>,
+        h4 : Step<DefEqLambda<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+        ind_arg2 : ExprPtr<'a>,
+    }    
+}
+
+#[is_step(tag="EP", fun = "trace_def_eq_pi")]
+#[derive(Debug, Clone, Copy)]
+pub enum DefEqPi<'a> {
+    #[B]
+    Base {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        l_prime : ExprPtr<'a>,
+        r_prime : ExprPtr<'a>,
+        doms : ExprsPtr<'a>,
+        h1 : Step<Inst<'a>>,
+        h2 : Step<Inst<'a>>,
+        h3 : Step<DefEq<'a>>,
+    },
+    #[E]
+    Step {
+        ln : NamePtr<'a>,
+        rn : NamePtr<'a>,
+        lt : ExprPtr<'a>,
+        rt : ExprPtr<'a>,
+        ls : BinderStyle,
+        rs : BinderStyle,
+        lb : ExprPtr<'a>,
+        rb : ExprPtr<'a>,
+        lt_prime : ExprPtr<'a>,
+        rt_prime : ExprPtr<'a>,
+        doms : ExprsPtr<'a>,
+        local : ExprPtr<'a>,
+        h1 : Step<Inst<'a>>,
+        h2 : Step<Inst<'a>>,
+        h3 : Step<DefEq<'a>>,
+        h4 : Step<DefEqPi<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+        ind_arg2 : ExprPtr<'a>,
+    }    
+}
+
+
+#[is_step(tag="AF", fun = "trace_args_eq")]
+#[derive(Debug, Clone, Copy)]
+pub enum ArgsEq<'a> {
+    #[B]
+    Base {
+        ls : ExprsPtr<'a>,
+        rs : ExprsPtr<'a>,
+        ls_len : usize,
+        rs_len : usize,
+        h1 : Step<Len<'a, Expr<'a>>>,
+        h2 : Step<Len<'a, Expr<'a>>>,
+        h3 : Step<ArgsEqAux<'a>>,
+    },
+}
+#[is_step(tag="FX", fun = "trace_args_eq_aux")]
+#[derive(Debug, Clone, Copy)]
+pub enum ArgsEqAux<'a> {
+    #[B]
+    Base {
+        ind_arg1 : ExprsPtr<'a>,
+        ind_arg2 : ExprsPtr<'a>,
+    },
+    #[S]
+    Step {
+        x  : ExprPtr<'a>,
+        y  : ExprPtr<'a>,
+        xs : ExprsPtr<'a>,
+        ys : ExprsPtr<'a>,
+        h1 : Step<DefEq<'a>>,
+        h2 : Step<ArgsEqAux<'a>>,
+        ind_arg1 : ExprsPtr<'a>,
+        ind_arg2 : ExprsPtr<'a>,
+    }
+}
+
+#[is_step(tag="EC", fun = "trace_def_eq_const")]
+#[derive(Debug, Clone, Copy)]
+pub enum DefEqConst<'a> {
+    #[B]
+    Base {
+        l_name : NamePtr<'a>,
+        r_name : NamePtr<'a>,
+        l_levels : LevelsPtr<'a>,
+        r_levels : LevelsPtr<'a>,
+        h1 : Step<EqAntisymmMany<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+        ind_arg2 : ExprPtr<'a>,
+    }
+}
+
+
+#[is_step(tag="EX", fun = "trace_def_eq_local")]
+#[derive(Debug, Clone, Copy)]
+pub enum DefEqLocal<'a> {
+    #[B]
+    Base {
+        ln : NamePtr<'a>,
+        rn : NamePtr<'a>,
+        ls : BinderStyle,
+        rs : BinderStyle,
+        lt : ExprPtr<'a>,
+        rt : ExprPtr<'a>,
+        l_serial : LocalSerial,
+        r_serial : LocalSerial,
+        ind_arg1 : ExprPtr<'a>,
+        ind_arg2 : ExprPtr<'a>,
+    }
+}
+
+#[is_step(tag="EA", fun = "trace_def_eq_app")]
+#[derive(Debug, Clone, Copy)]
+pub enum DefEqApp<'a> {
+    #[B]
+    Base {
+        l_fun : ExprPtr<'a>,
+        r_fun : ExprPtr<'a>,
+        l_args : ExprsPtr<'a>,
+        r_args : ExprsPtr<'a>,
+        h1 : Step<UnfoldAppsAux<'a>>,
+        h2 : Step<UnfoldAppsAux<'a>>,
+        h3 : Step<DefEq<'a>>,
+        h4 : Step<ArgsEq<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+        ind_arg2 : ExprPtr<'a>,
+    }
+}
+
+#[is_step(tag="ET", fun = "trace_def_eq_eta")]
+#[derive(Debug, Clone, Copy)]
+pub enum DefEqEta<'a> {
+    #[B]
+    Base {
+        r : ExprPtr<'a>,
+        ln : NamePtr<'a>,
+        rn : NamePtr<'a>,
+        lt : ExprPtr<'a>,
+        rt : ExprPtr<'a>,        
+        ls : BinderStyle,
+        rs : BinderStyle,
+        lb : ExprPtr<'a>,
+        rb : ExprPtr<'a>,
+        h1 : Step<Infer<'a>>,
+        h2 : Step<Whnf<'a>>,
+        h3 : Step<DefEq<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+    }
+}
+
+
+
+
+
+#[is_step(tag="ENS", result_type = "LevelPtr<'a>", fun = "trace_ensure_sort")]
+#[derive(Debug, Clone, Copy)]
+pub enum EnsureSort<'a> {
+    #[B]
+    Base {
+        #[result]
+        level : LevelPtr<'a>,
+        ind_arg1 : ExprPtr<'a>,
+
+    },
+    #[R]
+    Reduce {
+        e : ExprPtr<'a>,
+        #[result]
+        level : LevelPtr<'a>,
+        h1 : Step<Whnf<'a>>,
+    }
+}
+
+
+
+
+#[is_step(tag="ENT", result_type = "LevelPtr<'a>", fun = "trace_ensure_type")]
+#[derive(Debug, Clone, Copy)]
+pub enum EnsureType<'a> {
+    #[B]
+    Base {
+        e : ExprPtr<'a>,
+        e_type : ExprPtr<'a>,
+        #[result]
+        sort_level : LevelPtr<'a>,
+        h1 : Step<Infer<'a>>,
+        h2 : Step<EnsureSort<'a>>,
+    },
+}
+
+
+#[is_step(tag="ENP", result_type = "ExprPtr<'a>", fun = "trace_ensure_pi")]
+#[derive(Debug, Clone, Copy)]
+pub enum EnsurePi<'a> {
+    #[B]
+    Base {
+        #[result]
+        e : ExprPtr<'a>,
+        h1 : Step<IsPi<'a>>,
+    },
+    #[R]
+    Reduce {
+        e : ExprPtr<'a>,
+        #[result]
+        reduced : ExprPtr<'a>,
+        h1 : Step<Whnf<'a>>,
+        h2 : Step<IsPi<'a>>,
+    }
+}
+
+
 
 #[is_step(tag="IN", result_type = "ExprPtr<'a>", fun = "trace_infer")]
 #[derive(Debug, Clone, Copy)]
 pub enum Infer<'a> {
+    #[H]
+    CacheHit {
+        e : ExprPtr<'a>,
+        flag : InferFlag,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<Infer<'a>>,
+    },
+    #[C]
+    Const {
+        e : ExprPtr<'a>,
+        flag : InferFlag,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<InferConst<'a>>,
+    },
     #[S]
     Sort {
-        #[result]
         e : ExprPtr<'a>,
+        flag : InferFlag,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<InferSort<'a>>,
+    },
+    #[A]
+    App {
+        fun : ExprPtr<'a>,
+        args : ExprsPtr<'a>,
+        flag : InferFlag,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<UnfoldAppsAux<'a>>,
+        h2 : Step<Infer<'a>>,
+        h3 : Step<InferApp<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+    },
+    #[P]
+    Pi {
+        e : ExprPtr<'a>,
+        flag : InferFlag,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<InferPi<'a>>,
+    },
+    #[L]
+    Lambda {
+        e : ExprPtr<'a>,
+        flag : InferFlag,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<InferLambda<'a>>,
+    },
+    #[Z]
+    Let {
+        e : ExprPtr<'a>,
+        flag : InferFlag,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<InferLet<'a>>,
+    },
+    #[X]
+    Local {
+        e : ExprPtr<'a>,
+        flag : InferFlag,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<InferLocal<'a>>,
     }
 }
 
+
+#[is_step(tag="IC", result_type = "ExprPtr<'a>", fun = "trace_infer_const")]
+#[derive(Debug, Clone, Copy)]
+pub enum InferConst<'a> {
+    #[I]
+    InferOnly {
+        c_name : NamePtr<'a>,
+        c_levels : LevelsPtr<'a>,
+        flag : InferFlag,
+        dec : DeclarPtr<'a>,
+        dec_uparams : LevelsPtr<'a>,
+        dec_type : ExprPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        ind_arg1 : ExprPtr<'a>,
+        h1 : Step<AdmitDeclar<'a>>,
+        h2 : Step<SubstE<'a>>,
+    },
+    #[C]
+    Checked {
+        c_name : NamePtr<'a>,
+        c_levels : LevelsPtr<'a>,
+        flag : InferFlag,
+        dec : DeclarPtr<'a>,
+        dec_uparams : LevelsPtr<'a>,
+        dec_type : ExprPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        ind_arg1 : ExprPtr<'a>,
+        h1 : Step<AdmitDeclar<'a>>,
+        h2 : Step<ParamsDefinedMany<'a>>,
+        h3 : Step<SubstE<'a>>,
+    }
+}
+
+
+#[is_step(tag="IS", result_type = "ExprPtr<'a>", fun = "trace_infer_sort")]
+#[derive(Debug, Clone, Copy)]
+pub enum InferSort<'a> {
+    #[I]
+    InferOnly {
+        l : LevelPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        ind_arg1 : ExprPtr<'a>,
+    },
+    #[C]
+    Checked {
+        l : LevelPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<ParamsDefined<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+    }
+}
+#[is_step(tag="XX", result_type = "ExprPtr<'a>", fun = "trace_infer_app")]
+#[derive(Debug, Clone, Copy)]
+pub enum InferApp<'a> {
+    #[B]
+    Base {
+        f_type : ExprPtr<'a>,
+        context : ExprsPtr<'a>,
+        flag : InferFlag,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<Inst<'a>>,
+        ind_arg2 : ExprsPtr<'a>,
+    },
+    #[PI]
+    StepPiInferOnly {
+        b_name : NamePtr<'a>,
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        body : ExprPtr<'a>,
+        args : ExprsPtr<'a>,
+        context : ExprsPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<InferApp<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+    },
+    #[PC]
+    StepPiChecked {
+        b_name : NamePtr<'a>,
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        body : ExprPtr<'a>,
+        hd_arg : ExprPtr<'a>,
+        tl_args : ExprsPtr<'a>,
+        context : ExprsPtr<'a>,
+        b_type_prime : ExprPtr<'a>,
+        arg_type : ExprPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<Inst<'a>>,
+        h2 : Step<Infer<'a>>,
+        h3 : Step<DefEq<'a>>,
+        h4 : Step<InferApp<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+        ind_arg2 : ExprsPtr<'a>,
+    },
+    #[SN]
+    StepNotPi {
+        f_type : ExprPtr<'a>,
+        args : ExprsPtr<'a>,
+        context : ExprsPtr<'a>,
+        f_type_prime : ExprPtr<'a>,
+        b_name : NamePtr<'a>,
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        body : ExprPtr<'a>,
+        flag : InferFlag,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<Inst<'a>>,
+        h2 : Step<EnsurePi<'a>>,
+        h3 : Step<InferApp<'a>>,
+    }
+}
+
+
+#[is_step(tag="ISO", result_type = "LevelPtr<'a>", fun = "trace_infer_sort_of")]
+#[derive(Debug, Clone, Copy)]
+pub enum InferSortOf<'a> {
+    #[B]
+    Base {
+        e : ExprPtr<'a>,
+        e_type : ExprPtr<'a>,
+        #[result]
+        level : LevelPtr<'a>,
+        h1 : Step<Infer<'a>>,
+        h2 : Step<Whnf<'a>>,
+    }
+}
+
+#[is_step(tag="NP", result_type = "ExprPtr<'a>", fun = "trace_infer_pi")]
+#[derive(Debug, Clone, Copy)]
+pub enum InferPi<'a> {
+    #[B]
+    Base {
+        e : ExprPtr<'a>,
+        local_binders : ExprsPtr<'a>,
+        levels : LevelsPtr<'a>,
+        flag : InferFlag,
+        instd : ExprPtr<'a>,
+        inferred_level : LevelPtr<'a>,
+        folded : LevelPtr<'a>,
+        h1 : Step<IsPi<'a>>,
+        h2 : Step<Inst<'a>>,
+        h3 : Step<InferSortOf<'a>>,
+        h4 : Step<FoldImaxs<'a>>,
+        #[result]
+        ind_arg5 : ExprPtr<'a>,
+    },
+    #[S]
+    Step {
+        b_name : NamePtr<'a>,
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        body : ExprPtr<'a>,
+        local_binders : ExprsPtr<'a>,
+        levels : LevelsPtr<'a>,
+        flag : InferFlag,
+        b_type_prime : ExprPtr<'a>,
+        inferred_level : LevelPtr<'a>,
+        local : ExprPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<Inst<'a>>,
+        h2 : Step<InferSortOf<'a>>,
+        h3 : Step<InferPi<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+    }
+}
+
+
+#[is_step(tag="FO", result_type = "ExprPtr<'a>", fun = "trace_fold_pis_once")]
+#[derive(Debug, Clone, Copy)]
+pub enum FoldPisOnce<'a> {
+    #[B]
+    Base {
+        #[result]
+        out : ExprPtr<'a>,
+        ind_arg1 : ExprsPtr<'a>,
+        ind_arg2 : ExprsPtr<'a>,
+    },
+    #[S]
+    Step {
+        n : NamePtr<'a>,
+        unused_t : ExprPtr<'a>,
+        s : BinderStyle,
+        t : ExprPtr<'a>,
+        ls : ExprsPtr<'a>,
+        ts : ExprsPtr<'a>,
+        body : ExprPtr<'a>,
+        combined : ExprPtr<'a>,
+        #[result]
+        out : ExprPtr<'a>,
+        h1 : Step<FoldPisOnce<'a>>,
+        ind_arg1 : ExprsPtr<'a>,
+        ind_arg2 : ExprsPtr<'a>,
+    }
+}
+
+#[is_step(tag="IL", result_type = "ExprPtr<'a>", fun = "trace_infer_lambda")]
+#[derive(Debug, Clone, Copy)]
+pub enum InferLambda<'a> {
+    #[B]
+    Base {
+        e : ExprPtr<'a>,
+        local_binders : ExprsPtr<'a>,
+        b_types : ExprsPtr<'a>,
+        flag : InferFlag,
+        instd : ExprPtr<'a>,
+        inferred_inner : ExprPtr<'a>,
+        abstrd : ExprPtr<'a>,
+        #[result]
+        folded : ExprPtr<'a>,
+        h1 : Step<IsLambda<'a>>,
+        h2 : Step<Inst<'a>>,
+        h3 : Step<Infer<'a>>,
+        h4 : Step<Abstr<'a>>,
+        h5 : Step<FoldPisOnce<'a>>,
+    },
+    #[I]
+    StepInferOnly {
+        b_name : NamePtr<'a>,
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        body : ExprPtr<'a>,
+        b_types : ExprsPtr<'a>,
+        local_binders : ExprsPtr<'a>,
+        flag : InferFlag,
+        b_type_prime : ExprPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<Inst<'a>>,
+        h2 : Step<InferLambda<'a>>,
+
+    },
+    #[C]
+    StepChecked {
+        b_name : NamePtr<'a>,
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        body : ExprPtr<'a>,
+        b_types : ExprsPtr<'a>,
+        local_binders : ExprsPtr<'a>,
+        flag : InferFlag,
+        b_type_prime : ExprPtr<'a>,
+        b_type_sort : LevelPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<Inst<'a>>,
+        h2 : Step<InferSortOf<'a>>, 
+        h3 : Step<InferLambda<'a>>,
+
+    },
+}
+
+
+
+#[is_step(tag="INZ", result_type = "ExprPtr<'a>", fun = "trace_infer_let")]
+#[derive(Debug, Clone, Copy)]
+pub enum InferLet<'a> {
+    #[I]
+    InferOnly {
+        b_name : NamePtr<'a>,
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        val : ExprPtr<'a>,
+        body : ExprPtr<'a>,
+        flag : InferFlag,
+        b_prime : ExprPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<Inst<'a>>,
+        h2 : Step<Infer<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+    },
+    #[C]
+    Checked {
+        b_name : NamePtr<'a>,
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        val : ExprPtr<'a>,
+        body : ExprPtr<'a>,
+        flag : InferFlag,
+        b_type_sort : LevelPtr<'a>,
+        val_type : ExprPtr<'a>,
+        b_prime : ExprPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        h1 : Step<InferSortOf<'a>>,
+        h2 : Step<Infer<'a>>,
+        h3 : Step<DefEq<'a>>,
+        h4 : Step<Inst<'a>>,
+        h5 : Step<Infer<'a>>,
+        ind_arg1 : ExprPtr<'a>,
+    }
+}
+
+
+#[is_step(tag="IX", result_type = "ExprPtr<'a>", fun = "trace_infer_local")]
+#[derive(Debug, Clone, Copy)]
+pub enum InferLocal<'a> {
+    #[B]
+    Base {
+        b_name : NamePtr<'a>,
+        #[result]
+        b_type : ExprPtr<'a>,
+        b_style : BinderStyle,
+        ind_arg1 : ExprPtr<'a>,
+    }
+}
 
 #[is_step(tag="AD", result_type = "NamePtr<'a>", fun = "trace_admit_declar")]
 #[derive(Debug, Clone, Copy)]

@@ -13,7 +13,7 @@ use crate::name::{ NamePtr, Name, Name::* };
 use crate::level::{ LevelsPtr, Level, Level::* };
 use crate::expr::{ ExprPtr, Expr, LocalSerial };
 use crate::env::{ Declar, RecRule, Notation, RecRulePtr, DeclarPtr, RecRulesPtr, DeclarsPtr };
-use crate::tc::eq::ShortCircuit;
+use crate::tc::infer::InferFlag;
 use crate::{ arena_item, has_list };
 use crate::trace::items::HasTraceItem;
 use crate::trace::{ IsTracer, TraceMgr };
@@ -214,8 +214,8 @@ impl<'a, Z> ExprCache<'a, Z> {
 }
 
 pub struct TcCache<'a> {
-    infer_cache : FxHashMap<ExprPtr<'a>, (ExprPtr<'a>, Step<Infer<'a>>)>,
-    eq_cache    : FxHashMap<(ExprPtr<'a>, ExprPtr<'a>), (ShortCircuit, Step<DefEq<'a>>)>,
+    infer_cache : FxHashMap<(ExprPtr<'a>, InferFlag), (ExprPtr<'a>, Step<Infer<'a>>)>,
+    eq_cache    : FxHashMap<(ExprPtr<'a>, ExprPtr<'a>), Step<DefEq<'a>>>,
     whnf_cache  : FxHashMap<ExprPtr<'a>, (ExprPtr<'a>, Step<Whnf<'a>>)>,
 }
 
@@ -238,8 +238,9 @@ impl<'a> TcCache<'a> {
 
 
 pub struct PfinderCache<'a> {
-    infer_cache : FxIndexMap<ExprPtr<'a>, (ExprPtr<'a>, Step<Infer<'a>>)>,
-    eq_cache    : FxIndexMap<(ExprPtr<'a>, ExprPtr<'a>), (ShortCircuit, Step<DefEq<'a>>)>,
+    infer_cache : FxIndexMap<(ExprPtr<'a>, InferFlag), (ExprPtr<'a>, Step<Infer<'a>>)>,
+    eq_cache    : FxIndexMap<(ExprPtr<'a>, ExprPtr<'a>), Step<DefEq<'a>>>,
+    //ne_cache : FxHashSet<(ExprPtr<'a>, ExprPtr<'a>)>,
     whnf_cache  : FxIndexMap<ExprPtr<'a>, (ExprPtr<'a>, Step<Whnf<'a>>)>,
 }
 
@@ -365,6 +366,7 @@ where T : 'e + IsTracer {
     pub fn as_tc(&'t mut self, dec_uparams : Option<LevelsPtr<'l>>, safe_only : Option<bool>) -> Tc<'t, 'l, 'e, T> {
         self.tc_cache.clear();
         assert!(self.pfinder_cache.tc_cache.is_empty());
+        let dec_uparams = dec_uparams.unwrap_or_else(|| Nil::<Level>.alloc(self));
 
         Tc {
             live : self,
@@ -382,13 +384,13 @@ where T : 'e + IsTracer {
 
 pub struct Tc<'t, 'l : 't, 'e : 'l, T : IsTracer> {
     live : &'t mut Live<'l, 'e, T>,
-    dec_uparams : Option<LevelsPtr<'l>>,
+    dec_uparams : LevelsPtr<'l>,
     safe_only : bool,
 }
 
 pub struct Pfinder<'t, 'l : 't, 'e : 'l, T : IsTracer> {
     live : &'t mut Live<'l, 'e, T>,
-    dec_uparams : Option<LevelsPtr<'l>>,
+    dec_uparams : LevelsPtr<'l>,
     safe_only : bool,
     snapshot : Snapshot
 }
@@ -418,15 +420,15 @@ where T : 'l + IsTracer {
 pub trait IsTc<'t, 'l : 't, 'e : 'l> : IsLiveCtx<'l> {
     fn as_pfinder<'sh, 'lo : 'sh>(&'lo mut self) -> Pfinder<'sh, 'l, 'e, Self::Tracer>;
     fn safe_only(&self) -> bool;
-    fn dec_uparams(&self) -> Option<LevelsPtr<'l>>;
+    fn dec_uparams(&self) -> LevelsPtr<'l>;
     fn quot_names(&self) -> Option<(NamePtr<'l>, NamePtr<'l>, NamePtr<'l>)>;
 
-    fn check_infer_cache(&self, k : &ExprPtr<'l>) -> Option<(ExprPtr<'l>, Step<Infer<'l>>)>;
-    fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<(ShortCircuit, Step<DefEq<'l>>)>;
+    fn check_infer_cache(&self, k : ExprPtr<'l>, flag : InferFlag) -> Option<(ExprPtr<'l>, Step<Infer<'l>>)>;
+    fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<Step<DefEq<'l>>>;
     fn check_whnf_cache(&self, k : &ExprPtr<'l>) -> Option<(ExprPtr<'l>, Step<Whnf<'l>>)>;
 
-    fn insert_infer_cache(&mut self, k : ExprPtr<'l>, v : ExprPtr<'l>, step : Step<Infer<'l>>);
-    fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, v : ShortCircuit, step : Step<DefEq<'l>>);
+    fn insert_infer_cache(&mut self, k : ExprPtr<'l>, flag : InferFlag, v : ExprPtr<'l>, step : Step<Infer<'l>>);
+    fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, step : Step<DefEq<'l>>);
     fn insert_whnf_cache(&mut self, k : ExprPtr<'l>, v : ExprPtr<'l>, step : Step<Whnf<'l>>);
 }
 
@@ -446,7 +448,7 @@ where T : 'l + IsTracer {
         self.safe_only
     }
 
-    fn dec_uparams(&self) -> Option<LevelsPtr<'l>> {
+    fn dec_uparams(&self) -> LevelsPtr<'l> {
         self.dec_uparams
     }
 
@@ -456,11 +458,11 @@ where T : 'l + IsTracer {
               self.live.env.quot_ind?))
     }
 
-    fn check_infer_cache(&self, k : &ExprPtr<'l>) -> Option<(ExprPtr<'l>, Step<Infer<'l>>)> {
-        self.live.tc_cache.infer_cache.get(k).copied()
+    fn check_infer_cache(&self, k : ExprPtr<'l>, flag : InferFlag) -> Option<(ExprPtr<'l>, Step<Infer<'l>>)> {
+        self.live.tc_cache.infer_cache.get(&(k, flag)).copied()
     }
 
-    fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<(ShortCircuit, Step<DefEq<'l>>)> {
+    fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<Step<DefEq<'l>>> {
         self.live.tc_cache.eq_cache.get(&(l, r)).copied()
     }
 
@@ -468,14 +470,14 @@ where T : 'l + IsTracer {
         self.live.tc_cache.whnf_cache.get(k).copied()
     }
 
-    fn insert_infer_cache(&mut self, k : ExprPtr<'l>, v : ExprPtr<'l>, step : Step<Infer<'l>>) {
+    fn insert_infer_cache(&mut self, k : ExprPtr<'l>, flag : InferFlag, v : ExprPtr<'l>, step : Step<Infer<'l>>) {
         // the idx no longer comes from here.
         //let this_step_idx = self.mut_mgr().next_step_idx();
-        self.live.tc_cache.infer_cache.insert(k, (v, step));
+        self.live.tc_cache.infer_cache.insert((k, flag), (v, step));
 
     }
-    fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, v : ShortCircuit, step : Step<DefEq<'l>>) {
-        self.live.tc_cache.eq_cache.insert((l, r), (v, step));
+    fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, step : Step<DefEq<'l>>) {
+        self.live.tc_cache.eq_cache.insert((l, r), step);
     }
     fn insert_whnf_cache(&mut self, k : ExprPtr<'l>, v : ExprPtr<'l>, step : Step<Whnf<'l>>) {
         self.live.tc_cache.whnf_cache.insert(k, (v, step));
@@ -498,7 +500,7 @@ where T : 'l + IsTracer {
         self.safe_only
     }
 
-    fn dec_uparams(&self) -> Option<LevelsPtr<'l>> {
+    fn dec_uparams(&self) -> LevelsPtr<'l> {
         self.dec_uparams
     }
 
@@ -508,13 +510,13 @@ where T : 'l + IsTracer {
               self.live.env.quot_ind?))
     }    
 
-    fn check_infer_cache(&self, k : &ExprPtr<'l>) -> Option<(ExprPtr<'l>, Step<Infer<'l>>)> {
-        self.live.tc_cache.infer_cache.get(k)
-        .or_else(|| self.live.pfinder_cache.tc_cache.infer_cache.get(k))
+    fn check_infer_cache(&self, k : ExprPtr<'l>, flag : InferFlag) -> Option<(ExprPtr<'l>, Step<Infer<'l>>)> {
+        self.live.tc_cache.infer_cache.get(&(k, flag))
+        .or_else(|| self.live.pfinder_cache.tc_cache.infer_cache.get(&(k, flag)))
         .copied()
     }
 
-    fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<(ShortCircuit, Step<DefEq<'l>>)> {
+    fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<Step<DefEq<'l>>> {
         self.live.tc_cache.eq_cache.get(&(l, r))
         .or_else(|| self.live.pfinder_cache.tc_cache.eq_cache.get(&(l, r)))
         .copied()
@@ -526,12 +528,12 @@ where T : 'l + IsTracer {
         .copied()
     }
     
-    fn insert_infer_cache(&mut self, k : ExprPtr<'l>, v : ExprPtr<'l>, step : Step<Infer<'l>>) {
-        self.live.pfinder_cache.tc_cache.infer_cache.insert(k, (v, step));
+    fn insert_infer_cache(&mut self, k : ExprPtr<'l>, flag : InferFlag, v : ExprPtr<'l>, step : Step<Infer<'l>>) {
+        self.live.pfinder_cache.tc_cache.infer_cache.insert((k, flag), (v, step));
 
     }
-    fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, v : ShortCircuit, step : Step<DefEq<'l>>) {
-        self.live.pfinder_cache.tc_cache.eq_cache.insert((l, r), (v, step));
+    fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, step : Step<DefEq<'l>>) {
+        self.live.pfinder_cache.tc_cache.eq_cache.insert((l, r), step);
     }
 
     fn insert_whnf_cache(&mut self, k : ExprPtr<'l>, v : ExprPtr<'l>, step : Step<Whnf<'l>>) {

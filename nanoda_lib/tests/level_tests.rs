@@ -1,9 +1,10 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
-use nanoda_lib::utils::{ IsTc, Env, List, List::* };
+use nanoda_lib::utils::{ IsTc, Env, List, List::*, HasNanodaDbg };
 use nanoda_lib::name::{ Name };
-use nanoda_lib::level::{ Level, Level::* };
+use nanoda_lib::level::{ LevelPtr, LevelsPtr, Level, Level::* };
 use nanoda_lib::param;
+use nanoda_lib::trace::StdoutTracer;
 
 #[test]
 fn level_test_iz_zero() {
@@ -431,3 +432,24 @@ fn level_test20() {
     }
 }
 
+#[test]
+fn level_test21() {
+    let mut env = Env::new(StdoutTracer::new());
+    let zero = Zero.alloc(&mut env);
+    
+    let mut live = env.as_live();
+    let e = param!("e", &mut live);
+    let fold_args = param!(["c", "b", "a"], &mut live);
+
+    let target = <LevelPtr>::new_imax(param!("c", &mut live), e, &mut live);
+    let target = <LevelPtr>::new_imax(param!("b", &mut live), target, &mut live);
+    let target = <LevelPtr>::new_imax(param!("a", &mut live), target, &mut live);
+
+
+    let (out, _) = fold_args.fold_imaxs(e, &mut live);
+    println!("out : {}\n", out.nanoda_dbg(&live));
+    assert_eq!(target, out);
+
+
+    
+}

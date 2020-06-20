@@ -5,7 +5,6 @@ use crate::level::{ LevelPtr, Level, LevelsPtr };
 use crate::expr::{ Expr, Expr::*, ExprPtr, ExprsPtr, BinderStyle::* };
 use crate::env::{ Declar::*, DeclarPtr, ReducibilityHint::* };
 use crate::tc::infer::InferFlag::*;
-use crate::tc::eq::ShortCircuit::*;
 use crate::trace::IsTracer;
 use crate::trace::steps::*;
 use crate::utils::{ 
@@ -420,46 +419,39 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         let (e_type, h2) = e_type_unred.whnf(tc);
 
         
-        let ((e_t_fun, e_t_levels), _) = e_type.unfold_apps(tc);
+        let ((e_t_fun, _e_t_levels), _) = e_type.unfold_apps(tc);
         ret_none_if! { 
             e_t_fun.try_const_info(tc)?.0 != recursor.name(tc).get_prefix(tc).0 
         };
 
         let (new_ctor_app, h3) = e_type.mk_nullary_ctor(recursor.rec_num_params(tc)?, tc)?;
         let (new_type, h4) = new_ctor_app.infer(InferOnly, tc);
-        let (eq_result, h5) = e_type.def_eq(new_type, tc)?;
+        let h5 = e_type.def_eq(new_type, tc)?;
 
-        if let EqShort = eq_result {
-            Some(ToCtorWhenK::Base {
-                e : self,
-                name : recursor.name(tc),
-                uparams : recursor.uparams(tc),
-                type_ : recursor.type_(tc),
-                all_names : recursor.rec_all_names(tc).unwrap(),
-                num_params : recursor.rec_num_params(tc).unwrap(),
-                num_indices : recursor.rec_num_indices(tc).unwrap(),
-                num_motives : recursor.rec_num_motives(tc).unwrap(),
-                num_minors : recursor.rec_num_minors(tc).unwrap(),
-                major_idx : recursor.rec_major_idx(tc).unwrap(),
-                rec_rules : recursor.rec_rules(tc).unwrap(),
-                is_k : recursor.rec_is_k(tc).unwrap(),
-                is_unsafe : recursor.is_unsafe(tc),
-                e_type_unred,
-                e_type,
-                new_ctor_app,
-                new_type,
-                h1,
-                h2,
-                h3,
-                h4,
-                h5,
-            }.step(tc))
-        } else {
-            unreachable!(
-                "Should no longer be able to actually get a NeShort result; \
-                it's supposed to just be `None` now"
-            )
-        }
+        Some(ToCtorWhenK::Base {
+            e : self,
+            name : recursor.name(tc),
+            uparams : recursor.uparams(tc),
+            type_ : recursor.type_(tc),
+            all_names : recursor.rec_all_names(tc).unwrap(),
+            num_params : recursor.rec_num_params(tc).unwrap(),
+            num_indices : recursor.rec_num_indices(tc).unwrap(),
+            num_motives : recursor.rec_num_motives(tc).unwrap(),
+            num_minors : recursor.rec_num_minors(tc).unwrap(),
+            major_idx : recursor.rec_major_idx(tc).unwrap(),
+            rec_rules : recursor.rec_rules(tc).unwrap(),
+            is_k : recursor.rec_is_k(tc).unwrap(),
+            is_unsafe : recursor.is_unsafe(tc),
+            e_type_unred,
+            e_type,
+            new_ctor_app,
+            new_type,
+            h1,
+            h2,
+            h3,
+            h4,
+            h5,
+        }.step(tc))
     }
 
     #[has_try(method = "self.reduce_ind_rec(args, tc)")]
@@ -582,7 +574,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     h2,
                 }.step(tc)
             },
-            (Lambda {..}, Cons(hd, tl)) => {
+            (Lambda {..}, Cons(..)) => {
                 let (e_prime, h2) = fun.whnf_lambda(args, exprs!([], tc), tc);
                 WhnfCore::Lambda {
                     e : self,

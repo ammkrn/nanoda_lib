@@ -1091,6 +1091,33 @@ impl<'a> LevelsPtr<'a> {
             },
         }
     }
+
+    pub fn fold_imaxs(
+        self, 
+        sink : LevelPtr<'a>, 
+        ctx : &mut impl IsLiveCtx<'a>
+    ) -> (LevelPtr<'a>, Step<FoldImaxs<'a>>) {
+        match self.read(ctx) {
+            Nil => {
+                FoldImaxs::Base {
+                    sink,
+                    ind_arg1 : self,
+                }.step(ctx)
+            },
+            Cons(hd, tl) => {
+                let combined = <LevelPtr>::new_imax(hd, sink, ctx);
+                let (out, h1) = tl.fold_imaxs(combined, ctx);
+                FoldImaxs::Step {
+                    hd,
+                    tl,
+                    r : sink,
+                    out,
+                    ind_arg1 : self,
+                    h1,
+                }.step(ctx)
+            }
+        }
+    }    
 }
 
 impl<'a> HasNanodaDbg<'a> for Level<'a> {

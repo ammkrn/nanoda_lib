@@ -3,7 +3,8 @@ use crate::utils::{ Ptr, List, List::*, ListPtr, IsCtx, IsLiveCtx };
 use crate::name::{ NamePtr, NamesPtr, Name, StringPtr, Name::* };
 use crate::level::{ LevelPtr, LevelsPtr, Level, Level::* };
 use crate::expr::{ ExprPtr, ExprsPtr, Expr, Expr::*, BinderStyle, LocalSerial };
-use crate::tc::eq::{ DeltaResult, ShortCircuit };
+use crate::tc::eq::{ EqResult, DeltaResult };
+use crate::tc::infer::InferFlag;
 use crate::trace_item;
 use crate::trace::IsTracer;
 use crate::trace::steps::{ Step, StepIdx };
@@ -70,20 +71,34 @@ impl HasPtrRepr for bool {
     }
 }
 
-impl HasPtrRepr for ShortCircuit {
+//impl HasPtrRepr for ShortCircuit {
+//    fn ptr_repr(self) -> String {
+//        match self {
+//            ShortCircuit::EqShort => format!("eq"),
+//            ShortCircuit::NeShort => format!("ne"),
+//        }
+//    }
+//}
+//#[derive(Debug, Clone, Copy)]
+//pub enum EqResult<S> {
+//    EqShort(Step<S>),
+//    NeShort,
+//}
+
+
+impl<S> HasPtrRepr for EqResult<S> {
     fn ptr_repr(self) -> String {
         match self {
-            ShortCircuit::EqShort => format!("eq"),
-            ShortCircuit::NeShort => format!("ne"),
+            EqResult::EqShort(step) => step.ptr_repr(),
+            EqResult::NeShort => unreachable!("Should never try to format NeShort result!"),
         }
     }
 }
 
-
 impl<'a> HasPtrRepr for DeltaResult<'a> {
     fn ptr_repr(self) -> String {
         match self {
-            DeltaResult::Short(s) => s.ptr_repr(),
+            DeltaResult::DeltaEq => format!("eq"),
             DeltaResult::Exhausted(e1, e2) => (e1, e2).ptr_repr(),
         }
     }
@@ -179,6 +194,15 @@ impl HasPtrRepr for ReducibilityHint {
             ReducibilityHint::Opaq=> format!("o"),
             ReducibilityHint::Reg(n) => format!("{}", n),
             ReducibilityHint::Abbrev => format!("a"),
+        }
+    }
+}
+
+impl HasPtrRepr for InferFlag {
+    fn ptr_repr(self) -> String {
+        match self {
+            InferFlag::InferOnly => format!("I"),
+            InferFlag::Check => format!("C"),
         }
     }
 }

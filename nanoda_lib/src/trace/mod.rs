@@ -7,7 +7,7 @@ use crate::utils::{ Ptr, List, List::*, ListPtr, IsCtx,  };
 use crate::name::{ NamePtr, NamesPtr, Name, StringPtr, Name::* };
 use crate::level::{ LevelPtr, LevelsPtr, Level, Level::* };
 use crate::expr::{ ExprPtr, ExprsPtr, Expr, Expr::*, BinderStyle };
-use crate::tc::eq::ShortCircuit;
+use crate::tc::eq::{ EqResult, DeltaResult };
 use crate::trace::items::{ HasPtrRepr, HasPrefix };
 use crate::trace::steps::*;
 use crate::env::{ 
@@ -382,6 +382,7 @@ pub trait IsTracer {
     mk_trace_step! { trace_params_defined_many, 'a, ParamsDefinedMany<'a> }
     mk_trace_step! { trace_subst_l_many, 'a, SubstLMany<'a> }
     mk_trace_step! { trace_eq_antisymm_many, 'a, EqAntisymmMany<'a> }
+    mk_trace_step! { trace_fold_imaxs, 'a, FoldImaxs<'a> }
 
     mk_trace_step! { trace_is_lambda, 'a, IsLambda<'a> }
     mk_trace_step! { trace_is_pi, 'a, IsPi<'a> }
@@ -426,14 +427,26 @@ pub trait IsTracer {
     mk_trace_step! { trace_proof_irrel_eq, 'a, ProofIrrelEq<'a> }
     mk_trace_step! { trace_args_eq, 'a, ArgsEq<'a> }
     mk_trace_step! { trace_args_eq_aux, 'a, ArgsEqAux<'a> }
-    mk_trace_step! { trace_delta_check, 'a, DeltaCheck<'a> }
     mk_trace_step! { trace_lazy_delta_step, 'a, LazyDeltaStep<'a> }
     mk_trace_step! { trace_def_eq_const, 'a, DefEqConst<'a> }
     mk_trace_step! { trace_def_eq_local, 'a, DefEqLocal<'a> }
     mk_trace_step! { trace_def_eq_app, 'a, DefEqApp<'a> }
     mk_trace_step! { trace_def_eq_eta, 'a, DefEqEta<'a> }
 
+    mk_trace_step! { trace_ensure_sort, 'a, EnsureSort<'a> }
+    mk_trace_step! { trace_ensure_pi, 'a, EnsurePi<'a> }
+    mk_trace_step! { trace_ensure_type, 'a, EnsureType<'a> }
     mk_trace_step! { trace_infer, 'a, Infer<'a> }
+    mk_trace_step! { trace_infer_const, 'a, InferConst<'a> }
+    mk_trace_step! { trace_infer_sort, 'a, InferSort<'a> }
+    mk_trace_step! { trace_infer_app, 'a, InferApp<'a> }
+    mk_trace_step! { trace_infer_sort_of, 'a, InferSortOf<'a> }
+    mk_trace_step! { trace_infer_pi, 'a, InferPi<'a> }
+    mk_trace_step! { trace_infer_lambda, 'a, InferLambda<'a> }
+    mk_trace_step! { trace_fold_pis_once, 'a, FoldPisOnce<'a> }
+    mk_trace_step! { trace_infer_let, 'a, InferLet<'a> }
+    mk_trace_step! { trace_infer_local, 'a, InferLocal<'a> }
+
 
     mk_trace_step! { trace_admit_declar, 'a, AdmitDeclar<'a> }
 
