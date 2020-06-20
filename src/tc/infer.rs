@@ -8,7 +8,7 @@ use crate::utils::{ List::*, Tc, IsCtx, HasNanodaDbg };
 use InferFlag::*;                    
 
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InferFlag {
     InferOnly,
     Check
@@ -190,19 +190,14 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         infd.new_sort(tc)
     }        
 
-
-
+    
     fn infer_lambda(self, flag : InferFlag, tc : &mut Tc<'t, 'l, 'e>) -> Self {
-        let mut b_names = Nil::<Name>.alloc(tc);
         let mut b_types = Nil::<Expr>.alloc(tc);
-        let mut b_styles = VecD::new();
         let mut locals = Nil::<Expr>.alloc(tc);
         let mut cursor = self;
 
         while let Lambda { b_name, b_type, b_style, body, .. } = cursor.read(tc) {
-            b_names = Cons(b_name, b_names).alloc(tc);
             b_types = Cons(b_type, b_types).alloc(tc);
-            b_styles.push_front(b_style);
 
             let b_type = b_type.inst(locals, tc);
             if let Check = flag {
@@ -218,10 +213,15 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         let infd = instd.infer(flag, tc);
         let mut abstrd = infd.abstr(locals, tc);
 
-        while let (Cons(n, ns), Cons(t, ts), Some(s)) = (b_names.read(tc), b_types.read(tc), b_styles.pop_back()) {
-            b_names = ns;
+        while let (Cons(t, ts), Cons(l, ls)) = (b_types.read(tc), locals.read(tc)) {
             b_types = ts;
-            abstrd = <ExprPtr>::new_pi(n, t, s, abstrd, tc);
+            locals = ls;
+            match l.read(tc) {
+                Local { b_name, b_style, .. } => {
+                    abstrd = <ExprPtr>::new_pi(b_name, t, b_style, abstrd, tc);
+                },
+                _ => unreachable!("unreachable pattern match in infer_lambda")
+            }
         }
 
         abstrd
@@ -309,7 +309,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
 
 
     pub fn infer(self, flag : InferFlag, tc : &mut Tc<'t, 'l, 'e>) -> Self {
-        if let Some(cached) = tc.cache.infer_cache.get(&self).copied() {
+        if let Some(cached) = tc.cache.infer_cache.get(&(self, flag)).copied() {
             return cached
         }
 
@@ -324,7 +324,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             Var {..} => unimplemented!("Cannot infer the type of a bound variable!"),
         };
 
-        tc.cache.infer_cache.insert(self, r);
+        tc.cache.infer_cache.insert((self, flag), r);
         r
     }
 }

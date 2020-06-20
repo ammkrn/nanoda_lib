@@ -12,6 +12,7 @@ use crate::level::{ LevelsPtr, Level, Level::* };
 use crate::expr::{ ExprPtr, Expr, LocalSerial };
 use crate::env::{ Declar, RecRule, Notation };
 use crate::tc::eq::ShortCircuit;
+use crate::tc::infer::InferFlag;
 use crate::{ arena_item, has_list };
 
 use Live::*;
@@ -177,7 +178,7 @@ impl<'a> ExprCache<'a> {
 
 pub struct TcCache<'a> {
     pub eq_cache    : FxHashMap<(ExprPtr<'a>, ExprPtr<'a>), ShortCircuit>,
-    pub infer_cache : FxHashMap<ExprPtr<'a>, ExprPtr<'a>>,
+    pub infer_cache : FxHashMap<(ExprPtr<'a>, InferFlag), ExprPtr<'a>>,
     pub whnf_cache  : FxHashMap<ExprPtr<'a>, ExprPtr<'a>>,
 }
 

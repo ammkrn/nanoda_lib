@@ -442,7 +442,11 @@ impl<'l, 'e : 'l> IndBlock<'l> {
             (Pi { b_type, .. }, Nil) => {
                 
                 // assertion that b_type is a well formed inhabitant of something.
-                let _ = b_type.ensure_type(&mut ctx.as_tc(Some(self.uparams), None));
+                let s = b_type.ensure_type(&mut ctx.as_tc(Some(self.uparams), None));
+
+                if !(self.block_codom().is_zero(ctx) || s.leq(self.block_codom(), ctx)) {
+                    panic!("Constructor argument was too large for the corresponding inductive type!")
+                }
 
                 if self.is_unsafe {
                     self.check_positivity_is_unsafe();
