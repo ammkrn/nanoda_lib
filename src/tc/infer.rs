@@ -105,15 +105,19 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
     // applied to an appropriate number of arguments". Since we know `flag` is
     // InferOnly, we don't bother to check that the Pi's binder type
     // is equal to the type of the argument.
-    pub fn infer_app_only_aux(self, flag : InferFlag, tc : &mut Tc<'t, 'l, 'e>) -> Self {
-        assert!(flag == InferOnly);
+    pub fn infer_app(self, flag : InferFlag, tc : &mut Tc<'t, 'l, 'e>) -> Self {
         let (mut fun, mut args) = self.unfold_apps(tc);
         fun = fun.infer(flag, tc);
         let mut context = Nil::<Expr>.alloc(tc);
 
         while let Cons(hd, tl) = args.read(tc) {
             match fun.read(tc) {
-                Pi { body, .. } => {
+                Pi { b_type, body, .. } => {
+                    if flag == Check {
+                        let arg_type = hd.infer(flag, tc);
+                        b_type.inst(context, tc).assert_def_eq(arg_type, tc);
+                    }
+
                     context = Cons(hd, context).alloc(tc);
                     args = tl;
                     fun = body;
@@ -133,37 +137,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         fun.inst(context, tc)
     }    
 
-    fn infer_app_aux(
-        self,
-        fun : ExprPtr<'l>, 
-        arg : ExprPtr<'l>, 
-        flag : InferFlag,
-        tc : &mut Tc<'t, 'l, 'e>
-    ) -> Self {
-        let infd = fun.infer(flag, tc);
-        let as_pi = infd.ensure_pi(tc);
-        match as_pi
-                 .read(tc) {
-            Pi { b_type, body, .. } => {
-                arg.infer(Check, tc).assert_def_eq(b_type, tc);
-                body.inst1(arg, tc)
-            },
-            _ => unreachable!("infer_app_aux, non-pi fun")
-        }
-    }    
 
-    fn infer_app(
-        self, 
-        fun : ExprPtr<'l>, 
-        arg : ExprPtr<'l>, 
-        flag : InferFlag, 
-        tc : &mut Tc<'t, 'l, 'e>
-    ) -> Self {
-        match flag {
-            InferOnly => self.infer_app_only_aux(flag, tc),
-            Check => self.infer_app_aux(fun, arg, flag, tc)
-        }                         
-    }
 
 
     // while-loop ver
@@ -316,7 +290,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         let r = match self.read(tc) {
             Sort { level } => self.infer_sort_core(level, flag, tc),
             Const { name, levels } => self.infer_const(name, levels, flag, tc),
-            App { fun, arg, .. } => self.infer_app(fun, arg, flag, tc),
+            App { fun, arg, .. } => self.infer_app(flag, tc),
             Pi {..} => self.infer_pi(flag, tc),
             Lambda { .. } => self.infer_lambda(flag, tc), 
             Let { b_name, b_type, b_style, val, body, .. } => self.infer_let(b_name, b_type, b_style, val, body, flag, tc),
