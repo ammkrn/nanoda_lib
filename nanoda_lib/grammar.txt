@@ -63,17 +63,17 @@ name ::=
 
 
 
-levelRef ::= itemLoc nat 'l'
+levelRef ::= itemLoc nat 'u'
 levelList ::= 
-    | listLoc nat 'l_' 
-    | listLoc nat 'l.' levelRef '.' listLoc nat 'l'
+    | listLoc nat 'u_' 
+    | listLoc nat 'u.' levelRef '.' listLoc nat 'u'
 
 level ::=
-    | itemLoc nat 'lz'
-    | itemLoc nat 'ls' '.' levelRef
-    | itemLoc nat 'lm' '.' levelRef '.' levelRef
-    | itemLoc nat 'li' '.' levelRef '.' levelRef
-    | itemLoc nat 'lp' '.' nameRef
+    | itemLoc nat 'uz'
+    | itemLoc nat 'us' '.' levelRef
+    | itemLoc nat 'um' '.' levelRef '.' levelRef
+    | itemLoc nat 'ui' '.' levelRef '.' levelRef
+    | itemLoc nat 'up' '.' nameRef
 
 
 exprRef ::= itemLoc nat 'e'
