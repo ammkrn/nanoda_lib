@@ -188,36 +188,6 @@ impl<'a, Z : HasMkPtr> Store<'a, Z> {
 
 }
 
-// All of these operations are pure and not dependent on the context of any
-// given declaration/typechecker. They will never contain locals.
-// For that reason, we include a cache in `Env`, and allow results that only
-// contain elements of `Env` to persist between declarations.
-pub struct PureCache<'a, Z> {
-    marker : PhantomData<Z>,
-    pub inst_cache        : FxHashMap<(ExprPtr<'a>, ExprsPtr<'a>, u16), (ExprPtr<'a>, Step<InstAuxZst>)>,
-    pub subst_cache       : FxHashMap<(ExprPtr<'a>, LevelsPtr<'a>, LevelsPtr<'a>), (ExprPtr<'a>, Step<SubstEZst>)>,
-    pub height_cache      : FxHashMap<ExprPtr<'a>, (u16, Step<CalcHeightAuxZst>)>,
-    pub fold_cache        : FxHashMap<(ExprPtr<'a>, ExprsPtr<'a>), (ExprPtr<'a>, Step<FoldlAppsZst>)>,
-    pub unfold_cache      : FxHashMap<ExprPtr<'a>, ((ExprPtr<'a>, ExprsPtr<'a>), Step<UnfoldAppsAuxZst>)>,
-    pub le_cache          : FxHashMap<(LevelPtr<'a>, LevelPtr<'a>), (bool, Step<LeqZst>)>,
-}
-
-
-impl<'a, Z> PureCache<'a, Z> {
-    pub fn new() -> Self {
-        PureCache {
-            marker : PhantomData,
-            inst_cache       : FxHashMap::with_hasher(Default::default()),
-            subst_cache      : FxHashMap::with_hasher(Default::default()),
-            height_cache     : FxHashMap::with_hasher(Default::default()),
-            fold_cache       : FxHashMap::with_hasher(Default::default()),
-            unfold_cache     : FxHashMap::with_hasher(Default::default()),
-            le_cache         : FxHashMap::with_hasher(Default::default())
-        }
-    }
-}
-
-
 pub struct ExprCache<'a, Z> {
     marker : PhantomData<Z>,
     pub abstr_cache       : FxHashMap<(ExprPtr<'a>, u16), (ExprPtr<'a>, Step<AbstrAuxZst>)>,
@@ -272,7 +242,6 @@ impl<'a, Z> TcCache<'a, Z> {
         self.infer_cache.clear();
         self.whnf_cache.clear();
     }
-
 }
 
 pub struct Env<'e, T : IsTracer> {
@@ -285,8 +254,6 @@ pub struct Env<'e, T : IsTracer> {
     pub quot_ind : Option<NamePtr<'e>>,
     pub trace_mgr : TraceMgr<T>,
 }
-
-
 
 impl<'l, 'e : 'l, T : 'e + IsTracer> Env<'e, T> {
     pub fn new(tracer : T) -> Self {
@@ -308,9 +275,9 @@ impl<'l, 'e : 'l, T : 'e + IsTracer> Env<'e, T> {
         Nil::<Expr>.alloc(&mut env);
         Nil::<RecRule>.alloc(&mut env);
         Nil::<Declar>.alloc(&mut env);
-
         env
     }
+    
     pub fn as_live(&'l mut self) -> Live<'l, 'e, T> {
         Live {
             env : self,
@@ -320,19 +287,12 @@ impl<'l, 'e : 'l, T : 'e + IsTracer> Env<'e, T> {
         }
     }
 
-
-
-
 }
-
-
-
 
 pub struct Live<'l, 'e : 'l, T : IsTracer> {
     pub env : &'l mut Env<'e, T>,
     pub store : Store<'l, LiveZst>,
     pfinder_store : Store<'l, PfinderZst>,
-
     expr_cache : ExprCache<'l, LiveZst>,
 }
 
@@ -482,8 +442,6 @@ pub struct Tc<'t, 'l : 't, 'e : 'l, T : IsTracer> {
     pfinder_tc_cache : TcCache<'l, PfinderZst>,
     pfinder_expr_cache : ExprCache<'l, PfinderZst>,
 }
-
-
 
 pub struct Pfinder<'p, 't : 'p, 'l : 't, 'e : 'l, T : IsTracer> {
     tc : &'p mut Tc<'t, 'l, 'e, T>,

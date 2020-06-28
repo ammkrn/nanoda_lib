@@ -311,12 +311,7 @@ impl<'e, T : 'e + IsTracer> Env<'e, T> {
 
 
     pub fn check_loop(&mut self, specs : Vec<DeclarSpec<'e>>) {
-        let mut num = 0usize;
         for spec in specs {
-            num += 1;
-            if num % 100 == 0 {
-                println!("spec : {}\n", num);
-            }
             let mut live = self.as_live();
             spec.compile_and_check(&mut live);
         }
