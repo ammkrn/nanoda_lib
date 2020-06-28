@@ -1,18 +1,19 @@
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{ Write, BufWriter, Result as IoResult };
 use std::fmt::Debug;
 use std::collections::HashMap;
 use std::hash::{ Hash, BuildHasherDefault };
 use std::marker::PhantomData;
-use std::io::Result as IoResult;
 
 use rustc_hash::FxHasher;
 use indexmap::{ IndexMap, IndexSet };
 
+use nanoda_macros::has_try_some;
 use crate::name::{ NamePtr, Name, Name::* };
-use crate::level::{ LevelsPtr, Level, Level::* };
-use crate::expr::{ ExprPtr, Expr, LocalSerial };
-use crate::env::{ Declar, RecRule, Notation, RecRulePtr, DeclarPtr, RecRulesPtr, DeclarsPtr };
+use crate::level::{ LevelPtr, LevelsPtr, Level, Level::* };
+use crate::expr::{ ExprPtr, ExprsPtr, Expr, LocalSerial };
+use crate::env::{ Declar, Declar::*, RecRule, Notation, RecRulePtr, DeclarPtr, RecRulesPtr, DeclarsPtr };
+use crate::tc::eq::EqResult;
 use crate::tc::infer::InferFlag;
 use crate::{ arena_item, has_list };
 use crate::trace::items::HasTraceItem;
@@ -20,13 +21,7 @@ use crate::trace::{ IsTracer, TraceMgr };
 use crate::trace::steps::*;
 
 
-pub type FxIndexSet<A> = IndexSet<A, BuildHasherDefault<FxHasher>>;
-pub type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
-pub type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
-
-use List::*;
-
-fn try_succ<'a>(op_n : Option<usize>, ctx : &mut impl IsCtx<'a>) -> (Option<usize>, Step<TrySucc>) {
+fn try_succ<'a>(op_n : Option<usize>, ctx : &mut impl IsCtx<'a>) -> (Option<usize>, Step<TrySuccZst>) {
     match op_n {
         None => {
             TrySucc::BaseNone {
@@ -43,6 +38,13 @@ fn try_succ<'a>(op_n : Option<usize>, ctx : &mut impl IsCtx<'a>) -> (Option<usiz
         }
     }
 }
+pub struct TryToken;
+
+pub type FxIndexSet<A> = IndexSet<A, BuildHasherDefault<FxHasher>>;
+pub type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
+pub type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+
+use List::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct EnvZst;
@@ -137,9 +139,10 @@ where A : Eq + Hash,
     }
 
     fn check_dupe(&self, elem : &A) -> Option<Ptr<'a, A>> {
-        self.elems
-            .get_full(elem)
-            .map(|(index, _)| self.marker.mk_ptr(index))
+        self
+        .elems
+        .get_full(elem)
+        .map(|(index, _)| self.marker.mk_ptr(index))
     }
 
     pub fn len(&self) -> usize {
@@ -185,15 +188,45 @@ impl<'a, Z : HasMkPtr> Store<'a, Z> {
 
 }
 
+// All of these operations are pure and not dependent on the context of any
+// given declaration/typechecker. They will never contain locals.
+// For that reason, we include a cache in `Env`, and allow results that only
+// contain elements of `Env` to persist between declarations.
+pub struct PureCache<'a, Z> {
+    marker : PhantomData<Z>,
+    pub inst_cache        : FxHashMap<(ExprPtr<'a>, ExprsPtr<'a>, u16), (ExprPtr<'a>, Step<InstAuxZst>)>,
+    pub subst_cache       : FxHashMap<(ExprPtr<'a>, LevelsPtr<'a>, LevelsPtr<'a>), (ExprPtr<'a>, Step<SubstEZst>)>,
+    pub height_cache      : FxHashMap<ExprPtr<'a>, (u16, Step<CalcHeightAuxZst>)>,
+    pub fold_cache        : FxHashMap<(ExprPtr<'a>, ExprsPtr<'a>), (ExprPtr<'a>, Step<FoldlAppsZst>)>,
+    pub unfold_cache      : FxHashMap<ExprPtr<'a>, ((ExprPtr<'a>, ExprsPtr<'a>), Step<UnfoldAppsAuxZst>)>,
+    pub le_cache          : FxHashMap<(LevelPtr<'a>, LevelPtr<'a>), (bool, Step<LeqZst>)>,
+}
+
+
+impl<'a, Z> PureCache<'a, Z> {
+    pub fn new() -> Self {
+        PureCache {
+            marker : PhantomData,
+            inst_cache       : FxHashMap::with_hasher(Default::default()),
+            subst_cache      : FxHashMap::with_hasher(Default::default()),
+            height_cache     : FxHashMap::with_hasher(Default::default()),
+            fold_cache       : FxHashMap::with_hasher(Default::default()),
+            unfold_cache     : FxHashMap::with_hasher(Default::default()),
+            le_cache         : FxHashMap::with_hasher(Default::default())
+        }
+    }
+}
 
 
 pub struct ExprCache<'a, Z> {
     marker : PhantomData<Z>,
-    pub abstr_cache  : FxIndexMap<(ExprPtr<'a>, u16), (ExprPtr<'a>, Step<AbstrAux<'a>>)>,
-    pub inst_cache   : FxIndexMap<(ExprPtr<'a>, u16), (ExprPtr<'a>, Step<InstAux<'a>>)>,
-    pub subst_cache   : FxIndexMap<(ExprPtr<'a>, LevelsPtr<'a>, LevelsPtr<'a>), (ExprPtr<'a>, Step<SubstE<'a>>)>,
-    pub height_cache  : FxIndexMap<ExprPtr<'a>, (u16, Step<CalcHeight<'a>>)>,
-    pub find_cache    : FxIndexMap<ExprPtr<'a>, (bool, Step<HasIndOcc<'a>>)>,
+    pub abstr_cache       : FxHashMap<(ExprPtr<'a>, u16), (ExprPtr<'a>, Step<AbstrAuxZst>)>,
+    pub find_cache        : FxHashMap<ExprPtr<'a>, (bool, Step<HasIndOccZst>)>,
+    pub inst_cache        : FxHashMap<(ExprPtr<'a>, ExprsPtr<'a>, u16), (ExprPtr<'a>, Step<InstAuxZst>)>,
+    pub subst_cache       : FxHashMap<(ExprPtr<'a>, LevelsPtr<'a>, LevelsPtr<'a>), (ExprPtr<'a>, Step<SubstEZst>)>,
+    pub height_cache      : FxHashMap<ExprPtr<'a>, (u16, Step<CalcHeightAuxZst>)>,
+    pub fold_cache        : FxHashMap<(ExprPtr<'a>, ExprsPtr<'a>), (ExprPtr<'a>, Step<FoldlAppsZst>)>,
+    pub unfold_cache      : FxHashMap<ExprPtr<'a>, ((ExprPtr<'a>, ExprsPtr<'a>), Step<UnfoldAppsAuxZst>)>,
 }
 
 pub fn new_map<K : Hash + Eq, V>() -> FxHashMap<K, V> {
@@ -204,27 +237,33 @@ impl<'a, Z> ExprCache<'a, Z> {
     pub fn new() -> Self {
         ExprCache {
             marker : PhantomData,
-            abstr_cache    : FxIndexMap::with_hasher(Default::default()),
-            inst_cache     : FxIndexMap::with_hasher(Default::default()),
-            subst_cache    : FxIndexMap::with_hasher(Default::default()),
-            height_cache   : FxIndexMap::with_hasher(Default::default()),
-            find_cache     : FxIndexMap::with_hasher(Default::default()),            
+            abstr_cache      : FxHashMap::with_hasher(Default::default()),
+            find_cache       : FxHashMap::with_hasher(Default::default()),            
+            subst_cache      : FxHashMap::with_hasher(Default::default()),
+            inst_cache       : FxHashMap::with_hasher(Default::default()),
+            height_cache     : FxHashMap::with_hasher(Default::default()),
+            fold_cache       : FxHashMap::with_hasher(Default::default()),
+            unfold_cache     : FxHashMap::with_hasher(Default::default()),
         }
     }
 }
 
-pub struct TcCache<'a> {
-    infer_cache : FxHashMap<(ExprPtr<'a>, InferFlag), (ExprPtr<'a>, Step<Infer<'a>>)>,
-    eq_cache    : FxHashMap<(ExprPtr<'a>, ExprPtr<'a>), Step<DefEq<'a>>>,
-    whnf_cache  : FxHashMap<ExprPtr<'a>, (ExprPtr<'a>, Step<Whnf<'a>>)>,
+pub struct TcCache<'a, Z> {
+    marker : PhantomData<Z>,
+    infer_cache   : FxHashMap<(ExprPtr<'a>, InferFlag), (ExprPtr<'a>, Step<InferZst>)>,
+    eq_cache      : FxHashMap<(ExprPtr<'a>, ExprPtr<'a>), (EqResult, Step<DefEqZst>)>,
+    whnf_cache    : FxHashMap<ExprPtr<'a>, (ExprPtr<'a>, Step<WhnfZst>)>,
+    args_eq_cache : FxHashMap<(ExprsPtr<'a>, ExprsPtr<'a>), (EqResult, Step<ArgsEqZst>)>,
 }
 
-impl<'a> TcCache<'a> {
+impl<'a, Z> TcCache<'a, Z> {
     fn new() -> Self {
         TcCache {
-            infer_cache : FxHashMap::with_hasher(Default::default()),
-            eq_cache    : FxHashMap::with_hasher(Default::default()),
-            whnf_cache  : FxHashMap::with_hasher(Default::default()),
+            marker : PhantomData,
+            infer_cache   : FxHashMap::with_hasher(Default::default()),
+            eq_cache      : FxHashMap::with_hasher(Default::default()),
+            whnf_cache    : FxHashMap::with_hasher(Default::default()),
+            args_eq_cache : FxHashMap::with_hasher(Default::default()),
         }
     }
 
@@ -236,77 +275,9 @@ impl<'a> TcCache<'a> {
 
 }
 
-
-pub struct PfinderCache<'a> {
-    infer_cache : FxIndexMap<(ExprPtr<'a>, InferFlag), (ExprPtr<'a>, Step<Infer<'a>>)>,
-    eq_cache    : FxIndexMap<(ExprPtr<'a>, ExprPtr<'a>), Step<DefEq<'a>>>,
-    //ne_cache : FxHashSet<(ExprPtr<'a>, ExprPtr<'a>)>,
-    whnf_cache  : FxIndexMap<ExprPtr<'a>, (ExprPtr<'a>, Step<Whnf<'a>>)>,
-}
-
-
-impl<'a> PfinderCache<'a> {
-    fn new() -> Self {
-        PfinderCache {
-            infer_cache : FxIndexMap::with_hasher(Default::default()),
-            eq_cache    : FxIndexMap::with_hasher(Default::default()),
-            whnf_cache  : FxIndexMap::with_hasher(Default::default()),
-        }
-    }
-    
-    fn is_empty(&self) -> bool {
-        self.eq_cache.is_empty() && self.infer_cache.is_empty() && self.whnf_cache.is_empty()
-    }
-}
-
-pub struct Cache<'a, Z> {
-    marker : PhantomData<Z>,
-    expr_cache : ExprCache<'a, Z>,
-    tc_cache : PfinderCache<'a>
-}
-
-
-impl<'a, Z> Cache<'a, Z> {
-    pub fn new() -> Self {
-        Self {
-            marker : Default::default(),
-            expr_cache : ExprCache::new(),
-            tc_cache : PfinderCache::new(),
-        }
-    }
-
-}
-
-impl<'a> Cache<'a, PfinderZst> {
-    pub fn get_snapshot(&self) -> Snapshot {
-        Snapshot {
-            abstr_cache_len  : self.expr_cache.abstr_cache.len(),
-            inst_cache_len   : self.expr_cache.inst_cache.len(),
-            subst_cache_len  : self.expr_cache.subst_cache.len(),
-            height_cache_len : self.expr_cache.height_cache.len(),
-            find_cache_len   : self.expr_cache.find_cache.len(),
-            infer_cache_len  : self.tc_cache.infer_cache.len(),
-            eq_cache_len     : self.tc_cache.eq_cache.len(),
-            whnf_cache_len   : self.tc_cache.whnf_cache.len(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Snapshot {
-    abstr_cache_len  : usize,
-    inst_cache_len   : usize,
-    subst_cache_len  : usize,
-    height_cache_len : usize,
-    find_cache_len   : usize,
-    infer_cache_len  : usize,
-    eq_cache_len     : usize,
-    whnf_cache_len   : usize,
-}
-//#[derive(Debug)]
 pub struct Env<'e, T : IsTracer> {
     pub store : Store<'e, EnvZst>,
-    pub declars : FxIndexMap<NamePtr<'e>, (DeclarPtr<'e>, Step<AdmitDeclar<'e>>)>,
+    pub declars : FxIndexMap<NamePtr<'e>, (DeclarPtr<'e>, Step<AdmitDeclarZst>)>,
     pub notations : FxHashMap<NamePtr<'e>, Notation<'e>>,
     pub next_local : u64,
     pub quot_mk : Option<NamePtr<'e>>,
@@ -345,102 +316,207 @@ impl<'l, 'e : 'l, T : 'e + IsTracer> Env<'e, T> {
             env : self,
             store : Store::new(),
             expr_cache : ExprCache::new(),
-            tc_cache : TcCache::new(),
             pfinder_store : Store::new(),
-            pfinder_cache : Cache::new(),
         }
     }
+
+
+
+
 }
+
+
+
 
 pub struct Live<'l, 'e : 'l, T : IsTracer> {
     pub env : &'l mut Env<'e, T>,
     pub store : Store<'l, LiveZst>,
-    expr_cache : ExprCache<'l, LiveZst>,
-    tc_cache : TcCache<'l>,
     pfinder_store : Store<'l, PfinderZst>,
-    pfinder_cache : Cache<'l, PfinderZst>,
+
+    expr_cache : ExprCache<'l, LiveZst>,
 }
 
 impl<'t, 'l : 't, 'e : 'l, T> Live<'l, 'e, T> 
 where T : 'e + IsTracer {
     pub fn as_tc(&'t mut self, dec_uparams : Option<LevelsPtr<'l>>, safe_only : Option<bool>) -> Tc<'t, 'l, 'e, T> {
-        self.tc_cache.clear();
-        assert!(self.pfinder_cache.tc_cache.is_empty());
+
         let dec_uparams = dec_uparams.unwrap_or_else(|| Nil::<Level>.alloc(self));
 
         Tc {
             live : self,
             dec_uparams,
-            safe_only : safe_only.unwrap_or(false)
+            safe_only : safe_only.unwrap_or(false),
+            tc_cache : TcCache::new(),
+            pfinder_tc_cache : TcCache::new(),
+            pfinder_expr_cache : ExprCache::new(),
         }
     }
 
-    //pub fn admit_declar(&mut self, d : Declar<'l>) {
-    //    assert!(self.env.declars.get(&d.name()).is_none());
-    //    let d = d.insert_env(self.env, &self.store).read(self.env);
-    //    self.env.declars.insert(d.name(), d);
-    //}
+    pub fn admit_declar(&mut self, d : DeclarPtr<'l>) {
+        assert!(self.env.declars.get(&d.name(self)).is_none());
+        let d_env = d.read(self).insert_env(self.env, &self.store);
+
+        let (name, step) = match d_env.read(self.env) {
+            Axiom { name, uparams, type_, is_unsafe } => {
+                AdmitDeclar::Axiom {
+                    name,
+                    uparams,
+                    type_,
+                    is_unsafe
+                }.step(self.env)
+            },
+            Definition { name, uparams, type_, val, hint, is_unsafe } => {
+                AdmitDeclar::Definition {
+                    name,
+                    uparams,
+                    type_,
+                    val,
+                    hint,
+                    is_unsafe,
+                }.step(self.env)
+            },
+            Theorem { name, uparams, type_, val } => {
+                AdmitDeclar::Theorem {
+                    name,
+                    uparams,
+                    type_,
+                    val,
+                }.step(self.env)
+
+            },
+            Opaque { name, uparams, type_, val } => {
+                AdmitDeclar::Opaque {
+                    name,
+                    uparams,
+                    type_,
+                    val,
+                }.step(self.env)
+            },
+            Quot { name, uparams, type_ } => {
+                AdmitDeclar::Quot {
+                    name,
+                    uparams,
+                    type_,
+                }.step(self.env)
+            },
+            Inductive {
+                name,
+                uparams,
+                type_,
+                num_params,
+                all_ind_names,
+                all_ctor_names,
+                is_unsafe
+            } => {
+                AdmitDeclar::Inductive {
+                    name,
+                    uparams,
+                    type_,
+                    num_params,
+                    all_ind_names,
+                    all_ctor_names,
+                    is_unsafe
+                }.step(self.env)
+            },
+            Constructor {
+                name,
+                uparams,
+                type_,
+                parent_name,
+                num_fields,
+                minor_idx,
+                num_params,
+                is_unsafe
+            } => {
+                AdmitDeclar::Constructor {
+                    name,
+                    uparams,
+                    type_,
+                    parent_name,
+                    num_fields,
+                    minor_idx,
+                    num_params,
+                    is_unsafe
+                }.step(self.env)
+            },
+            Recursor {
+                name,
+                uparams,
+                type_,
+                all_names,
+                num_params,
+                num_indices,
+                num_motives,
+                num_minors,
+                major_idx,
+                rec_rules,
+                is_k,
+                is_unsafe
+            } => {
+                AdmitDeclar::Recursor {
+                    name,
+                    uparams,
+                    type_,
+                    all_names,
+                    num_params,
+                    num_indices,
+                    num_motives,
+                    num_minors,
+                    major_idx,
+                    rec_rules,
+                    is_k,
+                    is_unsafe
+                }.step(self.env)
+            }
+        };
+
+        self.env.declars.insert(name, (d_env, step));
+    }
 }
 
 pub struct Tc<'t, 'l : 't, 'e : 'l, T : IsTracer> {
     live : &'t mut Live<'l, 'e, T>,
     dec_uparams : LevelsPtr<'l>,
     safe_only : bool,
+    tc_cache : TcCache<'l, TcZst>,
+    pfinder_tc_cache : TcCache<'l, PfinderZst>,
+    pfinder_expr_cache : ExprCache<'l, PfinderZst>,
 }
 
-pub struct Pfinder<'t, 'l : 't, 'e : 'l, T : IsTracer> {
-    live : &'t mut Live<'l, 'e, T>,
+
+
+pub struct Pfinder<'p, 't : 'p, 'l : 't, 'e : 'l, T : IsTracer> {
+    tc : &'p mut Tc<'t, 'l, 'e, T>,
     dec_uparams : LevelsPtr<'l>,
     safe_only : bool,
-    snapshot : Snapshot
-}
-
-impl<'t, 'l : 't, 'e : 'l, T> Pfinder<'t, 'l, 'e, T>
-where T : 'l + IsTracer {
-    pub fn restore_snapshot(&mut self) {
-        fn restore_aux<K : Hash + Eq, V>(map : &mut FxIndexMap<K, V>, target : usize) {
-            while map.len() > target {
-                map.pop();
-            }
-        }
-
-        restore_aux(&mut self.live.pfinder_cache.expr_cache.abstr_cache, self.snapshot.abstr_cache_len);
-        restore_aux(&mut self.live.pfinder_cache.expr_cache.inst_cache, self.snapshot.inst_cache_len);
-        restore_aux(&mut self.live.pfinder_cache.expr_cache.subst_cache, self.snapshot.subst_cache_len);
-        restore_aux(&mut self.live.pfinder_cache.expr_cache.height_cache, self.snapshot.height_cache_len);
-        restore_aux(&mut self.live.pfinder_cache.expr_cache.find_cache, self.snapshot.find_cache_len);
-        restore_aux(&mut self.live.pfinder_cache.tc_cache.infer_cache, self.snapshot.infer_cache_len);
-        restore_aux(&mut self.live.pfinder_cache.tc_cache.eq_cache, self.snapshot.eq_cache_len);
-        restore_aux(&mut self.live.pfinder_cache.tc_cache.whnf_cache, self.snapshot.whnf_cache_len);
-    }
-
-
 }
 
 pub trait IsTc<'t, 'l : 't, 'e : 'l> : IsLiveCtx<'l> {
-    fn as_pfinder<'sh, 'lo : 'sh>(&'lo mut self) -> Pfinder<'sh, 'l, 'e, Self::Tracer>;
+    fn as_pfinder<'sh, 'lo : 'sh>(&'lo mut self) -> Pfinder<'sh, 't, 'l, 'e, Self::Tracer>;
     fn safe_only(&self) -> bool;
     fn dec_uparams(&self) -> LevelsPtr<'l>;
     fn quot_names(&self) -> Option<(NamePtr<'l>, NamePtr<'l>, NamePtr<'l>)>;
 
-    fn check_infer_cache(&self, k : ExprPtr<'l>, flag : InferFlag) -> Option<(ExprPtr<'l>, Step<Infer<'l>>)>;
-    fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<Step<DefEq<'l>>>;
-    fn check_whnf_cache(&self, k : &ExprPtr<'l>) -> Option<(ExprPtr<'l>, Step<Whnf<'l>>)>;
+    fn check_infer_cache(&self, k : ExprPtr<'l>, flag : InferFlag) -> Option<(ExprPtr<'l>, Step<InferZst>)>;
+    fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<(EqResult, Step<DefEqZst>)>;
+    fn check_whnf_cache(&self, k : &ExprPtr<'l>) -> Option<(ExprPtr<'l>, Step<WhnfZst>)>;
+    fn check_args_eq_cache(&self, l : ExprsPtr<'l>, r : ExprsPtr<'l>) -> Option<(EqResult, Step<ArgsEqZst>)>;
 
-    fn insert_infer_cache(&mut self, k : ExprPtr<'l>, flag : InferFlag, v : ExprPtr<'l>, step : Step<Infer<'l>>);
-    fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, step : Step<DefEq<'l>>);
-    fn insert_whnf_cache(&mut self, k : ExprPtr<'l>, v : ExprPtr<'l>, step : Step<Whnf<'l>>);
+    fn insert_infer_cache(&mut self, k : ExprPtr<'l>, flag : InferFlag, v : (ExprPtr<'l>, Step<InferZst>));
+    fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, v : (EqResult, Step<DefEqZst>));
+    fn insert_whnf_cache(&mut self, k : ExprPtr<'l>, v : (ExprPtr<'l>, Step<WhnfZst>));
+    fn insert_args_eq_cache(&mut self, l : ExprsPtr<'l>, r : ExprsPtr<'l>, v : (EqResult, Step<ArgsEqZst>));
 }
 
 impl<'t, 'l : 't, 'e : 'l, T> IsTc<'t, 'l, 'e> for Tc<'t, 'l, 'e, T> 
 where T : 'l + IsTracer {
-    fn as_pfinder<'sh, 'lo : 'sh>(&'lo mut self) -> Pfinder<'sh, 'l, 'e, Self::Tracer> {
-        let snapshot = self.live.pfinder_cache.get_snapshot();
+    fn as_pfinder<'sh, 'lo : 'sh>(&'lo mut self) -> Pfinder<'sh, 't, 'l, 'e, Self::Tracer> {
+        let dec_uparams = self.dec_uparams;
+        let safe_only  = self.safe_only;
         Pfinder {
-            live : self.live,
-            dec_uparams : self.dec_uparams,
-            safe_only : self.safe_only,
-            snapshot
+            tc : self,
+            dec_uparams,
+            safe_only,
         }
     }
     
@@ -453,46 +529,56 @@ where T : 'l + IsTracer {
     }
 
     fn quot_names(&self) -> Option<(NamePtr<'l>, NamePtr<'l>, NamePtr<'l>)> {
-        Some((self.live.env.quot_mk?,
-              self.live.env.quot_lift?,
-              self.live.env.quot_ind?))
+        Some((
+             self.live.env.quot_mk?,
+             self.live.env.quot_lift?,
+             self.live.env.quot_ind?
+            ))
     }
 
-    fn check_infer_cache(&self, k : ExprPtr<'l>, flag : InferFlag) -> Option<(ExprPtr<'l>, Step<Infer<'l>>)> {
-        self.live.tc_cache.infer_cache.get(&(k, flag)).copied()
+    fn check_infer_cache(&self, k : ExprPtr<'l>, flag : InferFlag) -> Option<(ExprPtr<'l>, Step<InferZst>)> {
+        self.tc_cache.infer_cache.get(&(k, flag)).copied()
     }
 
-    fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<Step<DefEq<'l>>> {
-        self.live.tc_cache.eq_cache.get(&(l, r)).copied()
+    fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<(EqResult, Step<DefEqZst>)> {
+        self.tc_cache.eq_cache.get(&(l, r)).copied()
     }
 
-    fn check_whnf_cache(&self, k : &ExprPtr<'l>) -> Option<(ExprPtr<'l>, Step<Whnf<'l>>)> {
-        self.live.tc_cache.whnf_cache.get(k).copied()
+    fn check_whnf_cache(&self, k : &ExprPtr<'l>) -> Option<(ExprPtr<'l>, Step<WhnfZst>)> {
+        self.tc_cache.whnf_cache.get(k).copied()
     }
 
-    fn insert_infer_cache(&mut self, k : ExprPtr<'l>, flag : InferFlag, v : ExprPtr<'l>, step : Step<Infer<'l>>) {
-        // the idx no longer comes from here.
-        //let this_step_idx = self.mut_mgr().next_step_idx();
-        self.live.tc_cache.infer_cache.insert((k, flag), (v, step));
+    fn check_args_eq_cache(&self, l : ExprsPtr<'l>, r : ExprsPtr<'l>) -> Option<(EqResult, Step<ArgsEqZst>)> {
+        self.tc_cache.args_eq_cache.get(&(l, r)).copied()
+    }
 
+
+    fn insert_infer_cache(&mut self, k : ExprPtr<'l>, flag : InferFlag, v : (ExprPtr<'l>, Step<InferZst>)) {
+        self.tc_cache.infer_cache.insert((k, flag), v);
     }
-    fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, step : Step<DefEq<'l>>) {
-        self.live.tc_cache.eq_cache.insert((l, r), step);
+    
+    fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, v : (EqResult, Step<DefEqZst>)) {
+        self.tc_cache.eq_cache.insert((l, r), v);
     }
-    fn insert_whnf_cache(&mut self, k : ExprPtr<'l>, v : ExprPtr<'l>, step : Step<Whnf<'l>>) {
-        self.live.tc_cache.whnf_cache.insert(k, (v, step));
+
+    fn insert_whnf_cache(&mut self, k : ExprPtr<'l>, v : (ExprPtr<'l>, Step<WhnfZst>)) {
+        self.tc_cache.whnf_cache.insert(k, v);
     }
+    
+    fn insert_args_eq_cache(&mut self, l : ExprsPtr<'l>, r : ExprsPtr<'l>, v : (EqResult, Step<ArgsEqZst>)) {
+        self.tc_cache.args_eq_cache.insert((l, r), v);
+    }
+
+
 }
 
-impl<'t, 'l : 't, 'e : 'l, T> IsTc<'t, 'l, 'e> for Pfinder<'t, 'l, 'e, T> 
+impl<'p, 't : 'p, 'l : 't, 'e : 'l, T> IsTc<'t, 'l, 'e> for Pfinder<'p, 't, 'l, 'e, T> 
 where T : 'l + IsTracer {
-    fn as_pfinder<'sh, 'lo : 'sh>(&'lo mut self) -> Pfinder<'sh, 'l, 'e, T> {
-        let snapshot = self.live.pfinder_cache.get_snapshot();
+    fn as_pfinder<'sh, 'lo : 'sh>(&'lo mut self) -> Pfinder<'sh, 't, 'l, 'e, T> {
         Pfinder {
-            live : self.live,
+            tc : self.tc,
             dec_uparams : self.dec_uparams,
             safe_only : self.safe_only,
-            snapshot
         }
     }
     
@@ -505,41 +591,56 @@ where T : 'l + IsTracer {
     }
 
     fn quot_names(&self) -> Option<(NamePtr<'l>, NamePtr<'l>, NamePtr<'l>)> {
-        Some((self.live.env.quot_mk?,
-              self.live.env.quot_lift?,
-              self.live.env.quot_ind?))
+        Some((
+            self.tc.live.env.quot_mk?,
+            self.tc.live.env.quot_lift?,
+            self.tc.live.env.quot_ind?
+        ))
     }    
 
-    fn check_infer_cache(&self, k : ExprPtr<'l>, flag : InferFlag) -> Option<(ExprPtr<'l>, Step<Infer<'l>>)> {
-        self.live.tc_cache.infer_cache.get(&(k, flag))
-        .or_else(|| self.live.pfinder_cache.tc_cache.infer_cache.get(&(k, flag)))
+    fn check_infer_cache(&self, k : ExprPtr<'l>, flag : InferFlag) -> Option<(ExprPtr<'l>, Step<InferZst>)> {
+        self.tc.tc_cache.infer_cache.get(&(k, flag))
+        .or_else(|| self.tc.pfinder_tc_cache.infer_cache.get(&(k, flag)))
         .copied()
     }
 
-    fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<Step<DefEq<'l>>> {
-        self.live.tc_cache.eq_cache.get(&(l, r))
-        .or_else(|| self.live.pfinder_cache.tc_cache.eq_cache.get(&(l, r)))
+    fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<(EqResult, Step<DefEqZst>)> {
+        self.tc.tc_cache.eq_cache.get(&(l, r))
+        .or_else(|| self.tc.pfinder_tc_cache.eq_cache.get(&(l, r)))
         .copied()
     }
 
-    fn check_whnf_cache(&self, k : &ExprPtr<'l>) -> Option<(ExprPtr<'l>, Step<Whnf<'l>>)> {
-        self.live.tc_cache.whnf_cache.get(k)
-        .or_else(|| self.live.pfinder_cache.tc_cache.whnf_cache.get(k))
+    fn check_whnf_cache(&self, k : &ExprPtr<'l>) -> Option<(ExprPtr<'l>, Step<WhnfZst>)> {
+        self.tc.tc_cache.whnf_cache.get(k)
+        .or_else(|| self.tc.pfinder_tc_cache.whnf_cache.get(k))
         .copied()
     }
     
-    fn insert_infer_cache(&mut self, k : ExprPtr<'l>, flag : InferFlag, v : ExprPtr<'l>, step : Step<Infer<'l>>) {
-        self.live.pfinder_cache.tc_cache.infer_cache.insert((k, flag), (v, step));
+    
+    fn check_args_eq_cache(&self, l : ExprsPtr<'l>, r : ExprsPtr<'l>) -> Option<(EqResult, Step<ArgsEqZst>)> {
+        self.tc.tc_cache.args_eq_cache.get(&(l, r))
+        .or_else(|| self.tc.pfinder_tc_cache.args_eq_cache.get(&(l, r)))
+        .copied()
+    }
+
+    fn insert_infer_cache(&mut self, k : ExprPtr<'l>, flag : InferFlag, v : (ExprPtr<'l>, Step<InferZst>)) {
+        self.tc.pfinder_tc_cache.infer_cache.insert((k, flag), v);
 
     }
-    fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, step : Step<DefEq<'l>>) {
-        self.live.pfinder_cache.tc_cache.eq_cache.insert((l, r), step);
+    fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, step : (EqResult, Step<DefEqZst>)) {
+        self.tc.pfinder_tc_cache.eq_cache.insert((l, r), step);
     }
 
-    fn insert_whnf_cache(&mut self, k : ExprPtr<'l>, v : ExprPtr<'l>, step : Step<Whnf<'l>>) {
-        self.live.pfinder_cache.tc_cache.whnf_cache.insert(k, (v, step));
+    fn insert_whnf_cache(&mut self, k : ExprPtr<'l>, v : (ExprPtr<'l>, Step<WhnfZst>)) {
+        self.tc.pfinder_tc_cache.whnf_cache.insert(k, v);
     }
+
+    fn insert_args_eq_cache(&mut self, l : ExprsPtr<'l>, r : ExprsPtr<'l>, v : (EqResult, Step<ArgsEqZst>)) {
+        self.tc.pfinder_tc_cache.args_eq_cache.insert((l, r), v);
+    }
+    
 }
+
 
 pub trait IsCtx<'a> {
     type Writable : HasMkPtr;
@@ -550,8 +651,11 @@ pub trait IsCtx<'a> {
     fn live_store(&self) -> Option<&Store<'a, LiveZst>>;
     fn pfinder_store(&self) -> Option<&Store<'a, PfinderZst>>;
     fn mut_store(&mut self) -> &mut Store<'a, Self::Writable>;
-    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'a>, Step<AdmitDeclar<'a>>)>;
+    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'a>, Step<AdmitDeclarZst>)>;
     fn mut_mgr(&mut self) -> &mut TraceMgr<Self::Tracer>;
+    fn tracer(&mut self) -> &mut Self::Tracer {
+        &mut self.mut_mgr().tracer
+    }
 }
 
 impl<'e, T> IsCtx<'e> for Env<'e, T> 
@@ -576,7 +680,7 @@ where T : 'e + IsTracer {
         &mut self.store
     }
 
-    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'e>, Step<AdmitDeclar<'e>>)> {
+    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'e>, Step<AdmitDeclarZst>)> {
         self.declars.get(&n).copied()
     }
     
@@ -608,7 +712,7 @@ where T : 'l + IsTracer {
     }
 
     
-    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'l>, Step<AdmitDeclar<'l>>)> {
+    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'l>, Step<AdmitDeclarZst>)> {
         self.env.declars.get(&n).copied()
     }
 
@@ -642,7 +746,7 @@ where T : 'l + IsTracer {
         &mut self.live.store
     }
 
-    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'l>, Step<AdmitDeclar<'l>>)> {
+    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'l>, Step<AdmitDeclarZst>)> {
         self.live.env.declars.get(&n).copied()
     }
     
@@ -651,42 +755,42 @@ where T : 'l + IsTracer {
     }
 }
 
-impl<'t, 'l : 't, 'e : 'l, T> IsCtx<'l> for Pfinder<'t, 'l, 'e, T>
+impl<'p, 't : 'p, 'l : 't, 'e : 'l, T> IsCtx<'l> for Pfinder<'p, 't, 'l, 'e, T>
 where T : 'l + IsTracer {
     type Writable = PfinderZst;
     type Tracer = T;
     const IS_PFINDER : bool = true;
 
     fn env_store(&self) -> &Store<'l, EnvZst> {
-        &self.live.env.store
+        &self.tc.live.env.store
     }
 
     fn live_store(&self) -> Option<&Store<'l, LiveZst>> {
-        Some(&self.live.store)
+        Some(&self.tc.live.store)
     }
 
     fn pfinder_store(&self) -> Option<&Store<'l, PfinderZst>> {
-        Some(&self.live.pfinder_store)
+        Some(&self.tc.live.pfinder_store)
     }
 
     fn mut_store(&mut self) -> &mut Store<'l, Self::Writable> {
-        &mut self.live.pfinder_store
+        &mut self.tc.live.pfinder_store
     }
 
 
-    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'l>, Step<AdmitDeclar<'l>>)> {
-        self.live.env.declars.get(&n).copied()
+    fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'l>, Step<AdmitDeclarZst>)> {
+        self.tc.live.env.declars.get(&n).copied()
     }
     
     fn mut_mgr(&mut self) -> &mut TraceMgr<Self::Tracer> {
-        self.live.mut_mgr()
+        self.tc.live.mut_mgr()
     }
 }
 
 
 // Gives access to expression caches.
-pub trait IsLiveCtx<'a> : IsCtx<'a> {
-    fn expr_cache(&mut self) -> &mut ExprCache<'a, Self::Writable>;
+pub trait IsLiveCtx<'l> : IsCtx<'l> {
+    fn expr_cache(&mut self) -> &mut ExprCache<'l, Self::Writable>;
     fn next_local(&mut self) -> LocalSerial;
 }
 
@@ -715,30 +819,30 @@ where T : 'l + IsTracer {
     }
 }
 
-impl<'t, 'l : 't, 'e : 'l, T> IsLiveCtx<'l> for Pfinder<'t, 'l, 'e, T> 
+impl<'p, 't : 'p, 'l : 't, 'e : 'l, T> IsLiveCtx<'l> for Pfinder<'p, 't, 'l, 'e, T> 
 where T : 'l + IsTracer {
     fn expr_cache(&mut self) -> &mut ExprCache<'l, PfinderZst> {
-        &mut self.live.pfinder_cache.expr_cache
+        &mut self.tc.pfinder_expr_cache
     }
     
     fn next_local(&mut self) -> LocalSerial {
-        self.live.next_local()
+        self.tc.live.next_local()
     }
 }
 
 // Strings are a pain since they're the only type we deal with
 // that isn't copy.
 pub fn alloc_str<'a>(s : String, ctx : &mut impl IsCtx<'a>) -> Ptr<'a, String> {
-    let r = if let Some(dupe_ptr) = ctx.env_store().strings.check_dupe(&s)
-                            .or_else(|| ctx.live_store().and_then(|st| st.strings.check_dupe(&s))) {
-        dupe_ptr
-    } else {
-        let r = ctx.mut_store().strings.insert_elem(s);
-        r.trace_item(ctx);
-        r
-
-    };
-    r
+    ctx
+    .env_store()
+    .strings
+    .check_dupe(&s)
+    .or_else(|| ctx.live_store().and_then(|st| st.strings.check_dupe(&s)))
+    .unwrap_or_else(|| {
+        let result = ctx.mut_store().strings.insert_elem(s);
+        result.trace_item(ctx);
+        result
+    })
 }
 
 impl<'s, 'a : 's> Ptr<'a, String> {
@@ -865,9 +969,13 @@ macro_rules! has_list {
                     let mut cursor = self;
                     while let Cons(hd, tl) = cursor {
                         acc.push_str(hd.nanoda_dbg(ctx).as_str());
-                        //if tl.len(ctx) != 0 {
+                        match tl.read(ctx) {
+                            Nil => (),
+                            Cons(..) => {
                             acc.push_str(", ");
-                        //}
+
+                            }
+                        }
                         cursor = tl.read(ctx);
                     }
                     acc.push(']');
@@ -881,7 +989,7 @@ macro_rules! has_list {
                 self, 
                 haystack : ListPtr<$short, $base<$short>>, 
                 ctx : &mut impl IsLiveCtx<$short>
-            ) -> (bool, Step<Mem<$short, $base<$short>>>) {
+            ) -> (bool, Step<MemZst>) {
                 match haystack.read(ctx) {
                     Nil => {
                         Mem::BaseFf {
@@ -915,11 +1023,12 @@ macro_rules! has_list {
                 }
             }        
 
-            pub fn pos (
+            
+            pub fn pos(
                 self, 
                 haystack : ListPtr<$short, $base<$short>>, 
                 ctx : &mut impl IsLiveCtx<$short>
-            ) -> (Option<usize>, Step<Pos<$short, $base<$short>>>) {
+            ) -> (Option<usize>, Step<PosZst>) {
                 match haystack.read(ctx) {
                     Nil => {
                         Pos::BaseNone {
@@ -953,7 +1062,6 @@ macro_rules! has_list {
                 }
             }
         }
-
         impl<$short> ListPtr<$short, $base<$short>> {
             pub fn read(self, ctx : &impl IsCtx<$short>) -> List<$short, $base<$short>> {
                 match self {
@@ -985,7 +1093,7 @@ macro_rules! has_list {
             }
 
             // tests `self is a subset of other`
-            pub fn subset(self, super_ : ListPtr<$short, $base>, ctx : &mut impl IsLiveCtx<$short>) -> (bool, Step<IsSubset<$short, $base<$short>>>) {
+            pub fn subset(self, super_ : ListPtr<$short, $base>, ctx : &mut impl IsLiveCtx<$short>) -> (bool, Step<IsSubsetZst>) {
                 match self.read(ctx) {
                     Nil => {
                         IsSubset::BaseNil {
@@ -1016,7 +1124,7 @@ macro_rules! has_list {
                 self, 
                 n : usize, 
                 ctx : &mut impl IsLiveCtx<$short>
-            ) -> (ListPtr<$short, $base<$short>>, Step<Skip<$short, $base<$short>>>) {
+            ) -> (ListPtr<$short, $base<$short>>, Step<SkipZst>) {
                 match self.read(ctx) {
                     Nil => {
                         Skip::BaseNil {
@@ -1050,7 +1158,7 @@ macro_rules! has_list {
                 self, 
                 n : usize, 
                 ctx : &mut impl IsLiveCtx<$short>
-            ) -> (ListPtr<$short, $base<$short>>, Step<Take<$short, $base<$short>>>) {
+            ) -> (ListPtr<$short, $base<$short>>, Step<TakeZst>) {
                 match self.read(ctx) {
                     Nil => {
                         Take::BaseNil {
@@ -1058,7 +1166,7 @@ macro_rules! has_list {
                             ind_arg1 : self,
                         }.step(ctx)
                     },
-                    Cons(hd, tl) if n == 0 => {
+                    Cons(..) if n == 0 => {
                         Take::BaseZero {
                             l : self,
                             ind_arg2 : n,
@@ -1086,7 +1194,7 @@ macro_rules! has_list {
             pub fn no_dupes(
                 self, 
                 ctx : &mut impl IsLiveCtx<$short>
-            ) -> (bool, Step<NoDupes<$short, $base<$short>>>) {
+            ) -> (bool, Step<NoDupesZst>) {
                 match self.read(ctx) {
                     Nil => {
                         NoDupes::BaseNil {
@@ -1111,13 +1219,14 @@ macro_rules! has_list {
                 }
             }            
 
+
         
             pub fn get(
                 self, 
                 n : usize, 
                 ctx : &mut impl IsLiveCtx<$short>
-                // eg. (Option<ExprPtr<'a>, Step<Get<ExprPtr<'a>>>)
-            ) -> (Option<Ptr<$short, $base<$short>>>, Step<Get<$short, $base<$short>>>) {
+                // eg. (Option<ExprPtr<'a>, Step<Get<ExprPtrZst>>)
+            ) -> (Option<Ptr<$short, $base<$short>>>, Step<GetZst>) {
                 match self.read(ctx) {
                     Nil => {
                         Get::BaseNil {
@@ -1149,12 +1258,12 @@ macro_rules! has_list {
                         }.step(ctx)
                     }
                 }
-            }            
+            }          
             
             pub fn len(
                 self, 
                 ctx : &mut impl IsCtx<$short>
-            ) -> (usize, Step<Len<$short, $base<$short>>>) {
+            ) -> (usize, Step<LenZst>) {
                 match self.read(ctx) {
                     Nil => {
                         Len::BaseNil {
@@ -1180,7 +1289,7 @@ macro_rules! has_list {
                 self, 
                 other : ListPtr<$short, $base<$short>>,
                 ctx : &mut impl IsCtx<$short>
-            ) -> (ListPtr<$short, $base<$short>>, Step<Concat<$short, $base<$short>>>) {
+            ) -> (ListPtr<$short, $base<$short>>, Step<ConcatZst>) {
                 match self.read(ctx) {
                     Nil => {
                         Concat::BaseNil {

@@ -4,8 +4,7 @@ use nanoda_lib::utils::{ HasNanodaDbg, List,  List::*, Env };
 use nanoda_lib::name::Name;
 use nanoda_lib::level::{ LevelsPtr, Level };
 use nanoda_lib::{ names, param, name, exprs, levels };
-use nanoda_lib::trace::StdoutTracer;
-use nanoda_lib::trace::items::HasPtrRepr;
+use nanoda_lib::trace::{ NoopTracer, StdoutTracer };
 use nanoda_lib::expr::{ Expr, ExprPtr, ExprsPtr, BinderStyle::* };
 
 #[test]
@@ -108,7 +107,7 @@ fn expr_fold_apps_test0() {
 
 #[test]
 fn expr_telescope_len_test0() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
     
     let base= <ExprPtr>::new_const(
@@ -124,7 +123,7 @@ fn expr_telescope_len_test0() {
 
 #[test]
 fn expr_telescope_len_test1() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
     let v0 = <ExprPtr>::new_var(0, &mut live);
 
@@ -239,7 +238,7 @@ fn expr_fold_pi_test0() {
 
 #[test]
 fn has_ind_occ_test0() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let ind_n1 = name!("ind_type1", &mut live);
@@ -254,7 +253,7 @@ fn has_ind_occ_test0() {
 
 #[test]
 fn has_ind_occ_test1() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let ind_n1 = name!("ind_type1", &mut live);

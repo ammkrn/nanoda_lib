@@ -1,6 +1,9 @@
 
 Some notes :
 
+calls to `env.getDeclar` will be printed as refernces
+to the step at which they were added to the environment
+
 1. A lot of constructor arguments that could be "factored out" into
 parameters instead of leaving them as indices aren't, in order to keep
 the argument order close(r) to the rust implementation. I originally

@@ -1,6 +1,6 @@
 fn main() {
     use nanoda_lib::parser::Parser;
-    use nanoda_lib::trace::NoopTracer;
+    use nanoda_lib::trace::StdoutTracer;
     use std::time::Instant;
     use std::io::BufReader;
     use std::path::PathBuf;
@@ -29,8 +29,7 @@ fn main() {
 
     let start = Instant::now();
     let mut parser = Parser::new(buf_reader);
-    let num_declars_checked = parser.parse(NoopTracer);
+    let num_declars_checked = parser.parse(StdoutTracer::new());
     let time = start.elapsed();
     println!("Checked {} declarations in {:#?}\n", num_declars_checked, time)
 }
-

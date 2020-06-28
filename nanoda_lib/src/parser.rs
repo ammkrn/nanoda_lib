@@ -18,6 +18,7 @@ use crate::utils::{
 };
 
 
+
 pub struct Parser  {
     buf_reader : BufReader<File>,
     string_buffer : String,
@@ -63,8 +64,7 @@ impl Parser {
         }
 
         assert!(self.finished);
-        //env.compile_loop(specs);
-        //env.check_loop(self.num_threads);
+        env.check_loop(specs);
         env.declars.len()
     }
 
@@ -310,8 +310,16 @@ impl<'e, T : 'e + IsTracer> Env<'e, T> {
     }            
 
 
-    pub fn check_loop(&mut self) {
-        unimplemented!()
+    pub fn check_loop(&mut self, specs : Vec<DeclarSpec<'e>>) {
+        let mut num = 0usize;
+        for spec in specs {
+            num += 1;
+            if num % 100 == 0 {
+                println!("spec : {}\n", num);
+            }
+            let mut live = self.as_live();
+            spec.compile_and_check(&mut live);
+        }
     }
 }
 

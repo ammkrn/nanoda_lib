@@ -8,7 +8,7 @@ use crate::name::{ NamePtr, NamesPtr, Name, StringPtr, Name::* };
 use crate::level::{ LevelPtr, LevelsPtr, Level, Level::* };
 use crate::expr::{ ExprPtr, ExprsPtr, Expr, Expr::*, BinderStyle };
 use crate::tc::eq::{ EqResult, DeltaResult };
-use crate::trace::items::{ HasPtrRepr, HasPrefix };
+use crate::trace::items::HasPrefix;
 use crate::trace::steps::*;
 use crate::env::{ 
     RecRulePtr, 
@@ -31,7 +31,7 @@ to flush the buffer.
 */
 #[derive(Debug)]
 pub struct TraceMgr<T : IsTracer> {
-    tracer : T,
+    pub tracer : T,
     next_step_idx : usize,
     errors : Vec<IoError>
 }
@@ -68,26 +68,34 @@ impl<T : IsTracer> TraceMgr<T> {
             _ => ()
         }
     }
+
+    pub fn finish_write(&mut self, io_result : IoResult<()>) {
+        match (<T as IsTracer>::TERM_ON_IO_ERR, io_result) {
+            (true, Err(e)) => {
+                panic!("Fatal IO Error : {}\n", e);
+            },
+            (false, Err(e)) => {
+                self.errors.push(e);
+            },
+            _ => ()
+        }
+    }
 }
-
-
 
 #[macro_export]
 macro_rules! mk_trace_step {
     ( $fun_name:ident, $short:lifetime, $generic:ident, $step:ty ) => {
-        //fn $fun_name<$short, $generic : HasPrefix>(step : $step<$short, $generic>, ctx : &mut impl IsCtx<$short>) -> StepIdx {
-        //fn $fun_name<$short, $generic : HasPrefix>(step : $step<$short, $generic>, ctx : &mut impl IsCtx<$short>) -> StepIdx {
         fn $fun_name<$short, $generic : HasPrefix>(step : $step, ctx : &mut impl IsCtx<$short>) -> StepIdx {
-            let (step_idx, trace_repr) = step.default_trace_repr(ctx);
-            ctx.mut_mgr().write_line(trace_repr.as_bytes());
+            let (step_idx, result) = step.default_trace_repr(ctx);
+            ctx.mut_mgr().finish_write(result);
             step_idx
         }
     };
 
     ( $fun_name:ident, $short:lifetime, $step:ty ) => {
         fn $fun_name<$short>(step : $step, ctx : &mut impl IsCtx<$short>) -> StepIdx {
-            let (step_idx, trace_repr) = step.default_trace_repr(ctx);
-            ctx.mut_mgr().write_line(trace_repr.as_bytes());
+            let (step_idx, result) = step.default_trace_repr(ctx);
+            ctx.mut_mgr().finish_write(result);
             step_idx
         }
 
@@ -96,105 +104,117 @@ macro_rules! mk_trace_step {
 
 
 /*
-Simialr to the `syn` crate's strategy for allowing use-defined implementations
-of visit/fold, the formatting for trace items is done as part of `IsTracer`,
-and defaults are provided. You can choose to override any or all of them
-by redefining the formatting for your trait implementation. The API you have
-access to (without digging deeper into the library) is `Ptr::in_env()` to 
-determine whether a given element is in the environment or the local
-context, and `IsTracer::ptr_index(ptr)` to get the arena position of a 
-pointer as a usize.
-You can also use `<item>.nanoda_dbg(ctx)` to get a human-readable 
-(though not pretty printed) representation of any of the items used in 
-the library (except for meta items like Tc and IndBlock)
+`IsTrace` is implemented as a supertrait of std::io::Write. See `NoopTracer` for an example
+of how to implement `IsTracer` for something that's not actually supposed to have any
+writing behavior.
+if `NOOP` is true, the typechecker runs basically as if there was no tracing
+happening.
+if `TERM_ON_IO_ERR` is `true`, any attempt to write to the trace file that throws
+an error will cause the program to panic. If it's `false`, the error will be 
+pushed to a Vec<std::io::Result<()>> that you can read from later.
+You probably want this to be `true` since typechecking takes a non-trivial amount
+of time, and it's highly likely that any write error is going to result in
+an output file that won't be accepted by a verifier.
+
+The scheme for allowing user-defined implementations of trace representations/formats
+is similar to that of the `syn` crate's for allowing user-defined traversals of syntax trees;
+the `IsTracer` trait has a unique for every item and step that says how its supposed to be formatted
+in the output, and we provide a default which corresponds to the provided grammar. When users
+implement `IsTracer`, they can choose to override one or all of these behaviors with their own
+formatting. The API currently exposed for use in writing implementations is 
+`Ptr::in_env()` which returns a bool indicating whether a given element is in the environment
+or local to a typechecking context, `IsTracer::ptr_index(ptr)` which returns the element's unique
+index as a usize, and `<item>`.nanoda_dbg(ctx)` which will return a human-readable but not pretty-printed
+string representation of any of the items of interest.
+You can access the buffer of IO errors if you choose not to terminate on error
+via `ctx.mut_mgr().errors`
 */
-pub trait IsTracer {
+pub trait IsTracer : std::io::Write {
     const NOOP : bool;
     const TERM_ON_IO_ERR : bool;
 
-    fn write(&mut self, s : &[u8]) -> IoResult<usize>;
-
+    // Having to clone here is temporary until I figure out a better
+    // solution. The problem is that `ctx` owns both the tracer
+    // and the arena holding all the strings, and since we're using
+    // functions as getters for both the arena and the tracer,
+    // the compiler can't tell that the borrows don't interfere when
+    // we call `write!`
     fn trace_string<'a>(s : StringPtr<'a>, ctx : &mut impl IsCtx<'a>) {
-        let mut sink = s.ptr_repr();
-        sink.push_str(format!(".{}", s.read(ctx)).as_str());
-        ctx.mut_mgr().write_line(sink.as_bytes())
+        let s_contents = s.read(ctx).clone();
+        let result = write!(ctx.tracer(), "{}.{}\n", s, s_contents);
+        ctx.mut_mgr().finish_write(result);
     }
 
     fn trace_name<'a>(n : NamePtr<'a>, ctx : &mut impl IsCtx<'a>) {
-        let mut sink = n.ptr_repr();
-        let suffix = match n.read(ctx) {
-            Anon => {
-                format!("_")
-            }
-            Str(pfx, sfx) => {
-                format!("s.{}.{}", pfx.ptr_repr(), sfx.ptr_repr())
-            },
-            Num(pfx, sfx) => {
-                format!("n.{}.{}", pfx.ptr_repr(), sfx.ptr_repr())
-            }
+        let result = match n.read(ctx) {
+            Anon => write!(ctx.tracer(), "{}a\n", n),
+            Str(pfx, sfx) => write!(ctx.tracer(), "{}s.{}.{}\n", n, pfx, sfx),
+            Num(pfx, sfx) => write!(ctx.tracer(), "{}n.{}.{}\n", n, pfx, sfx),
         };
-
-        sink.push_str(suffix.as_str());
-        ctx.mut_mgr().write_line(sink.as_bytes())
+        ctx.mut_mgr().finish_write(result);
     }
 
     fn trace_level<'a>(l : LevelPtr<'a>, ctx : &mut impl IsCtx<'a>) {
-        let mut sink = l.ptr_repr();
-        let suffix = match l.read(ctx) {
-            Zero => format!("z"),
-            Succ(pred) => format!("s.{}", pred.ptr_repr()),
-            Max(x, y) => format!("m.{}.{}", x.ptr_repr(), y.ptr_repr()),
-            Imax(x, y) => format!("i.{}.{}", x.ptr_repr(), y.ptr_repr()),
-            Param(n) => format!("p.{}", n.ptr_repr()),
+        let result = match l.read(ctx) {
+            Zero => write!(ctx.tracer(), "{}z\n", l),
+            Succ(pred) => write!(ctx.tracer(), "{}s.{}\n", l, pred),
+            Max(x, y) => write!(ctx.tracer(), "{}m.{}.{}\n", l, x, y),
+            Imax(x, y) => write!(ctx.tracer(), "{}i.{}.{}\n", l, x, y),
+            Param(n) => write!(ctx.tracer(), "{}p.{}\n", l, n)
         };
-
-        sink.push_str(suffix.as_str());
-        ctx.mut_mgr().write_line(sink.as_bytes())
+        ctx.mut_mgr().finish_write(result);
     }
     
     fn trace_expr<'a>(e : ExprPtr<'a>, ctx : &mut impl IsCtx<'a>) {
-        let mut sink = e.ptr_repr();
-        let suffix = match e.read(ctx) {
-            Var { dbj } => format!("{}", dbj.ptr_repr()),
-            Sort { level } => format!("s.{}", level.ptr_repr()),
-            Const { name, levels } => format!("c.{}.{}", name.ptr_repr(), levels.ptr_repr()),
-            App { fun, arg, .. } => format!("a.{}.{}", fun.ptr_repr(), arg.ptr_repr()),
-            Pi { b_type, b_name, b_style, body, .. } => format!("p.{}.{}.{}.{}", b_name.ptr_repr(), b_type.ptr_repr(), b_style.ptr_repr(), body.ptr_repr()),
-            Lambda { b_type, b_name, b_style, body, .. } => format!("l.{}.{}.{}.{}", b_name.ptr_repr(), b_type.ptr_repr(), b_style.ptr_repr(), body.ptr_repr()),
-            Let { b_type, b_name, b_style, body, .. } => format!("z.{}.{}.{}.{}", b_name.ptr_repr(), b_type.ptr_repr(), b_style.ptr_repr(), body.ptr_repr()),
-            Local { b_type, b_name, b_style, serial, .. } => format!("x.{}.{}.{}.{}", b_name.ptr_repr(), b_type.ptr_repr(), b_style.ptr_repr(), serial.ptr_repr()),
+        let result = match e.read(ctx) {
+            Var { dbj } => write!(ctx.tracer(), "{}v{}\n", e, dbj),
+            Sort { level } => write!(ctx.tracer(), "{}s.{}\n", e, level),
+            Const { name, levels } => write!(ctx.tracer(), "{}c.{}.{}\n", e, name, levels),
+            App { fun, arg, .. } => write!(ctx.tracer(), "{}a.{}.{}\n", e, fun, arg),
+            Pi { b_type, b_name, b_style, body, .. } => write!(ctx.tracer(), "{}p.{}.{}.{}.{}\n", e, b_name, b_type, b_style, body),
+            Lambda { b_type, b_name, b_style, body, .. } => write!(ctx.tracer(), "{}l.{}.{}.{}.{}\n", e, b_name, b_type, b_style, body),
+            Let { b_type, b_name, b_style, body, .. } => write!(ctx.tracer(), "{}z.{}.{}.{}.{}\n", e, b_name, b_type, b_style, body),
+            Local { b_type, b_name, b_style, serial, .. } => write!(ctx.tracer(), "{}x.{}.{}.{}.{}\n", e, b_name, b_type, b_style, serial),
         };
 
-        sink.push_str(suffix.as_str());
-        ctx.mut_mgr().write_line(sink.as_bytes())
+        ctx.mut_mgr().finish_write(result);
     }
 
     fn trace_rec_rule<'a>(rr : RecRulePtr<'a>, ctx : &mut impl IsCtx<'a>) {
-        let mut sink = rr.ptr_repr();
-        let rr_ = rr.read(ctx);
-        let inner = format!(".{}.{}.{}", rr_.ctor_name.ptr_repr(), rr_.num_fields.ptr_repr(), rr_.val.ptr_repr());
-        sink.push_str(inner.as_str());
-        ctx.mut_mgr().write_line(sink.as_bytes())
+        let result = match rr.read(ctx) {
+            RecRule { ctor_name, num_fields, val } => {
+                write!(ctx.tracer(), "{}.{}.{}.{}\n", rr, ctor_name, num_fields, val)
+
+            }
+        };
+        ctx.mut_mgr().finish_write(result);
     }
 
-    fn trace_declar<'a>(d : DeclarPtr<'a>, ctx : &mut impl IsCtx<'a>) {
-        let mut sink = d.ptr_repr();
-        let d_ = d.read(ctx);
-        let name = d_.name().ptr_repr();
-        let uparams = d_.uparams().ptr_repr();
-        let type_ = d_.type_().ptr_repr();
-        let suffix = match d_ {
+    fn trace_declar<'a>(dptr : DeclarPtr<'a>, ctx : &mut impl IsCtx<'a>) {
+        let d = dptr.read(ctx);
+        let result = match d {
             Axiom { is_unsafe, .. } => {
-                format!("a.{}.{}.{}.{}", name, uparams, type_, is_unsafe)
+                write!(
+                    ctx.tracer(), 
+                    "{}a.{}.{}.{}.{}\n", 
+                    dptr, 
+                    d.name(), 
+                    d.uparams(), 
+                    d.type_(), 
+                    is_unsafe
+                )
             },
             Definition { val, hint, is_unsafe, .. } => {
-                format!("d.{}.{}.{}.{}.{}.{}", 
-                name, 
-                uparams, 
-                type_, 
-                val.ptr_repr(), 
-                hint.ptr_repr(), 
-                is_unsafe
+                write!(
+                ctx.tracer(), 
+                    "{}d.{}.{}.{}.{}.{}.{}\n", 
+                    dptr,
+                    d.name(), 
+                    d.uparams(), 
+                    d.type_(), 
+                    val,
+                    hint,
+                    is_unsafe
                 )
             },
             Inductive { 
@@ -204,14 +224,16 @@ pub trait IsTracer {
                 is_unsafe,
                 .. 
             } => {
-                format!(
-                "i.{}.{}.{}.{}.{}.{}.{}", 
-                name, 
-                uparams, 
-                type_, 
+                write!(
+                ctx.tracer(),
+                "{}i.{}.{}.{}.{}.{}.{}.{}\n", 
+                dptr,
+                d.name(), 
+                d.uparams(), 
+                d.type_(), 
                 num_params, 
-                all_ind_names.ptr_repr(),
-                all_ctor_names.ptr_repr(),
+                all_ind_names,
+                all_ctor_names,
                 is_unsafe,
                )
             }
@@ -223,12 +245,14 @@ pub trait IsTracer {
                 is_unsafe,
                 ..
             } => {
-                format!(
-                    "c.{}.{}.{}.{}.{}.{}.{}.{}",
-                    name,
-                    uparams,
-                    type_,
-                    parent_name.ptr_repr(),
+                write!(
+                    ctx.tracer(),
+                    "{}c.{}.{}.{}.{}.{}.{}.{}.{}\n",
+                    dptr,
+                    d.name(),
+                    d.uparams(),
+                    d.type_(),
+                    parent_name,
                     num_fields,
                     minor_idx,
                     num_params,
@@ -247,108 +271,87 @@ pub trait IsTracer {
                 is_unsafe,
                 ..
             } => {
-                format!(
-                    "r.{}.{}.{}.{}.{}.{}.{}.{}.{}.{}.{}.{}",
-                    name,
-                    uparams,
-                    type_,
-                    all_names.ptr_repr(),
+                write!(
+                    ctx.tracer(),
+                    "{}r.{}.{}.{}.{}.{}.{}.{}.{}.{}.{}.{}.{}\n",
+                    dptr,
+                    d.name(),
+                    d.uparams(),
+                    d.type_(),
+                    all_names,
                     num_params,
                     num_indices,
                     num_motives,
                     num_minors,
                     major_idx,
-                    rec_rules.ptr_repr(),
+                    rec_rules,
                     is_k,
                     is_unsafe,
                 )
 
             }
-            Quot { .. } => format!("q.{}.{}.{}", name, uparams, type_),
+            Quot { .. } => {
+                write!(
+                    ctx.tracer(), 
+                    "{}q.{}.{}.{}\n", 
+                    dptr, 
+                    d.name(), 
+                    d.uparams(), 
+                    d.type_()
+                )
+            }
             | Theorem {..}
             | Opaque {..} => unimplemented!()
 
 
         };
-        sink.push_str(suffix.as_str());
-        ctx.mut_mgr().write_line(sink.as_bytes())
+
+        ctx.mut_mgr().finish_write(result);
     }
 
     
-    // unforunately we can't derive the list versions for a number of reasons
-    // that stem from earlier limitations of Rust's type system.
-    fn trace_name_list<'a>(ns : NamesPtr<'a>, ctx : &mut impl IsCtx<'a>) {
-        let mut sink = ns.ptr_repr();
-
-        let suffix = match ns.read(ctx) {
-            Nil => format!("n"),
-            Cons(hd, tl) => {
-                format!(".{}.{}", hd.ptr_repr(), tl.ptr_repr())
-            }
+    // Implemented as separate functions so that users
+    // can elect to implement separate trace formats.
+    fn trace_name_list<'a>(l : NamesPtr<'a>, ctx : &mut impl IsCtx<'a>) {
+        let result = match l.read(ctx) {
+            Nil => write!(ctx.tracer(), "{}_\n", l),
+            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}", l, hd, tl),
         };
-        sink.push_str(suffix.as_str());
-        ctx.mut_mgr().write_line(sink.as_bytes())
+        ctx.mut_mgr().finish_write(result);
     }
 
     fn trace_level_list<'a>(l : LevelsPtr<'a>, ctx : &mut impl IsCtx<'a>) {
-        let mut sink = l.ptr_repr();
-
-        let suffix = match l.read(ctx) {
-            Nil => format!("n"),
-            Cons(hd, tl) => {
-                format!(".{}.{}", hd.ptr_repr(), tl.ptr_repr())
-            }
+        let result = match l.read(ctx) {
+            Nil => write!(ctx.tracer(), "{}_\n", l),
+            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}", l, hd, tl),
         };
-        sink.push_str(suffix.as_str());
-        ctx.mut_mgr().write_line(sink.as_bytes())
+        ctx.mut_mgr().finish_write(result);
     }    
 
     fn trace_expr_list<'a>(l : ExprsPtr<'a>, ctx : &mut impl IsCtx<'a>) {
-        let mut sink = l.ptr_repr();
-
-        let suffix = match l.read(ctx) {
-            Nil => format!("n"),
-            Cons(hd, tl) => {
-                format!(".{}.{}", hd.ptr_repr(), tl.ptr_repr())
-            }
+        let result = match l.read(ctx) {
+            Nil => write!(ctx.tracer(), "{}_\n", l),
+            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}", l, hd, tl),
         };
-        sink.push_str(suffix.as_str());
-        ctx.mut_mgr().write_line(sink.as_bytes())
+        ctx.mut_mgr().finish_write(result);
     }    
      
  
     fn trace_rec_rule_list<'a>(l : RecRulesPtr<'a>, ctx : &mut impl IsCtx<'a>) {
-        let mut sink = l.ptr_repr();
-
-        let suffix = match l.read(ctx) {
-            Nil => format!("n"),
-            Cons(hd, tl) => {
-                format!(".{}.{}", hd.ptr_repr(), tl.ptr_repr())
-            }
+        let result = match l.read(ctx) {
+            Nil => write!(ctx.tracer(), "{}_\n", l),
+            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}", l, hd, tl),
         };
-        sink.push_str(suffix.as_str());
-        ctx.mut_mgr().write_line(sink.as_bytes())
+        ctx.mut_mgr().finish_write(result);
     }    
 
     fn trace_declar_list<'a>(l : DeclarsPtr<'a>, ctx : &mut impl IsCtx<'a>) {
-        let mut sink = l.ptr_repr();
-
-        let suffix = match l.read(ctx) {
-            Nil => format!("n"),
-            Cons(hd, tl) => {
-                format!(".{}.{}", hd.ptr_repr(), tl.ptr_repr())
-            }
+        let result = match l.read(ctx) {
+            Nil => write!(ctx.tracer(), "{}_\n", l),
+            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}", l, hd, tl),
         };
-        sink.push_str(suffix.as_str());
-        ctx.mut_mgr().write_line(sink.as_bytes())
+        ctx.mut_mgr().finish_write(result);
     }       
-
-    // Example of a step trace
-    //fn trace_pos<'a, A : HasPrefix>(step : Pos<'a, A>, ctx : &mut impl IsCtx<'a>) -> StepIdx {
-    //    let (step_idx, trace_repr) = step.default_trace_repr(ctx);
-    //    ctx.mut_mgr().write_line(trace_repr.as_bytes());
-    //    step_idx
-    //}    
 
     mk_trace_step! { trace_try_succ, 'a, TrySucc }
     mk_trace_step! { trace_mem, 'a, A, Mem<'a, A> }
@@ -401,6 +404,7 @@ pub trait IsTracer {
     mk_trace_step! { trace_foldl_apps, 'a, FoldlApps<'a> }
     mk_trace_step! { trace_unfold_apps_aux, 'a, UnfoldAppsAux<'a> }
     mk_trace_step! { trace_telescope_size, 'a, TelescopeSize<'a> }
+    mk_trace_step! { trace_calc_height_aux, 'a, CalcHeightAux<'a> }
 
     mk_trace_step! { trace_whnf_lambda, 'a, WhnfLambda<'a> }
     mk_trace_step! { trace_whnf_sort, 'a, WhnfSort<'a> }
@@ -447,6 +451,11 @@ pub trait IsTracer {
     mk_trace_step! { trace_infer_let, 'a, InferLet<'a> }
     mk_trace_step! { trace_infer_local, 'a, InferLocal<'a> }
 
+    mk_trace_step! { trace_check_vitals, 'a, CheckVitals<'a> }
+
+    mk_trace_step! { trace_mk_local_params, 'a, MkLocalParams<'a> }
+    mk_trace_step! { trace_mk_local_indices1, 'a, MkLocalIndices1<'a> }
+    mk_trace_step! { trace_mk_local_indices_aux, 'a, MkLocalIndicesAux<'a> }
 
     mk_trace_step! { trace_admit_declar, 'a, AdmitDeclar<'a> }
 
@@ -460,30 +469,21 @@ pub trait IsTracer {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct NoopTracer;
 
-
-
-// String, BinderStyle, and ReducibilityHint have one-off
-// implementations since they're either not Copy (String)
-//  or are both Copy and non-recursive, so we don't need an arena
-// to track them, so we just print them inline.
-impl<'a> StringPtr<'a> {
-
-    pub fn repr(self, ctx : &impl IsCtx<'a>) -> String {
-        let pfx = self.ptr_repr();
-        let sfx = self.read(ctx);
-        format!("{}.{}", pfx, sfx)
+impl std::io::Write for NoopTracer {
+    fn write(&mut self, buf : &[u8]) -> IoResult<usize> {
+        Ok(0)
+    }
+    fn flush(&mut self) -> IoResult<()> {
+        Ok(())
     }
 }
 
-
-
-impl IsTracer for () {
+impl IsTracer for NoopTracer {
     const NOOP : bool = true;
-    const TERM_ON_IO_ERR : bool = false;
-    fn write(&mut self, _ : &[u8]) -> IoResult<usize> {
-        Ok(0)
-    }
+    const TERM_ON_IO_ERR : bool = true;
 }
 
 #[derive(Debug)]
@@ -499,19 +499,36 @@ impl StdoutTracer {
     }
 }
 
-impl IsTracer for StdoutTracer {
-    const NOOP : bool = false;
-    const TERM_ON_IO_ERR : bool = false;
-    fn write(&mut self, bytes : &[u8]) -> IoResult<usize> {
-        self.inner.write(bytes)
+impl std::io::Write for StdoutTracer {
+    fn write(&mut self, buf : &[u8]) -> IoResult<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> IoResult<()> {
+        self.inner.flush()
     }
 }
+
+impl IsTracer for StdoutTracer {
+    const NOOP : bool = false;
+    const TERM_ON_IO_ERR : bool = true;
+}
+
 
 #[derive(Debug)]
 pub struct FileTracer {
     inner : BufWriter<File>,
 }
 
+impl std::io::Write for FileTracer {
+    fn write(&mut self, buf : &[u8]) -> IoResult<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> IoResult<()> {
+        self.inner.flush()
+    }
+}
 impl FileTracer {
     pub fn new(file : File) -> Self {
         FileTracer {
@@ -522,9 +539,6 @@ impl FileTracer {
 
 impl IsTracer for FileTracer {
     const NOOP : bool = false;
-    const TERM_ON_IO_ERR : bool = false;
-    fn write(&mut self, bytes : &[u8]) -> IoResult<usize> {
-        self.inner.write(bytes)
-    }
+    const TERM_ON_IO_ERR : bool = true;
 }
 

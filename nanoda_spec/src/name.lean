@@ -1,5 +1,3 @@
-
---@[derive decidable_eq]
 inductive Name
 | Anon : Name
 | Str (pfx : Name) (sfx : string) : Name

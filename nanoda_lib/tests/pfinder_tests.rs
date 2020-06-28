@@ -2,13 +2,14 @@
 #![allow(unused_variables)]
 use nanoda_lib::utils::{ HasNanodaDbg, List,  List::*, Env, IsTc };
 use nanoda_lib::name::Name;
-use nanoda_lib::level::{ Level };
+use nanoda_lib::level::Level;
+use nanoda_lib::trace::NoopTracer;
 use nanoda_lib::{ param, name, exprs, levels };
 use nanoda_lib::expr::{ Expr, ExprPtr, ExprsPtr, BinderStyle::* };
 
 #[test]
 fn pfinder_test0() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let v0 = <ExprPtr>::new_var(0, &mut live);

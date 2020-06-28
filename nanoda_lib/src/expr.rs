@@ -222,7 +222,7 @@ impl<'a> ExprPtr<'a> {
     pub fn telescope_size(
         self, 
         ctx : &mut impl IsCtx<'a>
-    ) -> (u16, Step<TelescopeSize<'a>>) {
+    ) -> (u16, Step<TelescopeSizeZst>) {
         match self.read(ctx) {
             Pi { b_name, b_type, b_style, body, .. } => {
                 let (inner_size, h1) = body.telescope_size(ctx);
@@ -360,7 +360,7 @@ impl<'a> ExprPtr<'a> {
 
 impl<'a> ExprPtr<'a> {
 
-    pub fn is_app(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsApp<'a>>) {
+    pub fn is_app(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsAppZst>) {
         match self.read(ctx) {
             Var { dbj } => {
                 IsApp::Var {
@@ -436,7 +436,7 @@ impl<'a> ExprPtr<'a> {
         }
     }
 
-    pub fn is_pi(self, ctx : &mut impl IsCtx<'a>) -> (bool, Step<IsPi<'a>>) {
+    pub fn is_pi(self, ctx : &mut impl IsCtx<'a>) -> (bool, Step<IsPiZst>) {
         match self.read(ctx) {
             Var { dbj } => {
                 IsPi::Var {
@@ -512,7 +512,7 @@ impl<'a> ExprPtr<'a> {
         }
     }    
 
-    pub fn is_lambda(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsLambda<'a>>) {
+    pub fn is_lambda(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsLambdaZst>) {
         match self.read(ctx) {
             Var { dbj } => {
                 IsLambda::Var {
@@ -593,14 +593,9 @@ impl<'a> ExprPtr<'a> {
         self,
         ind_names : NamesPtr<'a>,
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (bool, Step<HasIndOcc<'a>>) {
-        if let Some((cached, h1)) = ctx.expr_cache().find_cache.get(&self).copied() {
-            HasIndOcc::CacheHit {
-                e : self,
-                ind_names,
-                b : cached,
-                h1,
-            }.step(ctx)
+    ) -> (bool, Step<HasIndOccZst>) {
+        if let Some(cached) = ctx.expr_cache().find_cache.get(&self).copied() {
+            cached
         } else {
             match self.read(ctx) {
                 Var { dbj } => {
@@ -718,15 +713,9 @@ impl<'a> ExprPtr<'a> {
         ks : LevelsPtr<'a>,
         vs : LevelsPtr<'a>,
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (Self, Step<SubstE<'a>>) {
-        if let Some((e_prime, h1)) = ctx.expr_cache().subst_cache.get(&(self, ks, vs)).copied() {
-            SubstE::CacheHit {
-                e : self,
-                ks,
-                vs,
-                e_prime,
-                h1,
-            }.step(ctx)
+    ) -> (Self, Step<SubstEZst>) {
+        if let Some(cached) = ctx.expr_cache().subst_cache.get(&(self, ks, vs)).copied() {
+            cached
         } else {
             let calcd = match self.read(ctx) {
                 Var { dbj } => {
@@ -869,7 +858,7 @@ impl<'a> ExprPtr<'a> {
         self,
         sub : ExprPtr<'a>,
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (Self, Step<Inst<'a>>) {
+    ) -> (Self, Step<InstZst>) {
         let l = Cons(sub, Nil::<Expr>.alloc(ctx)).alloc(ctx);
         self.inst(l, ctx)
     }
@@ -878,7 +867,7 @@ impl<'a> ExprPtr<'a> {
         self, 
         subs : ExprsPtr<'a>, 
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (Self, Step<Inst<'a>>) {
+    ) -> (Self, Step<InstZst>) {
         if self.var_bound(ctx) == 0 {
             Inst::NoBound {
                 e : self,
@@ -887,7 +876,6 @@ impl<'a> ExprPtr<'a> {
             }.step(ctx)
         } else {
             let (e_prime, h1) = self.inst_aux(subs, 0u16, ctx);
-            ctx.expr_cache().inst_cache.clear();
             Inst::ByAux {
                 e : self,
                 subs,
@@ -902,7 +890,7 @@ impl<'a> ExprPtr<'a> {
         subs : ExprsPtr<'a>, 
         offset : u16, 
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (Self, Step<InstAux<'a>>) {
+    ) -> (Self, Step<InstAuxZst>) {
         if self.var_bound(ctx) <= offset {
             InstAux::NoBound {
                 e : self,
@@ -910,14 +898,8 @@ impl<'a> ExprPtr<'a> {
                 offset,
                 h1 : self.var_bound(ctx) <= offset,
             }.step(ctx)
-        } else if let Some((cached, h1)) = ctx.expr_cache().inst_cache.get(&(self, offset)).copied() {
-            InstAux::CacheHit {
-                e : self,
-                subs,
-                offset,
-                e_prime : cached,
-                h1,
-            }.step(ctx)
+        } else if let Some(cached) = ctx.expr_cache().inst_cache.get(&(self, subs, offset)).copied() {
+            cached
         } else {
             let calcd = match self.read(ctx) {
                 Var { dbj } => {
@@ -1023,7 +1005,7 @@ impl<'a> ExprPtr<'a> {
                 }
                 owise => unreachable!("Unreachable path in inst_aux : {}", owise.nanoda_dbg(ctx))
             };
-            ctx.expr_cache().inst_cache.insert((self, offset), calcd.clone());
+            ctx.expr_cache().inst_cache.insert((self, subs, offset), calcd);
             calcd
         }
     }            
@@ -1033,7 +1015,7 @@ impl<'a> ExprPtr<'a> {
         self,
         local : ExprPtr<'a>,
         ctx : &mut impl IsLiveCtx<'a>,
-    ) -> (Self, Step<Abstr<'a>>) {
+    ) -> (Self, Step<AbstrZst>) {
         let l = Cons(local, Nil::<Expr>.alloc(ctx)).alloc(ctx);
         self.abstr(l, ctx)
     }
@@ -1042,7 +1024,7 @@ impl<'a> ExprPtr<'a> {
         self,
         locals : ExprsPtr<'a>,
         ctx : &mut impl IsLiveCtx<'a>,
-    ) -> (Self, Step<Abstr<'a>>) {
+    ) -> (Self, Step<AbstrZst>) {
         if !self.has_locals(ctx) {
             Abstr::NoLocals {
                 e : self,
@@ -1065,7 +1047,7 @@ impl<'a> ExprPtr<'a> {
         locals : ExprsPtr<'a>,
         offset : u16,
         ctx : &mut impl IsLiveCtx<'a>,
-    ) -> (Self, Step<AbstrAux<'a>>) {
+    ) -> (Self, Step<AbstrAuxZst>) {
         if !self.has_locals(ctx) {
             AbstrAux::NoLocals {
                 e : self,
@@ -1073,14 +1055,8 @@ impl<'a> ExprPtr<'a> {
                 offset,
                 h1 : self.has_locals(ctx)
             }.step(ctx)
-        } else if let Some((e_prime, h1)) = ctx.expr_cache().abstr_cache.get(&(self, offset)).copied() {
-            AbstrAux::CacheHit {
-                e : self,
-                locals,
-                offset,
-                e_prime,
-                h1,
-            }.step(ctx)
+        } else if let Some(cached) = ctx.expr_cache().abstr_cache.get(&(self, offset)).copied() {
+            cached
         } else {
             let calcd = match self.read(ctx) {
                 Local { b_name, b_type, b_style, serial } => {
@@ -1197,7 +1173,7 @@ impl<'a> ExprPtr<'a> {
         self,
         body : Self,
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (Self, Step<ApplyPi<'a>>) {
+    ) -> (Self, Step<ApplyPiZst>) {
         match self.read(ctx) {
             Local { b_name, b_type, b_style, serial } => {
                 let (body_prime, h1) = body.abstr1(self, ctx);
@@ -1206,7 +1182,7 @@ impl<'a> ExprPtr<'a> {
                     b_name,
                     b_type,
                     b_style,
-                    serial : self.local_serial_infal(ctx),
+                    serial : serial,
                     body,
                     body_prime,
                     local_dom : self,
@@ -1222,7 +1198,7 @@ impl<'a> ExprPtr<'a> {
         self,
         body : Self,
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (Self, Step<ApplyLambda<'a>>) {
+    ) -> (Self, Step<ApplyLambdaZst>) {
         match self.read(ctx) {
             Local { b_name, b_type, b_style, serial } => {
                 let (body_prime, h1) = body.abstr1(self, ctx);
@@ -1231,7 +1207,7 @@ impl<'a> ExprPtr<'a> {
                     b_name,
                     b_type,
                     b_style,
-                    serial : self.local_serial_infal(ctx),
+                    serial,
                     body,
                     body_prime,
                     local_dom : self,
@@ -1250,7 +1226,7 @@ impl<'a> ExprPtr<'a> {
         self, 
         sink : ExprsPtr<'a>,
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> ((Self, ExprsPtr<'a>), Step<UnfoldAppsAux<'a>>) {
+    ) -> ((Self, ExprsPtr<'a>), Step<UnfoldAppsAuxZst>) {
         match self.read(ctx) {
             App { fun, arg, .. } => {
                 let sink_prime = Cons(arg, sink).alloc(ctx);
@@ -1283,15 +1259,37 @@ impl<'a> ExprPtr<'a> {
     pub fn unfold_apps(
         self, 
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> ((Self, ExprsPtr<'a>), Step<UnfoldAppsAux<'a>>) {
-        self.unfold_apps_aux(Nil::<Expr>.alloc(ctx), ctx)
+    ) -> ((Self, ExprsPtr<'a>), Step<UnfoldAppsAuxZst>) {
+        if let Some(cached) = ctx.expr_cache().unfold_cache.get(&self) {
+            *cached
+        } else {
+
+            let r = self.unfold_apps_aux(Nil::<Expr>.alloc(ctx), ctx);
+            ctx.expr_cache().unfold_cache.insert(self, r);
+            r
+        }
     }          
 
     pub fn foldl_apps(
         self,
         args : ExprsPtr<'a>,
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (Self, Step<FoldlApps<'a>>) {
+    ) -> (Self, Step<FoldlAppsZst>) {
+        if let Some(cached) = ctx.expr_cache().fold_cache.get(&(self, args)) {
+            *cached
+        } else {
+            let r = self.foldl_apps_aux(args, ctx);
+            ctx.expr_cache().fold_cache.insert((self, args), r);
+            r
+        }
+    }
+
+
+    pub fn foldl_apps_aux(
+        self,
+        args : ExprsPtr<'a>,
+        ctx : &mut impl IsLiveCtx<'a>
+    ) -> (Self, Step<FoldlAppsZst>) {
         match args.read(ctx) {
             Nil => {
                 FoldlApps::Nil {
@@ -1301,7 +1299,7 @@ impl<'a> ExprPtr<'a> {
             },
             Cons(hd, tl) => {
                 let mk_app = self.new_app(hd, ctx);
-                let (folded, h1) = mk_app.foldl_apps(tl, ctx);
+                let (folded, h1) = mk_app.foldl_apps_aux(tl, ctx);
                 FoldlApps::Cons {
                     base : self,
                     hd,
@@ -1314,6 +1312,146 @@ impl<'a> ExprPtr<'a> {
         }
     }
 
+    
+    pub fn calc_height(
+        self, 
+        ctx : &mut impl IsLiveCtx<'a>
+    ) -> (u16, Step<CalcHeightAuxZst>) {
+
+        pub fn calc_height_aux<'a>(
+            e : ExprPtr<'a>, 
+            ctx : &mut impl IsLiveCtx<'a>
+        ) -> (u16, Step<CalcHeightAuxZst>) {
+            if let Some(cached) = ctx.expr_cache().height_cache.get(&e).copied() {
+                cached
+            } else {
+                let r = match e.read(ctx) {
+                    Var { dbj } => {
+                        CalcHeightAux::Var {
+                            dbj,
+                            height : 0,
+                            ind_arg1 : e,
+                        }.step(ctx)
+                    },
+                    Sort { level } => {
+                        CalcHeightAux::Sort {
+                            level,
+                            height : 0,
+                            ind_arg1 : e,
+                        }.step(ctx)
+                    },
+                    Const { name, levels } => {
+                        ctx.get_declar(name)
+                        .and_then(|(d, h1)| {
+                            match d.read(ctx) {
+                                Definition { uparams, type_, val, hint : Reg(height), is_unsafe, .. } => {
+                                    Some(CalcHeightAux::ConstHit {
+                                        n : name,
+                                        levels,
+                                        d_uparams : uparams,
+                                        d_type : type_,
+                                        d_val : val,
+                                        d_hint : Reg(height),
+                                        d_is_unsafe : is_unsafe,
+                                        height,
+                                        h1,
+                                        ind_arg1 : e,
+                                    }.step(ctx))
+                                },
+                                _ => None
+                            }
+                        }).unwrap_or_else(|| {
+                            CalcHeightAux::ConstMiss {
+                                n : name,
+                                levels,
+                                height : 0,
+                                ind_arg1 : e,
+                            }.step(ctx)
+                        })
+                    },
+                    App { fun, arg, .. } => {
+                        let (height1, h1) = calc_height_aux(fun, ctx);
+                        let (height2, h2) = calc_height_aux(arg, ctx);
+                        let height = height1.max(height2);
+                        CalcHeightAux::App {
+                            fun,
+                            arg,
+                            height1,
+                            height2,
+                            height,
+                            h1,
+                            h2,
+                            ind_arg1 : e,
+                        }.step(ctx)
+                    },
+                    Pi { b_name, b_type, b_style, body, .. } => {
+                        
+                        let (height1, h1) = calc_height_aux(b_type, ctx);
+                        let (height2, h2) = calc_height_aux(body, ctx);
+                        let height = height1.max(height2);
+                        CalcHeightAux::Pi {
+                            n : b_name,
+                            t : b_type,
+                            s : b_style,
+                            b : body,
+                            height1,
+                            height2,
+                            height,
+                            h1,
+                            h2,
+                            ind_arg1 : e,
+                        }.step(ctx)
+                    }
+                    Lambda { b_name, b_type, b_style, body, .. } => {
+                        let (height1, h1) = calc_height_aux(b_type, ctx);
+                        let (height2, h2) = calc_height_aux(body, ctx);
+                        let height = height1.max(height2);
+                        CalcHeightAux::Lambda {
+                            n : b_name,
+                            t : b_type,
+                            s : b_style,
+                            b : body,
+                            height1,
+                            height2,
+                            height,
+                            h1,
+                            h2,
+                            ind_arg1 : e,
+                        }.step(ctx)
+                    },
+                    Let { b_name, b_type, b_style, val, body, .. } => {
+                        let (height1, h1) = calc_height_aux(b_type, ctx);
+                        let (height2, h2) = calc_height_aux(val, ctx);
+                        let (height3, h3) = calc_height_aux(body, ctx);
+                        let height = height1.max(height2).max(height3);
+                        CalcHeightAux::Let {
+                            n : b_name,
+                            t : b_type,
+                            s : b_style,
+                            v : val,
+                            b : body,
+                            height1,
+                            height2,
+                            height3,
+                            height,
+                            h1,
+                            h2,
+                            h3,
+                            ind_arg1 : e,
+                        }.step(ctx)
+                    },
+                    Local {..} => panic!("calc_height should never receive a Local!"),
+                };
+                ctx.expr_cache().height_cache.insert(e, r);
+                r
+            }
+        }
+
+        ctx.expr_cache().height_cache.clear();
+        let (highest_child, step) = calc_height_aux(self, ctx);
+        (1 + highest_child, step)
+    }
+
 }
 
 impl<'a> ExprsPtr<'a> {
@@ -1321,7 +1459,7 @@ impl<'a> ExprsPtr<'a> {
         self,
         body : ExprPtr<'a>,
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (ExprPtr<'a>, Step<FoldPis<'a>>) {
+    ) -> (ExprPtr<'a>, Step<FoldPisZst>) {
         match self.read(ctx) {
             Nil => {
                 FoldPis::Nil {
@@ -1350,7 +1488,7 @@ impl<'a> ExprsPtr<'a> {
         self,
         body : ExprPtr<'a>,
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (ExprPtr<'a>, Step<FoldLambdas<'a>>) {
+    ) -> (ExprPtr<'a>, Step<FoldLambdasZst>) {
         match self.read(ctx) {
             Nil => {
                 FoldLambdas::Nil {
@@ -1414,7 +1552,7 @@ impl<'a> HasNanodaDbg<'a> for Expr<'a> {
                 let serial = match serial {
                     LocalSerial(n) => n
                 };
-                format!("ser({}) of {}", serial, binder)
+                format!("ser(_) of {}", binder)
             }
         }
     }

@@ -10,10 +10,10 @@ pub fn add_quot<'l, 'e : 'l>(live : &mut Live<'l, 'e, impl 'e + IsTracer>) {
     let prop = Zero.alloc(live).new_sort(live);
     let sort_u = sort!("u", live);
     let sort_v = sort!("v", live);
-    let quot_name = name!("quot", live);
-    let quot_mk_name = name!(["quot", "mk"], live);
-    let quot_lift_name = name!(["quot", "lift"], live);
-    let quot_ind_name = name!(["quot", "ind"], live);
+    let quot_name = name!("quot", live.env);
+    let quot_mk_name = name!(["quot", "mk"], live.env);
+    let quot_lift_name = name!(["quot", "lift"], live.env);
+    let quot_ind_name = name!(["quot", "ind"], live.env);
 
     // local for `{A : Sort u}`
     let A = <ExprPtr>::new_local(name!("A", live), sort_u, Implicit, live);
@@ -87,4 +87,19 @@ pub fn add_quot<'l, 'e : 'l>(live : &mut Live<'l, 'e, impl 'e + IsTracer>) {
         uparams : param!(["u"], live),
         type_ : fold_pis!([A, r, B_local, arrow!([lhs, rhs], live)], live),
     };    
+
+    let quot = quot.insert_env(live.env, &live.store);
+    let quot_mk = quot_mk.insert_env(live.env, &live.store);
+    let quot_lift = quot_lift.insert_env(live.env, &live.store);
+    let quot_ind = quot_ind.insert_env(live.env, &live.store);
+
+    live.env.quot_mk = Some(quot_mk_name);
+    live.env.quot_lift = Some(quot_lift_name);
+    live.env.quot_ind = Some(quot_ind_name);
+
+    live.admit_declar(quot);
+    live.admit_declar(quot_mk);
+    live.admit_declar(quot_lift);
+    live.admit_declar(quot_ind);
 }
+

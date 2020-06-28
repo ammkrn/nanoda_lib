@@ -4,8 +4,7 @@ use nanoda_lib::utils::{ List,  List::*, Env };
 use nanoda_lib::name::Name;
 use nanoda_lib::level::{ LevelsPtr, Level };
 use nanoda_lib::param;
-use nanoda_lib::trace::StdoutTracer;
-use nanoda_lib::trace::items::HasPtrRepr;
+use nanoda_lib::trace::{ NoopTracer, StdoutTracer };
 
 #[test]
 fn trace_test0() {
@@ -33,7 +32,7 @@ fn trace_test1() {
 
 #[test]
 fn trace_test2() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
 
@@ -50,10 +49,6 @@ fn trace_test3() {
     let empty = Vec::<u16>::new();
     let v = vec![0u16, 1u16, 2u16];
 
-    let empty_repr = empty.ptr_repr();
-    let v_repr = v.ptr_repr();
-    assert_eq!(empty_repr.as_str(), "[]");
-    assert_eq!(v_repr.as_str(), "[0,1,2]");
 }
 
 #[test]

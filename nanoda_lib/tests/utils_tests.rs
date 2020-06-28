@@ -4,11 +4,12 @@ use nanoda_lib::utils::{ Env, List,  List::* };
 use nanoda_lib::name::Name;
 use nanoda_lib::level::{ LevelsPtr, Level, Level::* };
 use nanoda_lib::param;
+use nanoda_lib::trace::NoopTracer;
 
 #[test]
 fn util_test0() {
-    let mut env = Env::new(());
-    let mut env2 = Env::new(());
+    let mut env = Env::new(NoopTracer);
+    let mut env2 = Env::new(NoopTracer);
     let target = Zero.alloc(&mut env2)
                      .new_succ(&mut env2)
                      .new_succ(&mut env2)
@@ -39,19 +40,18 @@ fn util_test0() {
 
 #[test]
 fn util_test2() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut env = env.as_live();
 
     let l1 = param!(["u", "v"], &mut env);
     let p1 = param!("u", &mut env);
     let (r, _hmem) = p1.mem(l1, &mut env);
-    println!("mem result : {}\n", r);
 }
 
 
 #[test]
 fn pos_test0() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let l = param!(["a", "b", "c", "d", "e"], &mut live);
@@ -74,7 +74,7 @@ fn pos_test0() {
 
 #[test]
 fn concat_test0() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let l1 = param!(["a", "b"], &mut live);
@@ -88,7 +88,7 @@ fn concat_test0() {
 
 #[test]
 fn concat_test1() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let l1 = param!(["a", "b"], &mut live);
@@ -99,7 +99,7 @@ fn concat_test1() {
 }
 #[test]
 fn concat_test2() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let l1 = Nil::<Level>.alloc(&mut live);
@@ -110,7 +110,7 @@ fn concat_test2() {
 
 #[test]
 fn take_test1() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let nil = Nil::<Level>.alloc(&mut live);
@@ -142,7 +142,7 @@ fn take_test1() {
 
 #[test]
 fn nodup_test1() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let nil = Nil::<Level>.alloc(&mut live);
@@ -168,7 +168,7 @@ fn nodup_test1() {
 
 #[test]
 fn len_test0() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let nil = Nil::<Level>.alloc(&mut live);
@@ -181,7 +181,7 @@ fn len_test0() {
 
 #[test]
 fn get_test0() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let nil = Nil::<Level>.alloc(&mut live);
@@ -192,7 +192,7 @@ fn get_test0() {
 
 #[test]
 fn get_test1() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let l = param!(["a", "b", "c", "d"], &mut live);

@@ -4,13 +4,12 @@ use nanoda_lib::utils::{ HasNanodaDbg, List,  List::*, Env };
 use nanoda_lib::name::Name;
 use nanoda_lib::level::{ LevelsPtr, Level };
 use nanoda_lib::{ names, param, name, exprs, levels };
-use nanoda_lib::trace::StdoutTracer;
-use nanoda_lib::trace::items::HasPtrRepr;
+use nanoda_lib::trace::{ NoopTracer, StdoutTracer };
 use nanoda_lib::expr::{ Expr, ExprPtr, ExprsPtr, BinderStyle::* };
 
 #[test]
 fn reduce_lambda_test0() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
     let mut tc = live.as_tc(None, None);
 
@@ -29,7 +28,7 @@ fn reduce_lambda_test0() {
 
 #[test]
 fn reduce_lambda_test1() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
     let mut tc = live.as_tc(None, None);
 
@@ -60,7 +59,7 @@ fn reduce_lambda_test1() {
 // One more lambda than arguments
 #[test]
 fn reduce_lambda_test2() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
     let mut tc = live.as_tc(None, None);
 
@@ -98,7 +97,7 @@ fn reduce_lambda_test2() {
 // one more arg than lambda
 #[test]
 fn reduce_lambda_test3() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
     let mut tc = live.as_tc(None, None);
 

@@ -15,11 +15,9 @@ use crate::utils::{
     Pfinder,
     HasNanodaDbg 
 };
-                    
-                    
+
+use crate::tc::eq::EqResult::*;
 use InferFlag::*;                    
-
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InferFlag {
@@ -33,7 +31,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         self,
         flag : InferFlag,
         tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (LevelPtr<'l>, Step<InferSortOf<'l>>) {
+    ) -> (LevelPtr<'l>, Step<InferSortOfZst>) {
         let (infd, h1) = self.infer(flag, tc);
         let (whnfd, h2) = infd.whnf(tc);
         match whnfd.read(tc) {
@@ -55,7 +53,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
     pub fn ensure_sort(
         self,
         tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (LevelPtr<'l>, Step<EnsureSort<'l>>) {
+    ) -> (LevelPtr<'l>, Step<EnsureSortZst>) {
         match self.read(tc) {
             Sort { level } => {
                 EnsureSort::Base {
@@ -82,7 +80,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
     pub fn ensure_type(
         self,
         tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (LevelPtr<'l>, Step<EnsureType<'l>>) {
+    ) -> (LevelPtr<'l>, Step<EnsureTypeZst>) {
         let (e_type, h1) = self.infer(InferOnly, tc);
         let (sort_level, h2) = e_type.ensure_sort(tc);
         EnsureType::Base {
@@ -98,7 +96,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
     pub fn ensure_pi(
         self,
         tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (Self, Step<EnsurePi<'l>>) {
+    ) -> (Self, Step<EnsurePiZst>) {
         match self.read(tc) {
             Pi {..} => {
                 let (b, h1) = self.is_pi(tc);
@@ -131,16 +129,11 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         self,
         flag : InferFlag,
         tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (ExprPtr<'l>, Step<Infer<'l>>) {
-        if let Some((inferred, h1)) = tc.check_infer_cache(self, flag) {
-            Infer::CacheHit {
-                e : self,
-                flag,
-                inferred,
-                h1,
-            }.step(tc)
+    ) -> (ExprPtr<'l>, Step<InferZst>) {
+        if let Some(cached) = tc.check_infer_cache(self, flag) {
+            cached
         } else {
-            let (result, step) = match self.read(tc) {
+            let result = match self.read(tc) {
                 Sort { level } => {
                     let (inferred, h1) = self.infer_sort(level, flag, tc);
                     Infer::Sort {
@@ -242,10 +235,39 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 _ => unimplemented!("Cannot infer the type of a bound variable by itself!")
             };
 
-            tc.insert_infer_cache(self, flag, result, step);
-            (result, step)
+            tc.insert_infer_cache(self, flag, result);
+            result
         }
     }
+
+    fn infer_sort(
+        self,
+        l : LevelPtr<'l>,
+        flag : InferFlag,
+        tc : &mut impl IsTc<'t, 'l, 'e>
+    ) -> (Self, Step<InferSortZst>) {
+        match flag {
+            InferOnly => {
+                let inferred = l.new_succ(tc).new_sort(tc);
+                InferSort::InferOnly {
+                    l,
+                    inferred,
+                    ind_arg1 : self,
+                }.step(tc)
+            },
+            Check => {
+                let (b, h1) = l.params_defined(tc.dec_uparams(), tc);
+                assert!(b);
+                let inferred = l.new_succ(tc).new_sort(tc);
+                InferSort::Checked {
+                    l,
+                    inferred,
+                    h1,
+                    ind_arg1 : self,
+                }.step(tc)
+            }
+        }
+    }    
 
     pub fn infer_const(
         self,
@@ -253,7 +275,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         c_levels : LevelsPtr<'l>,
         flag : InferFlag,
         tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (Self, Step<InferConst<'l>>) {
+    ) -> (Self, Step<InferConstZst>) {
         let (dec, h1) = match tc.get_declar(c_name) {
             Some((d, h1)) => (d, h1),
             _ => panic!(
@@ -301,49 +323,20 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         }
     }
 
-    fn infer_sort(
-        self,
-        l : LevelPtr<'l>,
-        flag : InferFlag,
-        tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (Self, Step<InferSort<'l>>) {
-        match flag {
-            InferOnly => {
-                let inferred = l.new_succ(tc).new_sort(tc);
-                InferSort::InferOnly {
-                    l,
-                    inferred,
-                    ind_arg1 : self,
-                }.step(tc)
-            },
-            Check => {
-                let (b, h1) = l.params_defined(tc.dec_uparams(), tc);
-                assert!(b);
-                let inferred = l.new_succ(tc).new_sort(tc);
-                InferSort::Checked {
-                    l,
-                    inferred,
-                    h1,
-                    ind_arg1 : self,
-                }.step(tc)
-            }
-        }
-    }
 
-    // For the base case, the state of `flag` doesn't
-    // make a difference.
+
     fn infer_app(
         self,
         args : ExprsPtr<'l>,
         context : ExprsPtr<'l>,
         flag : InferFlag,
         tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (Self, Step<InferApp<'l>>) {
+    ) -> (Self, Step<InferAppZst>) {
         match (self.read(tc), args.read(tc), flag) {
             (_, Nil, _) => {
                 let (inferred, h1) = self.inst(context, tc);
                 InferApp::Base {
-                    f_type : self,
+                    e_type : self,
                     context,
                     flag,
                     inferred,
@@ -373,7 +366,8 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             (Pi { b_name, b_type, b_style, body, .. }, Cons(hd, tl), Check) => {
                 let (b_type_prime, h1) = b_type.inst(context, tc);
                 let (arg_type, h2) = hd.infer(Check, tc);
-                let h3 = b_type_prime.def_eq(arg_type, tc).expect("app binder and arg types were not equal!");
+                let h3 = b_type_prime.assert_def_eq(arg_type, tc);
+
                 let (inferred, h4) = body.infer_app(
                     tl,
                     Cons(hd, context).alloc(tc),
@@ -400,8 +394,8 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 }.step(tc)                
             },
             (_, Cons(..), _) => {
-                let (f_type_prime, h1) = self.inst(context, tc);
-                let (as_pi, h2) = f_type_prime.ensure_pi(tc);
+                let (e_type_prime, h1) = self.inst(context, tc);
+                let (as_pi, h2) = e_type_prime.ensure_pi(tc);
                 match as_pi.read(tc) {
                     Pi { b_name, b_type, b_style, body, .. } => {
                         let (inferred, h3) = as_pi.infer_app(
@@ -411,15 +405,15 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                             tc
                         );
                         InferApp::StepNotPi {
-                            f_type : self,
+                            e_type : self,
                             args,
                             context,
-                            f_type_prime,
+                            flag,
+                            e_type_prime,
                             b_name,
                             b_type,
                             b_style,
                             body,
-                            flag,
                             inferred,
                             h1,
                             h2,
@@ -442,7 +436,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         levels : LevelsPtr<'l>,
         flag : InferFlag,
         tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (Self, Step<InferPi<'l>>) {
+    ) -> (Self, Step<InferPiZst>) {
         match self.read(tc) {
             Pi { b_name, b_type, b_style, body, .. } => {
                 let (b_type_prime, h1) = b_type.inst(local_binders, tc);
@@ -504,7 +498,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         local_binders : ExprsPtr<'l>,
         flag : InferFlag,
         tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (Self, Step<InferLambda<'l>>) {
+    ) -> (Self, Step<InferLambdaZst>) {
         match (self.read(tc), flag) {
             (Lambda { b_name, b_type, b_style, body, .. }, InferOnly) => {
                 let (b_type_prime, h1) = b_type.inst(local_binders, tc);
@@ -567,7 +561,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 let (instd, h2) = self.inst(local_binders, tc);
                 let (inferred_inner, h3) = instd.infer(flag, tc);
                 let (abstrd, h4) = inferred_inner.abstr(local_binders, tc);
-                let (folded, h5) = fold_pis_once(local_binders, b_types, abstrd, tc);
+                let (folded, h5) = fold_pis_once(b_types, local_binders, abstrd, tc);
 
                 InferLambda::Base {
                     e : self,
@@ -597,7 +591,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         body : ExprPtr<'l>,
         flag : InferFlag,
         tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (Self, Step<InferLet<'l>>) {
+    ) -> (Self, Step<InferLetZst>) {
         match flag {
             InferOnly => {
                 let (instd, h1) = body.inst1(val, tc);
@@ -619,7 +613,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             Check => {
                 let (b_type_sort, h1) = b_type.infer_sort_of(flag, tc);
                 let (val_type, h2) = val.infer(flag, tc);
-                let h3 = val_type.def_eq(b_type, tc).expect("Infer_let go a value and binder that were not equal!");
+                let h3 = val_type.assert_def_eq(b_type, tc);
                 let (instd, h4) = body.inst1(val, tc);
                 let (inferred, h5) = instd.infer(flag, tc);
                 InferLet::Checked {
@@ -650,7 +644,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         b_type : ExprPtr<'l>,
         b_style : BinderStyle,
         tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> (Self, Step<InferLocal<'l>>) {
+    ) -> (Self, Step<InferLocalZst>) {
         InferLocal::Base {
             b_name,
             b_type,
@@ -664,12 +658,12 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
 
 
 pub fn fold_pis_once<'a>(
-    local_binders : ExprsPtr<'a>,
     b_types : ExprsPtr<'a>,
+    local_binders : ExprsPtr<'a>,
     body : ExprPtr<'a>, 
     ctx : &mut impl IsLiveCtx<'a>
-) -> (ExprPtr<'a>, Step<FoldPisOnce<'a>>) {
-    match (local_binders.read(ctx), b_types.read(ctx)) {
+) -> (ExprPtr<'a>, Step<FoldPisOnceZst>) {
+    match (b_types.read(ctx), local_binders.read(ctx)) {
         (Nil, Nil) => {
             FoldPisOnce::Base {
                 out : body,
@@ -677,18 +671,18 @@ pub fn fold_pis_once<'a>(
                 ind_arg2 : b_types,
             }.step(ctx)
         },
-        (Cons(l, ls), Cons(t, ts)) => {
+        (Cons(t, ts), Cons(l, ls)) => {
             match l.read(ctx) {
                 Local { b_name, b_style, b_type : unused_t, .. } => {
                     let combined = <ExprPtr>::new_pi(b_name, t, b_style, body, ctx);
-                    let (out, h1) = fold_pis_once(ls, ts, combined, ctx);
+                    let (out, h1) = fold_pis_once(ts, ls, combined, ctx);
                     FoldPisOnce::Step {
+                        t,
                         n : b_name,
                         unused_t,
                         s : b_style,
-                        t,
-                        ls,
                         ts,
+                        ls,
                         body,
                         combined,
                         out,

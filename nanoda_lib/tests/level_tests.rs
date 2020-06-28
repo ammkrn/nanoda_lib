@@ -4,11 +4,11 @@ use nanoda_lib::utils::{ IsTc, Env, List, List::*, HasNanodaDbg };
 use nanoda_lib::name::{ Name };
 use nanoda_lib::level::{ LevelPtr, LevelsPtr, Level, Level::* };
 use nanoda_lib::param;
-use nanoda_lib::trace::StdoutTracer;
+use nanoda_lib::trace::{ NoopTracer, StdoutTracer };
 
 #[test]
 fn level_test_iz_zero() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let zero = Zero.alloc(&mut live);
@@ -26,7 +26,7 @@ fn level_test_iz_zero() {
 
 #[test]
 fn level_test_is_succ() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let zero = Zero.alloc(&mut live);
@@ -43,7 +43,7 @@ fn level_test_is_succ() {
 
 #[test]
 fn level_test_is_any_max() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let mut live = env.as_live();
 
     let zero = Zero.alloc(&mut live);
@@ -63,7 +63,7 @@ fn level_test_is_any_max() {
 
 #[test]
 fn level_test0() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let zero = Zero.alloc(&mut env);
     let one = zero.new_succ(&mut env);
@@ -82,7 +82,7 @@ fn level_test0() {
 
 #[test]
 fn level_test1() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let zero = Zero.alloc(&mut env);
     let u = param!("u", &mut env);
@@ -98,7 +98,7 @@ fn level_test1() {
 
 #[test]
 fn level_test2() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let zero = Zero.alloc(&mut env);
     let u = param!("u", &mut env);
@@ -113,7 +113,7 @@ fn level_test2() {
 
 #[test]
 fn level_test3() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let u = param!("u", &mut env);
     
@@ -126,7 +126,7 @@ fn level_test3() {
 
 #[test]
 fn level_test4() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let u = param!("u", &mut env);
     let v = param!("v", &mut env);
@@ -140,7 +140,7 @@ fn level_test4() {
 
 #[test]
 fn level_test5() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let u = param!("u", &mut env);
     let s_u = u.new_succ(&mut env);
@@ -157,7 +157,7 @@ fn level_test5() {
 
 #[test]
 fn level_test6() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let zero = Zero.alloc(&mut env);
 
     let u = param!("u", &mut env);
@@ -180,7 +180,7 @@ fn level_test6() {
 
 #[test]
 fn level_test7() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let zero = Zero.alloc(&mut env);
     let one = zero.new_succ(&mut env);
@@ -200,7 +200,7 @@ fn level_test7() {
 
 #[test]
 fn level_test8() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let zero = Zero.alloc(&mut env);
     let u = param!("u", &mut env);
@@ -217,7 +217,7 @@ fn level_test8() {
 
 #[test]
 fn level_test9() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let zero = Zero.alloc(&mut env);
     let u = param!("u", &mut env);
@@ -233,7 +233,7 @@ fn level_test9() {
 
 #[test]
 fn level_test10() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let u = param!("u", &mut env);
     
@@ -247,7 +247,7 @@ fn level_test10() {
 
 #[test]
 fn level_test11() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let u = param!("u", &mut env);
     let v = param!("v", &mut env);
@@ -262,7 +262,7 @@ fn level_test11() {
 
 #[test]
 fn level_test12() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let u = param!("u", &mut env);
     let s_u = u.new_succ(&mut env);
@@ -280,7 +280,7 @@ fn level_test12() {
 
 #[test]
 fn level_test13() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let zero = Zero.alloc(&mut env);
 
     let u = param!("u", &mut env);
@@ -305,7 +305,7 @@ fn level_test13() {
 
 #[test]
 fn level_test14() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let zero = Zero.alloc(&mut env);
     let one = zero.new_succ(&mut env);
@@ -326,7 +326,7 @@ fn level_test14() {
 
 #[test]
 fn level_test15() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let zero = Zero.alloc(&mut env);
     let u = param!("u", &mut env);
@@ -344,7 +344,7 @@ fn level_test15() {
 
 #[test]
 fn level_test16() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let zero = Zero.alloc(&mut env);
     let u = param!("u", &mut env);
@@ -361,7 +361,7 @@ fn level_test16() {
 
 #[test]
 fn level_test17() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let u = param!("u", &mut env);
     
@@ -376,7 +376,7 @@ fn level_test17() {
 
 #[test]
 fn level_test18() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let u = param!("u", &mut env);
     let v = param!("v", &mut env);
@@ -392,7 +392,7 @@ fn level_test18() {
 
 #[test]
 fn level_test19() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
 
     let u = param!("u", &mut env);
     let s_u = u.new_succ(&mut env);
@@ -411,7 +411,7 @@ fn level_test19() {
 
 #[test]
 fn level_test20() {
-    let mut env = Env::new(());
+    let mut env = Env::new(NoopTracer);
     let zero = Zero.alloc(&mut env);
 
     let u = param!("u", &mut env);
@@ -447,7 +447,6 @@ fn level_test21() {
 
 
     let (out, _) = fold_args.fold_imaxs(e, &mut live);
-    println!("out : {}\n", out.nanoda_dbg(&live));
     assert_eq!(target, out);
 
 

@@ -1,6 +1,6 @@
 [package]
 name = "nanoda_macros"
-version = "0.2.0-t"
+version = "0.2.1-t"
 authors = ["ammkrn <ammkrn@tuta.io>"]
 edition = "2018"
 

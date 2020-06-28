@@ -1,9 +1,11 @@
+use nanoda_macros::has_try_bool;
 use crate::levels;
 use crate::name::NamePtr;
 use crate::expr::{ Expr::*, ExprPtr };
 use crate::trace::IsTracer;
 use crate::trace::steps::*;
 use crate::utils::{ 
+    IsTc,
     Ptr, 
     List, 
     List::*, 
@@ -80,7 +82,7 @@ impl<'a> LevelPtr<'a> {
     }
 
 
-    pub fn is_param(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsParam<'a>>) {
+    pub fn is_param(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsParamZst>) {
         match self.read(ctx) {
             Zero => {
                 IsParam::Zero {
@@ -122,7 +124,7 @@ impl<'a> LevelPtr<'a> {
     }
 
 
-    pub fn is_zero_lit(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsZeroLit<'a>>) {
+    pub fn is_zero_lit(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsZeroLitZst>) {
         match self.read(ctx) {
             Zero => {
                 IsZeroLit::Zero {
@@ -163,7 +165,7 @@ impl<'a> LevelPtr<'a> {
         }
     }
 
-    pub fn is_succ(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsSucc<'a>>) {
+    pub fn is_succ(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsSuccZst>) {
         match self.read(ctx) {
             Zero => {
                 IsSucc::Zero {
@@ -204,7 +206,7 @@ impl<'a> LevelPtr<'a> {
         }
     }    
 
-    pub fn is_any_max(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsAnyMax<'a>>) {
+    pub fn is_any_max(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsAnyMaxZst>) {
         match self.read(ctx) {
             Zero => {
                 IsAnyMax::Zero {
@@ -245,17 +247,15 @@ impl<'a> LevelPtr<'a> {
         }
     }        
 
-    pub fn combining(self, other : Self, ctx : &mut impl IsLiveCtx<'a>) -> (Self, Step<Combining<'a>>) {
+    pub fn combining(self, other : Self, ctx : &mut impl IsLiveCtx<'a>) -> (Self, Step<CombiningZst>) {
         match (self.read(ctx), other.read(ctx)) {
-            (Zero, r) => {
-                let result = r.alloc(ctx);
+            (Zero, _) => {
                 Combining::Lzero {
                     r : other,
                     ind_arg1 : self,
                 }.step(ctx)
             }
-            (l, Zero) => {
-                let result = l.alloc(ctx);
+            (_, Zero) => {
                 Combining::Rzero {
                     l : self,
                     ind_arg2 : other,
@@ -293,7 +293,7 @@ impl<'a> LevelPtr<'a> {
     }    
 
     
-    pub fn simplify(self, ctx : &mut impl IsLiveCtx<'a>) -> (Self, Step<Simplify<'a>>) {
+    pub fn simplify(self, ctx : &mut impl IsLiveCtx<'a>) -> (Self, Step<SimplifyZst>) {
         match self.read(ctx) {
             Zero => {
                 Simplify::Zero {
@@ -392,7 +392,7 @@ impl<'a> LevelPtr<'a> {
         self, 
         params : LevelsPtr<'a>, 
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (bool, Step<ParamsDefined<'a>>) {
+    ) -> (bool, Step<ParamsDefinedZst>) {
         match self.read(ctx) {
             Zero => {
                 ParamsDefined::Zero {
@@ -472,7 +472,7 @@ impl<'a> LevelPtr<'a> {
         ks : LevelsPtr<'a>,
         vs : LevelsPtr<'a>,
         ctx : &mut impl IsLiveCtx<'a>,
-    ) -> (Self, Step<SubstL<'a>>) {
+    ) -> (Self, Step<SubstLZst>) {
         match self.read(ctx) {
             Zero => {
                 SubstL::Zero {
@@ -576,7 +576,7 @@ impl<'a> LevelPtr<'a> {
         l_h : usize,
         r_h : usize,
         ctx : &mut impl IsLiveCtx<'a>,
-    ) -> (bool, Step<LeqCore<'a>>)  {
+    ) -> (bool, Step<LeqCoreZst>)  {
         match (self.read(ctx), other.read(ctx)) {
             (Zero, _) if l_h <= r_h => {
                 LeqCore::ZAny {
@@ -674,7 +674,7 @@ impl<'a> LevelPtr<'a> {
             (Param(n), Max(x, y)) => {
                 let (b1, h1) = self.leq_core(x, l_h, r_h, ctx);
                 let (b2, h2) = self.leq_core(y, l_h, r_h, ctx);
-                let res = b1 && b2;
+                let res = b1 || b2;
                 LeqCore::ParamMax {
                     n,
                     x,
@@ -693,7 +693,7 @@ impl<'a> LevelPtr<'a> {
             (Zero, Max(x, y)) => {
                 let (b1, h1) = self.leq_core(x, l_h, r_h, ctx);
                 let (b2, h2) = self.leq_core(y, l_h, r_h, ctx);
-                let res = b1 && b2;
+                let res = b1 || b2;
                 LeqCore::ZeroMax {
                     x,
                     y,
@@ -725,11 +725,8 @@ impl<'a> LevelPtr<'a> {
                     _ => unreachable!("Checked pattern; leq_core ImaxParamL")
                 };
 
-                // ks = [Param(n)]
                 let ks = levels!([p], ctx);
-                // z_vs = [Zero]
                 let z_vs = levels!([Zero.alloc(ctx)], ctx);
-                // s_vs = [Succ(Param(n))];
                 let succ_vs = levels!([p.new_succ(ctx)], ctx);
 
                 let (l_z, h1) = self.subst(ks, z_vs, ctx);
@@ -903,7 +900,7 @@ impl<'a> LevelPtr<'a> {
                 },
                 _ => unreachable!("checked pattern : ImaxParamR")
             }
-            _ => panic!()
+            _ => unreachable!("leq_core2")
         }
     }
 
@@ -911,7 +908,7 @@ impl<'a> LevelPtr<'a> {
         self,
         other : LevelPtr<'a>,
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (bool, Step<Leq<'a>>) {
+    ) -> (bool, Step<LeqZst>) {
         let (l_prime, h1) = self.simplify(ctx);
         let (r_prime, h2) = other.simplify(ctx);
         let (res, h3) = l_prime.leq_core(r_prime, 0, 0, ctx);
@@ -927,25 +924,10 @@ impl<'a> LevelPtr<'a> {
         }.step(ctx)
     }
 
-    pub fn eq_antisymm(
-        self,
-        other : LevelPtr<'a>,
-        ctx : &mut impl IsLiveCtx<'a>
-    ) -> (bool, Step<EqAntisymm<'a>>) {
-        let (b1, h1) = self.leq(other, ctx);
-        let (b2, h2) = other.leq(self, ctx);
-        EqAntisymm::Base {
-            l : self,
-            r : other,
-            b1,
-            b2,
-            h1,
-            h2,
-            ind_arg3 : b1 && b2
-        }.step(ctx)
-    }
 
-    pub fn is_zero(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsZero<'a>>) {
+
+
+    pub fn is_zero(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsZeroZst>) {
         let (b, h1) = self.leq(Zero.alloc(ctx), ctx);
         IsZero::Base {
             l : self,
@@ -954,7 +936,7 @@ impl<'a> LevelPtr<'a> {
         }.step(ctx)
     }
 
-    pub fn is_nonzero(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsNonzero<'a>>) {
+    pub fn is_nonzero(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsNonzeroZst>) {
         let (b, h1) = Zero.alloc(ctx).new_succ(ctx).leq(self, ctx);
         IsNonzero::Base {
             l : self,
@@ -963,23 +945,97 @@ impl<'a> LevelPtr<'a> {
         }.step(ctx)
     }
 
-    pub fn maybe_zero(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<MaybeZero<'a>>) {
-        let (b, h1) = self.is_nonzero(ctx);
+    pub fn maybe_zero(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<MaybeZeroZst>) {
+        let (is_nonzero, h1) = self.is_nonzero(ctx);
         MaybeZero::Base {
             l : self,
-            b,
+            b : !is_nonzero,
             h1
         }.step(ctx)
     }
 
-    pub fn maybe_nonzero(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<MaybeNonzero<'a>>) {
-        let (b, h1) = self.is_zero(ctx);
+    pub fn maybe_nonzero(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<MaybeNonzeroZst>) {
+        let (is_zero, h1) = self.is_zero(ctx);
         MaybeNonzero::Base {
             l : self,
-            b,
+            b : !is_zero,
             h1
         }.step(ctx)
     }
+}
+
+impl<'t, 'l : 't, 'e : 'l> LevelPtr<'l> {
+    #[has_try_bool(method = "self.eq_antisymm(other, tc)")]
+     pub fn eq_antisymm(
+        self,
+        other : LevelPtr<'l>,
+        tc : &mut impl IsTc<'t, 'l, 'e>,
+    ) -> (bool, Step<EqAntisymmZst>) {
+        let (b1, h1) = self.leq(other, tc);
+        let (b2, h2) = other.leq(self, tc);
+        EqAntisymm::Base {
+            l : self,
+            r : other,
+            b1,
+            b2,
+            h1,
+            h2,
+            ind_arg3 : b1 && b2
+        }.step(tc)
+    }   
+
+}
+
+impl<'t, 'l : 't, 'e : 'l> LevelsPtr<'l> {
+    #[has_try_bool(method = "self.eq_antisymm_many(other, tc)")]
+    pub fn eq_antisymm_many(
+        self,
+        other : Self,
+        tc : &mut impl IsTc<'t, 'l, 'e>,
+    ) -> (bool, Step<EqAntisymmManyZst>) {
+        match (self.read(tc), other.read(tc)) {
+            (Nil, Nil) => {
+                EqAntisymmMany::Base {
+                    ind_arg1 : self,
+                    b : true,
+                }.step(tc)
+            },
+            (Cons(l, ls), Nil) => {
+                EqAntisymmMany::BaseFL {
+                    l,
+                    ls,
+                    ind_arg2 : other,
+                    b : false,
+                }.step(tc)
+            }
+            (Nil, Cons(r, rs)) => {
+                EqAntisymmMany::BaseFR {
+                    r,
+                    rs,
+                    ind_arg1 : self,
+                    b : false
+                }.step(tc)
+            },
+            (Cons(l, ls), Cons(r, rs)) => {
+                let (b1, h1) = l.try_eq_antisymm(r, tc);
+                let (b2, h2) = ls.try_eq_antisymm_many(rs, tc);
+                EqAntisymmMany::Step {
+                    l,
+                    r,
+                    ls,
+                    rs,
+                    b1,
+                    b2,
+                    h1,
+                    h2,
+                    ind_arg1 : self,
+                    ind_arg2 : other,
+                    b : b1 && b2
+                }.step(tc)
+            },
+        }
+    }   
+
 }
 
 impl<'a> LevelsPtr<'a> {
@@ -987,7 +1043,7 @@ impl<'a> LevelsPtr<'a> {
         self,
         dec_ups : LevelsPtr<'a>,
         ctx : &mut impl IsLiveCtx<'a>,
-    ) -> (bool, Step<ParamsDefinedMany<'a>>) {
+    ) -> (bool, Step<ParamsDefinedManyZst>) {
         match self.read(ctx) {
             Nil => {
                 ParamsDefinedMany::Base {
@@ -1018,7 +1074,7 @@ impl<'a> LevelsPtr<'a> {
         ks : Self,
         vs : Self,
         ctx : &mut impl IsLiveCtx<'a>,
-    ) -> (LevelsPtr<'a>, Step<SubstLMany<'a>>) {
+    ) -> (LevelsPtr<'a>, Step<SubstLManyZst>) {
         match self.read(ctx) {
             Nil => {
                 SubstLMany::Base {
@@ -1037,6 +1093,8 @@ impl<'a> LevelsPtr<'a> {
                     tl_prime,
                     ks,
                     vs,
+                    h1,
+                    h2,
                     ind_arg1 : self,
                     ind_arg2 : Cons(hd_prime, tl_prime).alloc(ctx),
                 }.step(ctx)
@@ -1044,59 +1102,12 @@ impl<'a> LevelsPtr<'a> {
         }
     }
 
-    pub fn eq_antisymm_many(
-        self,
-        other : Self,
-        ctx : &mut impl IsLiveCtx<'a>
-    ) -> (bool, Step<EqAntisymmMany<'a>>) {
-        match (self.read(ctx), other.read(ctx)) {
-            (Nil, Nil) => {
-                EqAntisymmMany::Base {
-                    ind_arg1 : self,
-                    b : true,
-                }.step(ctx)
-            },
-            (Cons(l, ls), Nil) => {
-                EqAntisymmMany::BaseFL {
-                    l,
-                    ls,
-                    ind_arg2 : other,
-                    b : false,
-                }.step(ctx)
-            }
-            (Nil, Cons(r, rs)) => {
-                EqAntisymmMany::BaseFR {
-                    r,
-                    rs,
-                    ind_arg1 : self,
-                    b : false
-                }.step(ctx)
-            },
-            (Cons(l, ls), Cons(r, rs)) => {
-                let (b1, h1) = l.eq_antisymm(r, ctx);
-                let (b2, h2) = ls.eq_antisymm_many(rs, ctx);
-                EqAntisymmMany::Step {
-                    l,
-                    r,
-                    ls,
-                    rs,
-                    b1,
-                    b2,
-                    h1,
-                    h2,
-                    ind_arg1 : self,
-                    ind_arg2 : other,
-                    b : b1 && b2
-                }.step(ctx)
-            },
-        }
-    }
 
     pub fn fold_imaxs(
         self, 
         sink : LevelPtr<'a>, 
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> (LevelPtr<'a>, Step<FoldImaxs<'a>>) {
+    ) -> (LevelPtr<'a>, Step<FoldImaxsZst>) {
         match self.read(ctx) {
             Nil => {
                 FoldImaxs::Base {

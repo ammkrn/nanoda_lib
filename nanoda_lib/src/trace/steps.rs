@@ -1,4 +1,6 @@
+use std::io::Write;
 use std::marker::PhantomData;
+use nanoda_macros::is_step;
 use crate::utils::{ Ptr, List, List::*, ListPtr, IsCtx, IsLiveCtx };
 use crate::name::{ NamePtr, NamesPtr, Name, StringPtr, Name::* };
 use crate::level::{ LevelPtr, LevelsPtr, Level, Level::* };
@@ -6,7 +8,7 @@ use crate::expr::{ ExprPtr, ExprsPtr, Expr, Expr::*, BinderStyle, LocalSerial };
 use crate::tc::infer::InferFlag;
 use crate::tc::eq::{ EqResult, DeltaResult }; 
 use crate::trace::IsTracer;
-use crate::trace::items::{ HasPrefix, HasPtrRepr };
+use crate::trace::items::{ NewtypeOption, NewtypeTuple, HasPrefix };
 use crate::env::{ 
     RecRulePtr, 
     RecRulesPtr, 
@@ -17,9 +19,6 @@ use crate::env::{
     DeclarsPtr, 
     ReducibilityHint 
 };
-
-use nanoda_macros::is_step;
-
 
 use Step::*;
 
@@ -32,13 +31,7 @@ impl StepIdx {
     }
 }
 
-impl std::fmt::Display for StepIdx {
-    fn fmt(&self, f : &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            StepIdx(n) => write!(f, "{}", n)
-        }
-    }
-}
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Step<H> {
@@ -48,66 +41,38 @@ pub enum Step<H> {
         // what the evidence is proof of (IE `WhnfCore`)
         //evidence : Evidence<H>,
         step_idx : StepIdx,
-        evidence : PhantomData<H>,
+        evidence : H,
     },
     Pfind {
-        evidence : PhantomData<H>,
+        evidence : H,
     },
+    Noop {
+        evidence : H,
+    }
 }
 
-impl<H> Step<H> {
-    pub fn new_pfind() -> Self {
+impl<H : Default> Step<H> {
+    pub fn new_pfind<'a, CTX : IsCtx<'a>>(_ : &CTX) -> Self {
+        assert!(<CTX as IsCtx>::IS_PFINDER);
         Step::Pfind { 
-            evidence : PhantomData 
+            evidence : Default::default()
         }
     }
 
-    pub fn new_live(step_idx : StepIdx) -> Self {
+    pub fn new_noop<'a, CTX : IsCtx<'a>>(_ : &CTX) -> Self {
+        assert!(<CTX as IsCtx>::Tracer::NOOP);
+        Step::Noop {
+            evidence : Default::default()
+        }
+    }
+
+    pub fn new_live<'a, CTX : IsCtx<'a>>(step_idx : StepIdx, _ : &CTX) -> Self {
+        assert!(!<CTX as IsCtx>::IS_PFINDER);
         Step::Live {
             step_idx,
-            evidence : PhantomData
+            evidence : Default::default()
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CalcHeight<'a> {
-    placeholder : PhantomData<&'a ()>
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Find<'a> {
-    placeholder : PhantomData<&'a ()>
-}
-
-
-
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Delta<'l> {
-    placeholder : PhantomData<&'l ()>
-}
-
-
-
-
-#[is_step(tag = "TS", result_type = "Option<usize>", fun = "trace_try_succ")]
-
-#[derive(Debug, Clone, Copy)]
-pub enum TrySucc {
-    #[N]
-    BaseNone {
-        ind_arg1 : Option<usize>,
-        #[result]
-        ind_arg2 : Option<usize>
-    },
-    #[S]
-    BaseSome {
-        n : usize,
-        ind_arg1 : Option<usize>,
-        #[result]
-        ind_arg2 : Option<usize>,
-    }
-
 }
 
 
@@ -136,14 +101,30 @@ pub enum Mem<'a, A : HasPrefix> {
         x : Ptr<'a, A>,
         tl : ListPtr<'a, A>,
         bl : bool,
-        h1 : Step<Mem<'a, A>>,
+        h1 : Step<MemZst>,
         ind_arg2 : ListPtr<'a, A>,
         #[result]
         ind_arg3 : bool,
     }
 }
 
-
+#[is_step(tag = "TS", result_type = "Option<usize>", fun = "trace_try_succ")]
+#[derive(Debug, Clone, Copy)]
+pub enum TrySucc {
+    #[N]
+    BaseNone {
+        ind_arg1 : Option<usize>,
+        #[result]
+        ind_arg2 : Option<usize>,
+    },
+    #[S]
+    BaseSome {
+        n : usize,
+        ind_arg1 : Option<usize>,
+        #[result]
+        ind_arg2 : Option<usize>,
+    }
+}
 
 #[is_step(tag = "LP", result_type = "Option<usize>", fun = "trace_pos")]
 #[derive(Debug, Clone, Copy)]
@@ -171,8 +152,8 @@ pub enum Pos<'a, A : HasPrefix> {
         n : Option<usize>,
         #[result]
         n_prime : Option<usize>,
-        h1 : Step<Pos<'a, A>>,
-        h2 : Step<TrySucc>,
+        h1 : Step<PosZst>,
+        h2 : Step<TrySuccZst>,
         ind_arg2 : ListPtr<'a, A>,
     }
 }
@@ -194,8 +175,8 @@ pub enum IsSubset<'a, A : HasPrefix> {
         super_ : ListPtr<'a, A>,
         b1 : bool,
         b2 : bool,
-        h1 : Step<Mem<'a, A>>,
-        h2 : Step<IsSubset<'a, A>>,
+        h1 : Step<MemZst>,
+        h2 : Step<IsSubsetZst>,
         ind_arg1 : ListPtr<'a, A>,
         #[result]
         ind_arg3 : bool,
@@ -224,7 +205,7 @@ pub enum Skip<'a, A : HasPrefix> {
         #[result]
         l_prime : ListPtr<'a, A>,
         n_prime : usize,
-        h1 : Step<Skip<'a, A>>,
+        h1 : Step<SkipZst>,
         ind_arg1 : ListPtr<'a, A>,
         ind_arg2 : usize,
     }
@@ -252,7 +233,7 @@ pub enum Take<'a, A : HasPrefix> {
         tl : ListPtr<'a, A>,
         l_prime : ListPtr<'a, A>,
         n_prime : usize,
-        h1 : Step<Take<'a, A>>,
+        h1 : Step<TakeZst>,
         ind_arg1 : ListPtr<'a, A>,
         ind_arg2 : usize,
         #[result]
@@ -276,8 +257,8 @@ pub enum NoDupes<'a, A : HasPrefix> {
         tl : ListPtr<'a, A>,
         b1 : bool,
         b2 : bool,
-        h1 : Step<Mem<'a, A>>,
-        h2 : Step<NoDupes<'a, A>>,
+        h1 : Step<MemZst>,
+        h2 : Step<NoDupesZst>,
         ind_arg1 : ListPtr<'a, A>,
         #[result]
         ind_arg2 : bool,
@@ -312,7 +293,7 @@ pub enum Get<'a, A : HasPrefix> {
         n_prime : usize,
         #[result]
         out : Option<Ptr<'a, A>>,
-        h1 : Step<Get<'a, A>>,
+        h1 : Step<GetZst>,
         ind_arg1 : ListPtr<'a, A>,
         ind_arg2 : usize,
     }
@@ -333,7 +314,7 @@ pub enum Len<'a, A : HasPrefix> {
         hd : Ptr<'a, A>,
         tl : ListPtr<'a, A>,
         n : usize,
-        h1 : Step<Len<'a, A>>,
+        h1 : Step<LenZst>,
         ind_arg1 : ListPtr<'a, A>,
         #[result]
         ind_arg2 : usize,
@@ -356,7 +337,7 @@ pub enum Concat<'a, A : HasPrefix> {
         tl : ListPtr<'a, A>,
         l2 : ListPtr<'a, A>,
         l2_prime : ListPtr<'a, A>,
-        h1 : Step<Concat<'a, A>>,
+        h1 : Step<ConcatZst>,
         ind_arg1 : ListPtr<'a, A>,
         #[result]
         ind_arg3 : ListPtr<'a, A>,
@@ -581,7 +562,7 @@ pub enum Combining<'a> {
         l : LevelPtr<'a>,
         r : LevelPtr<'a>,
         x : LevelPtr<'a>,
-        h1 : Step<Combining<'a>>,
+        h1 : Step<CombiningZst>,
         ind_arg1 : LevelPtr<'a>,
         ind_arg2 : LevelPtr<'a>,
         #[result]
@@ -591,10 +572,10 @@ pub enum Combining<'a> {
     Owise {
         l : LevelPtr<'a>,
         r : LevelPtr<'a>,
-        h1 : Step<IsZeroLit<'a>>,
-        h2 : Step<IsZeroLit<'a>>,
-        h3 : Step<IsSucc<'a>>,
-        h4 : Step<IsSucc<'a>>,
+        h1 : Step<IsZeroLitZst>,
+        h2 : Step<IsZeroLitZst>,
+        h3 : Step<IsSuccZst>,
+        h4 : Step<IsSuccZst>,
         #[result]
         ind_arg3 : LevelPtr<'a>,
     }
@@ -619,7 +600,7 @@ pub enum Simplify<'a> {
     Succ {
         l : LevelPtr<'a>,
         l_prime : LevelPtr<'a>,
-        h1 : Step<Simplify<'a>>,
+        h1 : Step<SimplifyZst>,
         ind_arg1 : LevelPtr<'a>,
         #[result]
         ind_arg2 : LevelPtr<'a>,
@@ -632,16 +613,16 @@ pub enum Simplify<'a> {
         r_prime : LevelPtr<'a>,
         #[result]
         x : LevelPtr<'a>,
-        h1 : Step<Simplify<'a>>,
-        h2 : Step<Simplify<'a>>,
-        h3 : Step<Combining<'a>>,
+        h1 : Step<SimplifyZst>,
+        h2 : Step<SimplifyZst>,
+        h3 : Step<CombiningZst>,
         ind_arg1 : LevelPtr<'a>,
     },
     #[IZ]
     ImaxZero {
         l : LevelPtr<'a>,
         r : LevelPtr<'a>,
-        h1 : Step<Simplify<'a>>,
+        h1 : Step<SimplifyZst>,
         ind_arg1 : LevelPtr<'a>,
         #[result]
         ind_arg2 : LevelPtr<'a>,
@@ -654,9 +635,9 @@ pub enum Simplify<'a> {
         r_prime : LevelPtr<'a>,
         #[result]
         x : LevelPtr<'a>,
-        h1 : Step<Simplify<'a>>,
-        h2 : Step<Simplify<'a>>,
-        h3 : Step<Combining<'a>>,
+        h1 : Step<SimplifyZst>,
+        h2 : Step<SimplifyZst>,
+        h3 : Step<CombiningZst>,
         ind_arg1 : LevelPtr<'a>,
     },
     #[IO]
@@ -665,10 +646,10 @@ pub enum Simplify<'a> {
         r : LevelPtr<'a>,
         l_prime : LevelPtr<'a>,
         r_prime : LevelPtr<'a>,
-        h1 : Step<Simplify<'a>>,
-        h2 : Step<IsZeroLit<'a>>,
-        h3 : Step<IsSucc<'a>>,
-        h4 : Step<Simplify<'a>>,
+        h1 : Step<SimplifyZst>,
+        h2 : Step<IsZeroLitZst>,
+        h3 : Step<IsSuccZst>,
+        h4 : Step<SimplifyZst>,
         ind_arg1 : LevelPtr<'a>,
         #[result]
         ind_arg2 : LevelPtr<'a>,
@@ -691,7 +672,7 @@ pub enum ParamsDefined<'a> {
     Succ {
         pred : LevelPtr<'a>,
         params : LevelsPtr<'a>,
-        h1 : Step<ParamsDefined<'a>>,
+        h1 : Step<ParamsDefinedZst>,
         ind_arg1 : LevelPtr<'a>,
         #[result]
         out : bool,
@@ -701,8 +682,8 @@ pub enum ParamsDefined<'a> {
         l : LevelPtr<'a>,
         r : LevelPtr<'a>,
         params : LevelsPtr<'a>,
-        h1 : Step<ParamsDefined<'a>>,
-        h2 : Step<ParamsDefined<'a>>,
+        h1 : Step<ParamsDefinedZst>,
+        h2 : Step<ParamsDefinedZst>,
         ind_arg1 : LevelPtr<'a>,
         #[result]
         out : bool,
@@ -712,8 +693,8 @@ pub enum ParamsDefined<'a> {
         l : LevelPtr<'a>,
         r : LevelPtr<'a>,
         params : LevelsPtr<'a>,
-        h1 : Step<ParamsDefined<'a>>,
-        h2 : Step<ParamsDefined<'a>>,
+        h1 : Step<ParamsDefinedZst>,
+        h2 : Step<ParamsDefinedZst>,
         ind_arg1 : LevelPtr<'a>,
         #[result]
         out : bool,
@@ -734,7 +715,7 @@ pub enum ParamsDefined<'a> {
         n : NamePtr<'a>,
         hd : LevelPtr<'a>,
         tl : LevelsPtr<'a>,
-        h1 : Step<ParamsDefined<'a>>,
+        h1 : Step<ParamsDefinedZst>,
         ind_arg1 : LevelPtr<'a>,
         ind_arg2 : LevelsPtr<'a>,
         #[result]
@@ -758,7 +739,7 @@ pub enum SubstL<'a> {
         pred_prime : LevelPtr<'a>,
         ks : LevelsPtr<'a>,
         vs : LevelsPtr<'a>,
-        h1 : Step<SubstL<'a>>,
+        h1 : Step<SubstLZst>,
         ind_arg1 : LevelPtr<'a>,
         #[result]
         ind_arg2 : LevelPtr<'a>,
@@ -771,8 +752,8 @@ pub enum SubstL<'a> {
         r_prime : LevelPtr<'a>,
         ks : LevelsPtr<'a>,
         vs : LevelsPtr<'a>,
-        h1 : Step<SubstL<'a>>,
-        h2 : Step<SubstL<'a>>,
+        h1 : Step<SubstLZst>,
+        h2 : Step<SubstLZst>,
         ind_arg1 : LevelPtr<'a>,
         #[result]
         ind_arg2 : LevelPtr<'a>,
@@ -785,8 +766,8 @@ pub enum SubstL<'a> {
         r_prime : LevelPtr<'a>,
         ks : LevelsPtr<'a>,
         vs : LevelsPtr<'a>,
-        h1 : Step<SubstL<'a>>,
-        h2 : Step<SubstL<'a>>,
+        h1 : Step<SubstLZst>,
+        h2 : Step<SubstLZst>,
         ind_arg1 : LevelPtr<'a>,
         #[result]
         ind_arg2 : LevelPtr<'a>,
@@ -820,7 +801,7 @@ pub enum SubstL<'a> {
         ks_tl : LevelsPtr<'a>,
         vs_tl : LevelsPtr<'a>,
         h1 : bool,
-        h2 : Step<SubstL<'a>>,
+        h2 : Step<SubstLZst>,
         ind_arg1 : LevelPtr<'a>,
         ind_arg2 : LevelsPtr<'a>,
         ind_arg3 : LevelsPtr<'a>,
@@ -842,8 +823,8 @@ pub enum ParamsDefinedMany<'a> {
         hd : LevelPtr<'a>,
         tl : LevelsPtr<'a>,
         dec_ups : LevelsPtr<'a>,
-        h1 : Step<ParamsDefinedMany<'a>>,
-        h2 : Step<ParamsDefined<'a>>,
+        h1 : Step<ParamsDefinedManyZst>,
+        h2 : Step<ParamsDefinedZst>,
         ind_arg1 : LevelsPtr<'a>,
         #[result]
         out : bool,
@@ -869,6 +850,8 @@ pub enum SubstLMany<'a> {
         tl_prime : LevelsPtr<'a>,
         ks : LevelsPtr<'a>,
         vs : LevelsPtr<'a>,
+        h1 : Step<SubstLZst>,
+        h2 : Step<SubstLManyZst>,
         ind_arg1 : LevelsPtr<'a>,
         #[result]
         ind_arg2 : LevelsPtr<'a>,
@@ -894,7 +877,7 @@ pub enum FoldImaxs<'a> {
         #[result]
         out : LevelPtr<'a>,
         ind_arg1 : LevelsPtr<'a>,
-        h1 : Step<FoldImaxs<'a>>,
+        h1 : Step<FoldImaxsZst>,
     }
 }
 
@@ -962,7 +945,7 @@ pub enum LeqCore<'a> {
         r_h : usize,
         #[result]
         b : bool,
-        h1 : Step<LeqCore<'a>>,
+        h1 : Step<LeqCoreZst>,
         ind_arg1 : LevelPtr<'a>,
     },
     #[AS]
@@ -973,7 +956,7 @@ pub enum LeqCore<'a> {
         r_h : usize,
         #[result]
         b : bool,
-        h1 : Step<LeqCore<'a>>,
+        h1 : Step<LeqCoreZst>,
         ind_arg2 : LevelPtr<'a>,
     },
     #[MA]
@@ -985,8 +968,8 @@ pub enum LeqCore<'a> {
         r_h : usize,
         b1 : bool,
         b2 : bool,
-        h1 : Step<LeqCore<'a>>,
-        h2 : Step<LeqCore<'a>>,
+        h1 : Step<LeqCoreZst>,
+        h2 : Step<LeqCoreZst>,
         ind_arg1 : LevelPtr<'a>,
         #[result]
         res : bool
@@ -1000,8 +983,8 @@ pub enum LeqCore<'a> {
         b2 : bool,
         l_h : usize,
         r_h : usize,
-        h1 : Step<LeqCore<'a>>,
-        h2 : Step<LeqCore<'a>>,
+        h1 : Step<LeqCoreZst>,
+        h2 : Step<LeqCoreZst>,
         ind_arg1 : LevelPtr<'a>,
         ind_arg2 : LevelPtr<'a>,
         #[result]
@@ -1016,8 +999,8 @@ pub enum LeqCore<'a> {
         b2 : bool,
         l_h : usize,
         r_h : usize,
-        h1 : Step<LeqCore<'a>>,
-        h2 : Step<LeqCore<'a>>,
+        h1 : Step<LeqCoreZst>,
+        h2 : Step<LeqCoreZst>,
         ind_arg1 : LevelPtr<'a>,
         ind_arg2 : LevelPtr<'a>,
         #[result]
@@ -1051,16 +1034,16 @@ pub enum LeqCore<'a> {
         r_h : usize,
         b1 : bool,
         b2 : bool,
-        h1 : Step<SubstL<'a>>,
-        h2 : Step<SubstL<'a>>,
-        h3 : Step<Simplify<'a>>,
-        h4 : Step<Simplify<'a>>,
-        h5 : Step<SubstL<'a>>,
-        h6 : Step<SubstL<'a>>,
-        h7 : Step<Simplify<'a>>,
-        h8 : Step<Simplify<'a>>,
-        h9 : Step<LeqCore<'a>>,
-        h10 : Step<LeqCore<'a>>,
+        h1 : Step<SubstLZst>,
+        h2 : Step<SubstLZst>,
+        h3 : Step<SimplifyZst>,
+        h4 : Step<SimplifyZst>,
+        h5 : Step<SubstLZst>,
+        h6 : Step<SubstLZst>,
+        h7 : Step<SimplifyZst>,
+        h8 : Step<SimplifyZst>,
+        h9 : Step<LeqCoreZst>,
+        h10 : Step<LeqCoreZst>,
         ind_arg1 : LevelPtr<'a>,
         #[result]
         res : bool
@@ -1082,16 +1065,16 @@ pub enum LeqCore<'a> {
         r_h : usize,
         b1 : bool,
         b2 : bool,
-        h1 : Step<SubstL<'a>>,
-        h2 : Step<SubstL<'a>>,
-        h3 : Step<Simplify<'a>>,
-        h4 : Step<Simplify<'a>>,
-        h5 : Step<SubstL<'a>>,
-        h6 : Step<SubstL<'a>>,
-        h7 : Step<Simplify<'a>>,
-        h8 : Step<Simplify<'a>>,
-        h9 : Step<LeqCore<'a>>,
-        h10 : Step<LeqCore<'a>>,
+        h1 : Step<SubstLZst>,
+        h2 : Step<SubstLZst>,
+        h3 : Step<SimplifyZst>,
+        h4 : Step<SimplifyZst>,
+        h5 : Step<SubstLZst>,
+        h6 : Step<SubstLZst>,
+        h7 : Step<SimplifyZst>,
+        h8 : Step<SimplifyZst>,
+        h9 : Step<LeqCoreZst>,
+        h10 : Step<LeqCoreZst>,
         ind_arg2 : LevelPtr<'a>,
         #[result]
         res : bool
@@ -1106,7 +1089,7 @@ pub enum LeqCore<'a> {
         r_h : usize,
         #[result]
         b : bool,
-        h1 : Step<LeqCore<'a>>,
+        h1 : Step<LeqCoreZst>,
         ind_arg1 : LevelPtr<'a>,
     },
     #[LM] 
@@ -1120,8 +1103,8 @@ pub enum LeqCore<'a> {
         r_h : usize,
         #[result]
         b : bool,
-        h1 : Step<Simplify<'a>>,
-        h2 : Step<LeqCore<'a>>,
+        h1 : Step<SimplifyZst>,
+        h2 : Step<LeqCoreZst>,
         ind_arg1 : LevelPtr<'a>,
     },
     #[RI]
@@ -1134,7 +1117,7 @@ pub enum LeqCore<'a> {
         r_h : usize,
         #[result]
         b : bool,
-        h1 : Step<LeqCore<'a>>,
+        h1 : Step<LeqCoreZst>,
         ind_arg2 : LevelPtr<'a>,
 
     },
@@ -1149,8 +1132,8 @@ pub enum LeqCore<'a> {
         r_h : usize,
         #[result]
         b : bool,
-        h1 : Step<Simplify<'a>>,
-        h2 : Step<LeqCore<'a>>,
+        h1 : Step<SimplifyZst>,
+        h2 : Step<LeqCoreZst>,
         ind_arg2 : LevelPtr<'a>,
     }
 }
@@ -1166,9 +1149,9 @@ pub enum Leq<'a> {
         r_prime : LevelPtr<'a>,
         #[result]
         b : bool,
-        h1 : Step<Simplify<'a>>,
-        h2 : Step<Simplify<'a>>,
-        h3 : Step<LeqCore<'a>>,
+        h1 : Step<SimplifyZst>,
+        h2 : Step<SimplifyZst>,
+        h3 : Step<LeqCoreZst>,
     }
 }
 
@@ -1181,8 +1164,8 @@ pub enum EqAntisymm<'a> {
         r : LevelPtr<'a>,
         b1 : bool,
         b2 : bool,
-        h1 : Step<Leq<'a>>,
-        h2 : Step<Leq<'a>>,
+        h1 : Step<LeqZst>,
+        h2 : Step<LeqZst>,
         #[result]
         ind_arg3 : bool,
     }
@@ -1196,7 +1179,7 @@ pub enum IsZero<'a> {
         l : LevelPtr<'a>,
         #[result]
         b : bool,
-        h1 : Step<Leq<'a>>,
+        h1 : Step<LeqZst>,
     }
 }
 
@@ -1209,7 +1192,7 @@ pub enum IsNonzero<'a> {
         l : LevelPtr<'a>,
         #[result]
         b : bool,
-        h1 : Step<Leq<'a>>,
+        h1 : Step<LeqZst>,
     }
 }
 
@@ -1221,7 +1204,7 @@ pub enum MaybeZero<'a> {
         l : LevelPtr<'a>,
         #[result]
         b : bool,
-        h1 : Step<IsNonzero<'a>>,
+        h1 : Step<IsNonzeroZst>,
     }
 }
 
@@ -1233,7 +1216,7 @@ pub enum MaybeNonzero<'a> {
         l : LevelPtr<'a>,
         #[result]
         b : bool,
-        h1 : Step<IsZero<'a>>,
+        h1 : Step<IsZeroZst>,
     }
 }
 
@@ -1270,8 +1253,8 @@ pub enum EqAntisymmMany<'a> {
         rs : LevelsPtr<'a>,
         b1 : bool,
         b2 : bool,
-        h1 : Step<EqAntisymm<'a>>,
-        h2 : Step<EqAntisymmMany<'a>>,
+        h1 : Step<EqAntisymmZst>,
+        h2 : Step<EqAntisymmManyZst>,
         ind_arg1 : LevelsPtr<'a>,
         ind_arg2 : LevelsPtr<'a>,
         #[result]
@@ -1335,7 +1318,7 @@ pub enum Inst<'a> {
         subs : ExprsPtr<'a>,
         #[result]
         e_prime : ExprPtr<'a>,
-        h1 : Step<InstAux<'a>>,
+        h1 : Step<InstAuxZst>,
     }
 }
 
@@ -1350,15 +1333,6 @@ pub enum InstAux<'a> {
         offset : u16,
         h1 : bool,
     },
-    #[H]
-    CacheHit {
-        e : ExprPtr<'a>,
-        subs : ExprsPtr<'a>,
-        offset : u16,
-        #[result]
-        e_prime : ExprPtr<'a>,
-        h1 : Step<InstAux<'a>>,
-    },
     #[V]
     VarHit {
         dbj : u16,
@@ -1366,7 +1340,7 @@ pub enum InstAux<'a> {
         offset : u16,
         #[result]
         e_prime : ExprPtr<'a>,
-        h1 : Step<Get<'a, Expr<'a>>>,
+        h1 : Step<GetZst>,
         ind_arg1 : ExprPtr<'a>,
     },
     #[M]
@@ -1374,7 +1348,7 @@ pub enum InstAux<'a> {
         dbj : u16,
         subs : ExprsPtr<'a>,
         offset : u16,
-        h1 : Step<Get<'a, Expr<'a>>>,
+        h1 : Step<GetZst>,
         #[result]
         ind_arg1 : ExprPtr<'a>,
     },
@@ -1386,8 +1360,8 @@ pub enum InstAux<'a> {
         offset : u16,
         fun_prime : ExprPtr<'a>,
         arg_prime : ExprPtr<'a>,
-        h1 : Step<InstAux<'a>>,
-        h2 : Step<InstAux<'a>>,
+        h1 : Step<InstAuxZst>,
+        h2 : Step<InstAuxZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>
@@ -1402,8 +1376,8 @@ pub enum InstAux<'a> {
         offset : u16,
         b_type_prime : ExprPtr<'a>,
         body_prime : ExprPtr<'a>,
-        h1 : Step<InstAux<'a>>,
-        h2 : Step<InstAux<'a>>,
+        h1 : Step<InstAuxZst>,
+        h2 : Step<InstAuxZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1418,8 +1392,8 @@ pub enum InstAux<'a> {
         offset : u16,
         b_type_prime : ExprPtr<'a>,
         body_prime : ExprPtr<'a>,
-        h1 : Step<InstAux<'a>>,
-        h2 : Step<InstAux<'a>>,
+        h1 : Step<InstAuxZst>,
+        h2 : Step<InstAuxZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1436,9 +1410,9 @@ pub enum InstAux<'a> {
         b_type_prime : ExprPtr<'a>,
         val_prime : ExprPtr<'a>,
         body_prime : ExprPtr<'a>,
-        h1 : Step<InstAux<'a>>,
-        h2 : Step<InstAux<'a>>,
-        h3 : Step<InstAux<'a>>,
+        h1 : Step<InstAuxZst>,
+        h2 : Step<InstAuxZst>,
+        h3 : Step<InstAuxZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1459,7 +1433,7 @@ pub enum Abstr<'a> {
     ByAux {
         e : ExprPtr<'a>,
         locals : ExprsPtr<'a>,
-        h1 : Step<AbstrAux<'a>>,
+        h1 : Step<AbstrAuxZst>,
         #[result]
         ind_arg3 : ExprPtr<'a>,
     }
@@ -1477,15 +1451,6 @@ pub enum AbstrAux<'a> {
         offset : u16,
         h1 : bool,
     },
-    #[H]
-    CacheHit {
-        e : ExprPtr<'a>,
-        locals : ExprsPtr<'a>,
-        offset : u16,
-        #[result]
-        e_prime : ExprPtr<'a>,
-        h1 : Step<AbstrAux<'a>>,
-    },
     #[X]
     LocalHit {
         b_name : NamePtr<'a>,
@@ -1495,7 +1460,7 @@ pub enum AbstrAux<'a> {
         locals : ExprsPtr<'a>,
         offset : u16,
         pos : usize,
-        h1 : Step<Pos<'a, Expr<'a>>>,
+        h1 : Step<PosZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1508,7 +1473,7 @@ pub enum AbstrAux<'a> {
         serial : LocalSerial,
         locals : ExprsPtr<'a>,
         offset : u16,
-        h1 : Step<Pos<'a, Expr<'a>>>,
+        h1 : Step<PosZst>,
         #[result]
         ind_arg1 : ExprPtr<'a>
     },
@@ -1520,8 +1485,8 @@ pub enum AbstrAux<'a> {
         offset : u16,
         fun_prime : ExprPtr<'a>,
         arg_prime : ExprPtr<'a>,
-        h1 : Step<AbstrAux<'a>>,
-        h2 : Step<AbstrAux<'a>>,
+        h1 : Step<AbstrAuxZst>,
+        h2 : Step<AbstrAuxZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1534,8 +1499,8 @@ pub enum AbstrAux<'a> {
         body : ExprPtr<'a>,
         b_type_prime : ExprPtr<'a>,
         body_prime : ExprPtr<'a>,
-        h1 : Step<AbstrAux<'a>>,
-        h2 : Step<AbstrAux<'a>>,
+        h1 : Step<AbstrAuxZst>,
+        h2 : Step<AbstrAuxZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1548,8 +1513,8 @@ pub enum AbstrAux<'a> {
         body : ExprPtr<'a>,
         b_type_prime : ExprPtr<'a>,
         body_prime : ExprPtr<'a>,
-        h1 : Step<AbstrAux<'a>>,
-        h2 : Step<AbstrAux<'a>>,
+        h1 : Step<AbstrAuxZst>,
+        h2 : Step<AbstrAuxZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1564,9 +1529,9 @@ pub enum AbstrAux<'a> {
         b_type_prime : ExprPtr<'a>,
         val_prime : ExprPtr<'a>,
         body_prime : ExprPtr<'a>,
-        h1 : Step<AbstrAux<'a>>,
-        h2 : Step<AbstrAux<'a>>,
-        h3 : Step<AbstrAux<'a>>,
+        h1 : Step<AbstrAuxZst>,
+        h2 : Step<AbstrAuxZst>,
+        h3 : Step<AbstrAuxZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1576,15 +1541,6 @@ pub enum AbstrAux<'a> {
 #[is_step(tag="SE", result_type = "ExprPtr<'a>", fun = "trace_subst_e")]
 #[derive(Debug, Clone,  Copy)]
 pub enum SubstE<'a> {
-    #[H]
-    CacheHit {
-        e : ExprPtr<'a>,
-        ks : LevelsPtr<'a>,
-        vs : LevelsPtr<'a>,
-        #[result]
-        e_prime : ExprPtr<'a>,
-        h1 : Step<SubstE<'a>>,
-    },
     #[V]
     Var {
         dbj : u16,
@@ -1599,7 +1555,7 @@ pub enum SubstE<'a> {
         ks : LevelsPtr<'a>,
         vs : LevelsPtr<'a>,
         l_prime : LevelPtr<'a>,
-        h1 : Step<SubstL<'a>>,
+        h1 : Step<SubstLZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1611,7 +1567,7 @@ pub enum SubstE<'a> {
         ks : LevelsPtr<'a>,
         vs : LevelsPtr<'a>,
         levels_prime : LevelsPtr<'a>,
-        h1 : Step<SubstLMany<'a>>,
+        h1 : Step<SubstLManyZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1624,8 +1580,8 @@ pub enum SubstE<'a> {
         vs : LevelsPtr<'a>,
         fun_prime : ExprPtr<'a>,
         arg_prime : ExprPtr<'a>,
-        h1 : Step<SubstE<'a>>,
-        h2 : Step<SubstE<'a>>,
+        h1 : Step<SubstEZst>,
+        h2 : Step<SubstEZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1640,8 +1596,8 @@ pub enum SubstE<'a> {
         vs : LevelsPtr<'a>,
         b_type_prime : ExprPtr<'a>,
         body_prime : ExprPtr<'a>,
-        h1 : Step<SubstE<'a>>,
-        h2 : Step<SubstE<'a>>,
+        h1 : Step<SubstEZst>,
+        h2 : Step<SubstEZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1656,8 +1612,8 @@ pub enum SubstE<'a> {
         vs : LevelsPtr<'a>,
         b_type_prime : ExprPtr<'a>,
         body_prime : ExprPtr<'a>,
-        h1 : Step<SubstE<'a>>,
-        h2 : Step<SubstE<'a>>,
+        h1 : Step<SubstEZst>,
+        h2 : Step<SubstEZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1674,9 +1630,9 @@ pub enum SubstE<'a> {
         b_type_prime : ExprPtr<'a>,
         val_prime : ExprPtr<'a>,
         body_prime : ExprPtr<'a>,
-        h1 : Step<SubstE<'a>>,
-        h2 : Step<SubstE<'a>>,
-        h3 : Step<SubstE<'a>>,
+        h1 : Step<SubstEZst>,
+        h2 : Step<SubstEZst>,
+        h3 : Step<SubstEZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
@@ -1690,25 +1646,116 @@ pub enum SubstE<'a> {
         vs : LevelsPtr<'a>,
         b_type_prime : ExprPtr<'a>,
         serial_prime : LocalSerial,
-        h1 : Step<SubstE<'a>>,
+        h1 : Step<SubstEZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
     },        
 }
 
+#[is_step(tag="CH", result_type = "u16", fun = "trace_calc_height_aux")]
+#[derive(Debug, Clone,  Copy)]
+pub enum CalcHeightAux<'a> {
+    #[V]
+    Var {
+        dbj : u16,
+        #[result]
+        height : u16,
+        ind_arg1 : ExprPtr<'a>,
+    },
+    #[S]
+    Sort {
+        level : LevelPtr<'a>,
+        #[result]
+        height : u16,
+        ind_arg1 : ExprPtr<'a>,
+    },
+    #[H]
+    ConstHit {
+        n : NamePtr<'a>,
+        levels : LevelsPtr<'a>,
+        d_uparams : LevelsPtr<'a>,
+        d_type : ExprPtr<'a>,
+        d_val : ExprPtr<'a>,
+        d_hint : ReducibilityHint,
+        d_is_unsafe : bool,
+        #[result]
+        height : u16,
+        h1 : Step<AdmitDeclarZst>,
+        ind_arg1 : ExprPtr<'a>,
+
+    },
+    #[M]
+    ConstMiss {
+        n : NamePtr<'a>,
+        levels : LevelsPtr<'a>,
+        #[result]
+        height : u16,
+        ind_arg1 : ExprPtr<'a>,
+    },
+    #[A]
+    App {
+        fun : ExprPtr<'a>,
+        arg : ExprPtr<'a>,
+        height1 : u16,
+        height2 : u16,
+        #[result]
+        height : u16,
+        h1 : Step<CalcHeightAuxZst>,
+        h2 : Step<CalcHeightAuxZst>,
+        ind_arg1 : ExprPtr<'a>,
+    },
+    #[P]
+    Pi {
+        n : NamePtr<'a>,
+        t : ExprPtr<'a>,
+        s : BinderStyle, 
+        b : ExprPtr<'a>,
+        height1 : u16,
+        height2 : u16,
+        #[result]
+        height : u16,
+        h1 : Step<CalcHeightAuxZst>,
+        h2 : Step<CalcHeightAuxZst>,
+        ind_arg1 : ExprPtr<'a>,
+    },
+    #[L]
+    Lambda {
+        n : NamePtr<'a>,
+        t : ExprPtr<'a>,
+        s : BinderStyle, 
+        b : ExprPtr<'a>,
+        height1 : u16,
+        height2 : u16,
+        #[result]
+        height : u16,
+        h1 : Step<CalcHeightAuxZst>,
+        h2 : Step<CalcHeightAuxZst>,
+        ind_arg1 : ExprPtr<'a>,
+    },
+    #[Z]
+    Let {
+        n : NamePtr<'a>,
+        t : ExprPtr<'a>,
+        s : BinderStyle, 
+        v : ExprPtr<'a>,
+        b : ExprPtr<'a>,
+        height1 : u16,
+        height2 : u16,
+        height3 : u16,
+        #[result]
+        height : u16,
+        h1 : Step<CalcHeightAuxZst>,
+        h2 : Step<CalcHeightAuxZst>,
+        h3 : Step<CalcHeightAuxZst>,
+        ind_arg1 : ExprPtr<'a>,
+    },
+}
+
 
 #[is_step(tag="IO", result_type = "bool", fun = "trace_has_ind_occ")]
 #[derive(Debug, Clone,  Copy)]
 pub enum HasIndOcc<'a> {
-    #[H]
-    CacheHit {
-        e : ExprPtr<'a>,
-        ind_names : NamesPtr<'a>,
-        #[result]
-        b : bool,
-        h1 : Step<HasIndOcc<'a>>,
-    },
     #[V]
     Var {
         dbj : u16,
@@ -1732,7 +1779,7 @@ pub enum HasIndOcc<'a> {
         ind_names : NamesPtr<'a>,
         #[result]
         b : bool,
-        h1 : Step<Mem<'a, Name<'a>>>,
+        h1 : Step<MemZst>,
         ind_arg1 : ExprPtr<'a>,
     },
     #[A]
@@ -1742,8 +1789,8 @@ pub enum HasIndOcc<'a> {
         ind_names : NamesPtr<'a>,
         b1 : bool,
         b2 : bool,
-        h1 : Step<HasIndOcc<'a>>,
-        h2 : Step<HasIndOcc<'a>>,
+        h1 : Step<HasIndOccZst>,
+        h2 : Step<HasIndOccZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg3 : bool,
@@ -1756,8 +1803,8 @@ pub enum HasIndOcc<'a> {
         body : ExprPtr<'a>,
         b1 : bool,
         b2 : bool,
-        h1 : Step<HasIndOcc<'a>>,
-        h2 : Step<HasIndOcc<'a>>,
+        h1 : Step<HasIndOccZst>,
+        h2 : Step<HasIndOccZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg3 : bool
@@ -1770,8 +1817,8 @@ pub enum HasIndOcc<'a> {
         body : ExprPtr<'a>,
         b1 : bool,
         b2 : bool,
-        h1 : Step<HasIndOcc<'a>>,
-        h2 : Step<HasIndOcc<'a>>,
+        h1 : Step<HasIndOccZst>,
+        h2 : Step<HasIndOccZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg3 : bool
@@ -1786,9 +1833,9 @@ pub enum HasIndOcc<'a> {
         b1 : bool,
         b2 : bool,
         b3 : bool,
-        h1 : Step<HasIndOcc<'a>>,
-        h2 : Step<HasIndOcc<'a>>,
-        h3 : Step<HasIndOcc<'a>>,
+        h1 : Step<HasIndOccZst>,
+        h2 : Step<HasIndOccZst>,
+        h3 : Step<HasIndOccZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg3 : bool
@@ -1799,7 +1846,7 @@ pub enum HasIndOcc<'a> {
         b_type : ExprPtr<'a>,
         b_style : BinderStyle,
         serial : LocalSerial,
-        h1 : Step<HasIndOcc<'a>>,
+        h1 : Step<HasIndOccZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg3 : bool
@@ -1819,7 +1866,7 @@ pub enum ApplyPi<'a> {
         body : ExprPtr<'a>,
         body_prime : ExprPtr<'a>,
         local_dom : ExprPtr<'a>,
-        h1 : Step<Abstr<'a>>,
+        h1 : Step<AbstrZst>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
     }
@@ -1837,7 +1884,7 @@ pub enum ApplyLambda<'a> {
         body : ExprPtr<'a>,
         body_prime : ExprPtr<'a>,
         local_dom : ExprPtr<'a>,
-        h1 : Step<Abstr<'a>>,
+        h1 : Step<AbstrZst>,
         #[result]
         ind_arg4 : ExprPtr<'a>,
     }
@@ -1860,8 +1907,8 @@ pub enum FoldPis<'a> {
         sink : ExprPtr<'a>,
         #[result]
         out : ExprPtr<'a>,
-        h1 : Step<FoldPis<'a>>,
-        h2 : Step<ApplyPi<'a>>,
+        h1 : Step<FoldPisZst>,
+        h2 : Step<ApplyPiZst>,
         ind_arg1 : ExprsPtr<'a>,
     }
 }
@@ -1883,8 +1930,8 @@ pub enum FoldLambdas<'a> {
         sink : ExprPtr<'a>,
         #[result]
         out : ExprPtr<'a>,
-        h1 : Step<FoldLambdas<'a>>,
-        h2 : Step<ApplyLambda<'a>>,
+        h1 : Step<FoldLambdasZst>,
+        h2 : Step<ApplyLambdaZst>,
         ind_arg1 : ExprsPtr<'a>,
     }
 }
@@ -1905,7 +1952,7 @@ pub enum FoldlApps<'a> {
         tl : ExprsPtr<'a>,
         #[result]
         folded : ExprPtr<'a>,
-        h1 : Step<FoldlApps<'a>>,
+        h1 : Step<FoldlAppsZst>,
         ind_arg2 : ExprsPtr<'a>
 
     }
@@ -1921,7 +1968,7 @@ pub enum UnfoldAppsAux<'a> {
         sink : ExprsPtr<'a>,
         base_f : ExprPtr<'a>,
         all_args : ExprsPtr<'a>,
-        h1 : Step<UnfoldAppsAux<'a>>,
+        h1 : Step<UnfoldAppsAuxZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         out : (ExprPtr<'a>, ExprsPtr<'a>),
@@ -1930,7 +1977,7 @@ pub enum UnfoldAppsAux<'a> {
     Base {
         f : ExprPtr<'a>,
         args : ExprsPtr<'a>,
-        h1 : Step<IsApp<'a>>,
+        h1 : Step<IsAppZst>,
         #[result]
         out : (ExprPtr<'a>, ExprsPtr<'a>),
     }
@@ -1947,14 +1994,14 @@ pub enum TelescopeSize<'a> {
         b_style : BinderStyle,
         body : ExprPtr<'a>,
         inner_size : u16,
-        h1 : Step<TelescopeSize<'a>>,
+        h1 : Step<TelescopeSizeZst>,
         #[result]
         size : u16
     },
     #[O]
     Owise {
         e : ExprPtr<'a>,
-        h1 : Step<IsPi<'a>>,
+        h1 : Step<IsPiZst>,
         #[result]
         size : u16
     }
@@ -2279,7 +2326,7 @@ pub enum WhnfSort<'a> {
     Base {
         l : LevelPtr<'a>,
         l_prime : LevelPtr<'a>,
-        h1 : Step<Simplify<'a>>,
+        h1 : Step<SimplifyZst>,
         ind_arg1 : ExprPtr<'a>,
         #[result]
         ind_arg2 : ExprPtr<'a>,
@@ -2290,17 +2337,17 @@ pub enum WhnfSort<'a> {
 pub enum WhnfLambda<'a> {
     #[X]
     NotLambda {
-        e_A : ExprPtr<'a>,
+        eA : ExprPtr<'a>,
         rem_args : ExprsPtr<'a>,
         lambda_args : ExprsPtr<'a>,
-        e_B : ExprPtr<'a>,
-        e_C : ExprPtr<'a>,
+        eB : ExprPtr<'a>,
+        eC : ExprPtr<'a>,
         #[result]
-        e_D : ExprPtr<'a>,
-        h1 : Step<IsLambda<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<FoldlApps<'a>>,
-        h4 : Step<WhnfCore<'a>>,
+        eD : ExprPtr<'a>,
+        h1 : Step<IsLambdaZst>,
+        h2 : Step<InstZst>,
+        h3 : Step<FoldlAppsZst>,
+        h4 : Step<WhnfCoreZst>,
 
     },
     #[N]
@@ -2310,8 +2357,8 @@ pub enum WhnfLambda<'a> {
         e_B : ExprPtr<'a>,
         #[result]
         e_C : ExprPtr<'a>,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<WhnfCore<'a>>,
+        h1 : Step<InstZst>,
+        h2 : Step<WhnfCoreZst>,
         ind_arg2 : ExprsPtr<'a>,
     },
     #[S]
@@ -2320,12 +2367,12 @@ pub enum WhnfLambda<'a> {
         b_type : ExprPtr<'a>,
         b_style : BinderStyle,
         body : ExprPtr<'a>,
-        hd : ExprPtr<'a>,
-        tl : ExprsPtr<'a>,
+        arg_hd : ExprPtr<'a>,
+        args_tl : ExprsPtr<'a>,
         lambda_args : ExprsPtr<'a>,
         #[result]
-        e_prime : ExprPtr<'a>,
-        h1 : Step<WhnfLambda<'a>>,
+        b_prime : ExprPtr<'a>,
+        h1 : Step<WhnfLambdaZst>,
         ind_arg1 : ExprPtr<'a>,
         ind_arg2 : ExprsPtr<'a>,
     }
@@ -2345,13 +2392,13 @@ pub enum WhnfLet<'a> {
         val : ExprPtr<'a>,
         body_A : ExprPtr<'a>,
         args : ExprsPtr<'a>,
-        #[result]
         body_B : ExprPtr<'a>,
         body_C : ExprPtr<'a>,
+        #[result]
         body_D : ExprPtr<'a>,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<FoldlApps<'a>>,
-        h3 : Step<WhnfCore<'a>>,
+        h1 : Step<InstZst>,
+        h2 : Step<FoldlAppsZst>,
+        h3 : Step<WhnfCoreZst>,
         ind_arg1 : ExprPtr<'a>,
     }
 }
@@ -2365,22 +2412,22 @@ pub enum ReduceQuotLift<'a> {
         c_levels : LevelsPtr<'a>,
         args : ExprsPtr<'a>,
         qmk_A_r_a_unred : ExprPtr<'a>,
-        qmk_A_r_a : ExprPtr<'a>,
-        f : ExprPtr<'a>,
+        qmk_A_r : ExprPtr<'a>,
         a : ExprPtr<'a>,
         qmk_levels : LevelsPtr<'a>,
         qmk_args : ExprsPtr<'a>,
+        f : ExprPtr<'a>,
         skipped : ExprsPtr<'a>,
         out_unred : ExprPtr<'a>,
         #[result]
         out : ExprPtr<'a>,
-        h1 : Step<Get<'a, Expr<'a>>>,
-        h2 : Step<Whnf<'a>>,
-        h3 : Step<UnfoldAppsAux<'a>>,
-        h4 : Step<Get<'a, Expr<'a>>>,
-        h5 : Step<Skip<'a, Expr<'a>>>,
-        h6 : Step<FoldlApps<'a>>,
-        h7 : Step<WhnfCore<'a>>,
+        h1 : Step<GetZst>,
+        h2 : Step<WhnfZst>,
+        h3 : Step<UnfoldAppsAuxZst>,
+        h4 : Step<GetZst>,
+        h5 : Step<SkipZst>,
+        h6 : Step<FoldlAppsZst>,
+        h7 : Step<WhnfCoreZst>,
         ind_arg1 : ExprPtr<'a>,
     }
 }
@@ -2393,22 +2440,22 @@ pub enum ReduceQuotInd<'a> {
         c_levels : LevelsPtr<'a>,
         args : ExprsPtr<'a>,
         qmk_A_r_a_unred : ExprPtr<'a>,
-        qmk_A_r_a : ExprPtr<'a>,
-        B_of : ExprPtr<'a>,
+        qmk_A_r : ExprPtr<'a>,
         a : ExprPtr<'a>,
         qmk_levels : LevelsPtr<'a>,
         qmk_args : ExprsPtr<'a>,
+        B_of : ExprPtr<'a>,
         skipped : ExprsPtr<'a>,
         out_unred : ExprPtr<'a>,
         #[result]
         out : ExprPtr<'a>,
-        h1 : Step<Get<'a, Expr<'a>>>,
-        h2 : Step<Whnf<'a>>,
-        h3 : Step<UnfoldAppsAux<'a>>,
-        h4 : Step<Get<'a, Expr<'a>>>,
-        h5 : Step<Skip<'a, Expr<'a>>>,
-        h6 : Step<FoldlApps<'a>>,
-        h7 : Step<WhnfCore<'a>>,
+        h1 : Step<GetZst>,
+        h2 : Step<WhnfZst>,
+        h3 : Step<UnfoldAppsAuxZst>,
+        h4 : Step<GetZst>,
+        h5 : Step<SkipZst>,
+        h6 : Step<FoldlAppsZst>,
+        h7 : Step<WhnfCoreZst>,
         ind_arg1 : ExprPtr<'a>,
     }
 }
@@ -2420,12 +2467,12 @@ pub enum MkNullaryCtor<'a> {
     #[B]
     Base {
         e : ExprPtr<'a>,
-        num_params : u16,
-        fun_name : NamePtr<'a>,
-        fun_levels : LevelsPtr<'a>,
+        c_name : NamePtr<'a>,
+        c_levels : LevelsPtr<'a>,
         args : ExprsPtr<'a>,
         d_uparams : LevelsPtr<'a>,
         d_type : ExprPtr<'a>,
+        d_num_params : u16,
         d_all_ind_names : NamesPtr<'a>,
         d_all_ctor_names : NamesPtr<'a>,
         d_is_unsafe : bool,
@@ -2433,48 +2480,52 @@ pub enum MkNullaryCtor<'a> {
         fold_args : ExprsPtr<'a>,
         #[result]
         out : ExprPtr<'a>,
-        h1 : Step<UnfoldAppsAux<'a>>,
-        h2 : Step<AdmitDeclar<'a>>,
-        h3 : Step<Get<'a, Name<'a>>>,
-        h4 : Step<Take<'a, Expr<'a>>>,
-        h5 : Step<FoldlApps<'a>>,
+        h1 : Step<UnfoldAppsAuxZst>,
+        h2 : Step<AdmitDeclarZst>,
+        h3 : Step<GetZst>,
+        h4 : Step<TakeZst>,
+        h5 : Step<FoldlAppsZst>,
     }
 }
 
 #[is_step(tag="WK", result_type = "ExprPtr<'a>", fun = "trace_to_ctor_when_k")]
 #[derive(Debug, Clone, Copy)]
 pub enum ToCtorWhenK<'a> {
-    #[B]
-    Base {
-        e : ExprPtr<'a>,
-        name : NamePtr<'a>,
-        uparams : LevelsPtr<'a>,
-        type_ : ExprPtr<'a>,
-        all_names : NamesPtr<'a>,
-        num_params : u16,
-        num_indices : u16,
-        num_motives : u16,
-        num_minors : u16,
-        major_idx : u16,
-        rec_rules : RecRulesPtr<'a>,
-        is_k : bool,
-        is_unsafe : bool,
-        e_type_unred : ExprPtr<'a>,
-        e_type : ExprPtr<'a>,
-        new_ctor_app : ExprPtr<'a>,
-        #[result]
-        new_type : ExprPtr<'a>,
-        h1 : Step<Infer<'a>>,
-        h2 : Step<Whnf<'a>>,
-        h3 : Step<MkNullaryCtor<'a>>,
-        h4 : Step<Infer<'a>>,
-        h5 : Step<DefEq<'a>>,
-    },
     #[S]
     Skip {
         #[result]
         e : ExprPtr<'a>,
-    }
+        d : DeclarPtr<'a>,
+    },
+    #[B]
+    Base {
+        e : ExprPtr<'a>,
+        d_uparams : LevelsPtr<'a>,
+        d_type : ExprPtr<'a>,
+        d_all_names : NamesPtr<'a>,
+        d_num_params : u16,
+        d_num_indices : u16,
+        d_num_motives : u16,
+        d_num_minors : u16,
+        d_major_idx : u16,
+        d_rec_rules : RecRulesPtr<'a>,
+        d_is_k : bool,
+        d_is_unsafe : bool,
+        e_type_unred : ExprPtr<'a>,
+        e_type : ExprPtr<'a>,
+        c_name : NamePtr<'a>,
+        c_levels : LevelsPtr<'a>,
+        c_args : ExprsPtr<'a>,
+        #[result]
+        ctor_app : ExprPtr<'a>,
+        ctor_app_type : ExprPtr<'a>,
+        h1 : Step<InferZst>,
+        h2 : Step<WhnfZst>,
+        h3 : Step<UnfoldAppsAuxZst>,
+        h4 : Step<MkNullaryCtorZst>,
+        h5 : Step<InferZst>,
+        h6 : Step<DefEqZst>,
+    },
 }
 
 #[is_step(tag="RR", result_type = "RecRulePtr<'a>", fun = "trace_get_rec_rule")]
@@ -2489,8 +2540,8 @@ pub enum GetRecRule<'a> {
         rrs : RecRulesPtr<'a>,
         #[result]
         rule : RecRulePtr<'a>,
-        h1 : Step<UnfoldAppsAux<'a>>,
-        h2 : Step<GetRecRuleAux<'a>>,
+        h1 : Step<UnfoldAppsAuxZst>,
+        h2 : Step<GetRecRuleAuxZst>,
     }
 }
 
@@ -2509,12 +2560,15 @@ pub enum GetRecRuleAux<'a> {
     },
     #[S]
     Step {
+        ctor_name : NamePtr<'a>,
+        num_fields : u16,
+        val : ExprPtr<'a>,
         major_name : NamePtr<'a>,
-        rules : RecRulesPtr<'a>,
-        x : RecRulePtr<'a>,
+        rest : RecRulesPtr<'a>,
         #[result]
-        rule : RecRulePtr<'a>,
-        h1 : Step<GetRecRuleAux<'a>>,
+        out_rule : RecRulePtr<'a>,
+        h1 : Step<GetRecRuleAuxZst>,
+        ind_arg1 : RecRulesPtr<'a>,
     }
 }
 
@@ -2527,7 +2581,6 @@ pub enum ReduceIndRec<'a> {
         c_name : NamePtr<'a>,
         c_levels : LevelsPtr<'a>,
         // rec info
-        name : NamePtr<'a>,
         uparams : LevelsPtr<'a>,
         type_ : ExprPtr<'a>,
         all_names : NamesPtr<'a>,
@@ -2543,8 +2596,8 @@ pub enum ReduceIndRec<'a> {
         rr_name : NamePtr<'a>,
         rr_n_fields : u16,
         rr_val : ExprPtr<'a>,
-        major_unred0 : ExprPtr<'a>,
-        major_unred : ExprPtr<'a>,
+        major_unredA : ExprPtr<'a>,
+        major_unredB : ExprPtr<'a>,
         major : ExprPtr<'a>,
         major_fun : ExprPtr<'a>,
         major_args : ExprsPtr<'a>,
@@ -2560,22 +2613,22 @@ pub enum ReduceIndRec<'a> {
         r15 : ExprPtr<'a>,
         #[result]
         out : ExprPtr<'a>,
-        h1 : Step<AdmitDeclar<'a>>,
-        h2 : Step<Get<'a, Expr<'a>>>,
-        h3 : Step<ToCtorWhenK<'a>>,
-        h4 : Step<Whnf<'a>>,
-        h5 : Step<UnfoldAppsAux<'a>>,
-        h6 : Step<GetRecRule<'a>>,
-        h7 : Step<Len<'a, Expr<'a>>>,
-        h8 : Step<Skip<'a, Expr<'a>>>,
-        h9 : Step<Take<'a, Expr<'a>>>,
-        h10 : Step<Skip<'a, Expr<'a>>>,
-        h11 : Step<Take<'a, Expr<'a>>>,
-        h12 : Step<SubstE<'a>>,
-        h13 : Step<FoldlApps<'a>>,
-        h14 : Step<FoldlApps<'a>>,
-        h15 : Step<FoldlApps<'a>>,
-        h16 : Step<WhnfCore<'a>>,
+        h1 : Step<AdmitDeclarZst>,
+        h2 : Step<GetZst>,
+        h3 : Step<ToCtorWhenKZst>,
+        h4 : Step<WhnfZst>,
+        h5 : Step<UnfoldAppsAuxZst>,
+        h6 : Step<GetRecRuleZst>,
+        h7 : Step<LenZst>,
+        h8 : Step<SkipZst>,
+        h9 : Step<TakeZst>,
+        h10 : Step<SkipZst>,
+        h11 : Step<TakeZst>,
+        h12 : Step<SubstEZst>,
+        h13 : Step<FoldlAppsZst>,
+        h14 : Step<FoldlAppsZst>,
+        h15 : Step<FoldlAppsZst>,
+        h16 : Step<WhnfCoreZst>,
     }
 }
 
@@ -2589,8 +2642,8 @@ pub enum WhnfCore<'a> {
         l : LevelPtr<'a>,
         #[result]
         e_prime : ExprPtr<'a>,
-        h1 : Step<UnfoldAppsAux<'a>>,
-        h2 : Step<WhnfSort<'a>>,
+        h1 : Step<UnfoldAppsAuxZst>,
+        h2 : Step<WhnfSortZst>,
     },
     #[L]
     Lambda {
@@ -2599,8 +2652,8 @@ pub enum WhnfCore<'a> {
         args : ExprsPtr<'a>,
         #[result]
         e_prime : ExprPtr<'a>,
-        h1 : Step<UnfoldAppsAux<'a>>,
-        h2 : Step<WhnfLambda<'a>>,
+        h1 : Step<UnfoldAppsAuxZst>,
+        h2 : Step<WhnfLambdaZst>,
     },
     #[Z]
     Let {
@@ -2609,15 +2662,15 @@ pub enum WhnfCore<'a> {
         args : ExprsPtr<'a>,
         #[result]
         e_prime : ExprPtr<'a>,
-        h1 : Step<UnfoldAppsAux<'a>>,
-        h2 : Step<WhnfLet<'a>>,
+        h1 : Step<UnfoldAppsAuxZst>,
+        h2 : Step<WhnfLetZst>,
     },
     #[I]
     ReduceQuotLift {
         e : ExprPtr<'a>,
         #[result]
         e_prime : ExprPtr<'a>,
-        h1 : Step<ReduceQuotLift<'a>>,
+        h1 : Step<ReduceQuotLiftZst>,
     },
     
     #[N]
@@ -2625,14 +2678,14 @@ pub enum WhnfCore<'a> {
         e : ExprPtr<'a>,
         #[result]
         e_prime : ExprPtr<'a>,
-        h1 : Step<ReduceQuotInd<'a>>,
+        h1 : Step<ReduceQuotIndZst>,
     },
     #[R]
     ReduceIndRec {
         e : ExprPtr<'a>,
         #[result]
         e_prime : ExprPtr<'a>,
-        h1 : Step<ReduceIndRec<'a>>,
+        h1 : Step<ReduceIndRecZst>,
     },
     #[O]
     Owise {
@@ -2644,19 +2697,12 @@ pub enum WhnfCore<'a> {
 #[is_step(tag="WH", result_type = "ExprPtr<'a>", fun = "trace_whnf")]
 #[derive(Debug, Clone, Copy)]
 pub enum Whnf<'a> {
-    #[C]
-    CacheHit {
-        e : ExprPtr<'a>,
-        #[result]
-        e_prime : ExprPtr<'a>,
-        h1 : Step<Whnf<'a>>,
-    },
     #[O]
     CoreOnly {
         e : ExprPtr<'a>,
         #[result]
         e_prime : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
+        h1 : Step<WhnfCoreZst>,
     },
     #[U]
     Unfolding {
@@ -2665,9 +2711,9 @@ pub enum Whnf<'a> {
         eC : ExprPtr<'a>,
         #[result]
         eD : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<UnfoldDef<'a>>,
-        h3 : Step<Whnf<'a>>,
+        h1 : Step<WhnfCoreZst>,
+        h2 : Step<UnfoldDefZst>,
+        h3 : Step<WhnfZst>,
     }
 }
 
@@ -2689,8 +2735,8 @@ pub enum IsDelta<'a> {
         hint : ReducibilityHint,
         is_unsafe : bool,
         //
-        h1 : Step<UnfoldAppsAux<'a>>,
-        h2 : Step<AdmitDeclar<'a>>,
+        h1 : Step<UnfoldAppsAuxZst>,
+        h2 : Step<AdmitDeclarZst>,
         #[result]
         ind_arg2 : DeclarPtr<'a>
     }
@@ -2705,21 +2751,21 @@ pub enum UnfoldDef<'a> {
         c_name : NamePtr<'a>,
         c_levels : LevelsPtr<'a>,
         args : ExprsPtr<'a>,
-        uparams : LevelsPtr<'a>,
-        type_ : ExprPtr<'a>,
-        val : ExprPtr<'a>,
-        hint : ReducibilityHint,
-        is_unsafe : bool,
+        d_uparams : LevelsPtr<'a>,
+        d_type : ExprPtr<'a>,
+        d_val : ExprPtr<'a>,
+        d_hint : ReducibilityHint,
+        d_is_unsafe : bool,
         uparams_len : usize,
-        val_prime : ExprPtr<'a>,
+        d_val_prime : ExprPtr<'a>,
         #[result]
         e_prime : ExprPtr<'a>,
-        h1 : Step<UnfoldAppsAux<'a>>,
-        h2 : Step<AdmitDeclar<'a>>,
-        h3 : Step<Len<'a, Level<'a>>>,
-        h4 : Step<Len<'a, Level<'a>>>,
-        h5 : Step<SubstE<'a>>,
-        h6 : Step<FoldlApps<'a>>,
+        h1 : Step<UnfoldAppsAuxZst>,
+        h2 : Step<AdmitDeclarZst>,
+        h3 : Step<LenZst>,
+        h4 : Step<LenZst>,
+        h5 : Step<SubstEZst>,
+        h6 : Step<FoldlAppsZst>,
     },
 }
 
@@ -2729,7 +2775,7 @@ pub enum IsSortZero<'a> {
     #[B]
     Base {
         e : ExprPtr<'a>,
-        h1 : Step<Whnf<'a>>,
+        h1 : Step<WhnfZst>,
     }
 }
 
@@ -2742,8 +2788,8 @@ pub enum IsProposition<'a> {
         e : ExprPtr<'a>,
         #[result]
         infd : ExprPtr<'a>,
-        h1 : Step<Infer<'a>>,
-        h2 : Step<IsSortZero<'a>>,
+        h1 : Step<InferZst>,
+        h2 : Step<IsSortZeroZst>,
     }
 }
 
@@ -2756,13 +2802,13 @@ pub enum IsProof<'a> {
         e : ExprPtr<'a>,
         #[result]
         infd : ExprPtr<'a>,
-        h1 : Step<Infer<'a>>,
-        h2 : Step<IsProposition<'a>>,
+        h1 : Step<InferZst>,
+        h2 : Step<IsPropositionZst>,
     }
 }
 
 
-#[is_step(tag="IR", fun = "trace_proof_irrel_eq")]
+#[is_step(tag="IR", result_type = "EqResult", fun = "trace_proof_irrel_eq")]
 #[derive(Debug, Clone, Copy)]
 pub enum ProofIrrelEq<'a> {
     #[B]
@@ -2771,9 +2817,11 @@ pub enum ProofIrrelEq<'a> {
         r : ExprPtr<'a>,
         l_type : ExprPtr<'a>,
         r_type : ExprPtr<'a>,
-        h1 : Step<IsProof<'a>>,
-        h2 : Step<IsProof<'a>>,
-        h3 : Step<DefEq<'a>>,
+        #[result]
+        result : EqResult,
+        h1 : Step<IsProofZst>,
+        h2 : Step<IsProofZst>,
+        h3 : Step<DefEqZst>,
     }
 }
 
@@ -2782,13 +2830,20 @@ pub enum ProofIrrelEq<'a> {
 #[is_step(tag="LD", result_type = "DeltaResult<'a>", fun = "trace_lazy_delta_step")]
 #[derive(Debug, Clone, Copy)]
 pub enum LazyDeltaStep<'a> {
+    #[R]
+    Refl {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
+        #[result]
+        result : DeltaResult<'a>,
+    },
     #[S]
     Sort {
         l : ExprPtr<'a>,
         r : ExprPtr<'a>,
         #[result]
         result : DeltaResult<'a>,
-        h1 : Step<DefEqSort<'a>>,
+        h1 : Step<DefEqSortZst>,
     },
     #[P]
     Pi {
@@ -2796,7 +2851,8 @@ pub enum LazyDeltaStep<'a> {
         r : ExprPtr<'a>,
         #[result]
         result : DeltaResult<'a>,
-        h1 : Step<DefEqPi<'a>>,
+        
+        h1 : Step<DefEqPiZst>,
     },
     #[L]
     Lambda {
@@ -2804,7 +2860,7 @@ pub enum LazyDeltaStep<'a> {
         r : ExprPtr<'a>,
         #[result]
         result : DeltaResult<'a>,
-        h1 : Step<DefEqLambda<'a>>,
+        h1 : Step<DefEqLambdaZst>,
     },
     #[NN]
     NoneNone {
@@ -2822,10 +2878,10 @@ pub enum LazyDeltaStep<'a> {
         l_defval : ExprPtr<'a>,
         #[result]
         result : DeltaResult<'a>,
-        h1 : Step<IsDelta<'a>>,
-        h2 : Step<UnfoldDef<'a>>,
-        h3 : Step<WhnfCore<'a>>,
-        h4 : Step<LazyDeltaStep<'a>>,
+        h1 : Step<IsDeltaZst>,
+        h2 : Step<UnfoldDefZst>,
+        h3 : Step<WhnfCoreZst>,
+        h4 : Step<LazyDeltaStepZst>,
     },
     #[NS]
     NoneSome {
@@ -2836,10 +2892,10 @@ pub enum LazyDeltaStep<'a> {
         r_defval : ExprPtr<'a>,
         #[result]
         result : DeltaResult<'a>,
-        h1 : Step<IsDelta<'a>>,
-        h2 : Step<UnfoldDef<'a>>,
-        h3 : Step<WhnfCore<'a>>,
-        h4 : Step<LazyDeltaStep<'a>>,
+        h1 : Step<IsDeltaZst>,
+        h2 : Step<UnfoldDefZst>,
+        h3 : Step<WhnfCoreZst>,
+        h4 : Step<LazyDeltaStepZst>,
     },
     #[LT]
     Lt {
@@ -2853,11 +2909,11 @@ pub enum LazyDeltaStep<'a> {
         r_defval : ExprPtr<'a>,
         #[result]
         result : DeltaResult<'a>,
-        h1 : Step<IsDelta<'a>>,
-        h2 : Step<IsDelta<'a>>,
-        h3 : Step<UnfoldDef<'a>>,
-        h4 : Step<WhnfCore<'a>>,
-        h5 : Step<LazyDeltaStep<'a>>,
+        h1 : Step<IsDeltaZst>,
+        h2 : Step<IsDeltaZst>,
+        h3 : Step<UnfoldDefZst>,
+        h4 : Step<WhnfCoreZst>,
+        h5 : Step<LazyDeltaStepZst>,
     },
     #[GT]
     Gt {
@@ -2871,32 +2927,32 @@ pub enum LazyDeltaStep<'a> {
         l_defval : ExprPtr<'a>,
         #[result]
         result : DeltaResult<'a>,
-        h1 : Step<IsDelta<'a>>,
-        h2 : Step<IsDelta<'a>>,
-        h3 : Step<UnfoldDef<'a>>,
-        h4 : Step<WhnfCore<'a>>,
-        h5 : Step<LazyDeltaStep<'a>>,
+        h1 : Step<IsDeltaZst>,
+        h2 : Step<IsDeltaZst>,
+        h3 : Step<UnfoldDefZst>,
+        h4 : Step<WhnfCoreZst>,
+        h5 : Step<LazyDeltaStepZst>,
     },
     #[E]
     Extensional {
         l : ExprPtr<'a>,
         r : ExprPtr<'a>,
+        l_def : DeclarPtr<'a>,
+        r_def : DeclarPtr<'a>,
         lc_name : NamePtr<'a>,
         rc_name : NamePtr<'a>,
         lc_levels : LevelsPtr<'a>,
         rc_levels : LevelsPtr<'a>,
         l_args : ExprsPtr<'a>,
         r_args : ExprsPtr<'a>,
-        l_def : DeclarPtr<'a>,
-        r_def : DeclarPtr<'a>,
         #[result]
         result : DeltaResult<'a>,
-        h1 : Step<IsDelta<'a>>,
-        h2 : Step<IsDelta<'a>>,
-        h3 : Step<UnfoldAppsAux<'a>>,
-        h4 : Step<UnfoldAppsAux<'a>>,
-        h5 : Step<ArgsEq<'a>>,
-        h6 : Step<EqAntisymmMany<'a>>,
+        h1 : Step<IsDeltaZst>,
+        h2 : Step<IsDeltaZst>,
+        h3 : Step<UnfoldAppsAuxZst>,
+        h4 : Step<UnfoldAppsAuxZst>,
+        h5 : Step<ArgsEqZst>,
+        h6 : Step<EqAntisymmManyZst>,
     },
     #[O]
     Owise {
@@ -2910,27 +2966,25 @@ pub enum LazyDeltaStep<'a> {
         r_defval : ExprPtr<'a>,
         #[result]
         result : DeltaResult<'a>,
-        h1 : Step<UnfoldDef<'a>>,
-        h2 : Step<UnfoldDef<'a>>,
-        h3 : Step<WhnfCore<'a>>,
-        h4 : Step<WhnfCore<'a>>,
-        h5 : Step<LazyDeltaStep<'a>>,
+        h1 : Step<IsDeltaZst>,
+        h2 : Step<IsDeltaZst>,
+        h3 : Step<UnfoldDefZst>,
+        h4 : Step<UnfoldDefZst>,
+        h5 : Step<WhnfCoreZst>,
+        h6 : Step<WhnfCoreZst>,
+        h7 : Step<LazyDeltaStepZst>,
     }
 }
 
-#[is_step(tag="EQ", fun = "trace_def_eq")]
+#[is_step(tag="EQ", result_type = "EqResult", fun = "trace_def_eq")]
 #[derive(Debug, Clone, Copy)]
 pub enum DefEq<'a> {
     #[R]
     PtrEq {
         l : ExprPtr<'a>,
         r : ExprPtr<'a>,
-    },
-    #[H]
-    CacheHit {
-        l : ExprPtr<'a>,
-        r : ExprPtr<'a>,
-        h1 : Step<DefEq<'a>>,
+        #[result]
+        result : EqResult
     },
     #[S]
     Sort {
@@ -2938,9 +2992,12 @@ pub enum DefEq<'a> {
         r : ExprPtr<'a>,
         l_w : ExprPtr<'a>,
         r_w : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<DefEqSort<'a>>,
+        
+        #[result]
+        result : EqResult,
+        h1 : Step<WhnfCoreZst>,
+        h2 : Step<WhnfCoreZst>,
+        h3 : Step<DefEqSortZst>,
     },
     #[P]
     Pi {
@@ -2948,9 +3005,12 @@ pub enum DefEq<'a> {
         r : ExprPtr<'a>,
         l_w : ExprPtr<'a>,
         r_w : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<DefEqPi<'a>>,
+        
+        #[result]
+        result : EqResult,
+        h1 : Step<WhnfCoreZst>,
+        h2 : Step<WhnfCoreZst>,
+        h3 : Step<DefEqPiZst>,
     },
     #[P]
     Lambda {
@@ -2958,9 +3018,12 @@ pub enum DefEq<'a> {
         r : ExprPtr<'a>,
         l_w : ExprPtr<'a>,
         r_w : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<DefEqLambda<'a>>,
+        
+        #[result]
+        result : EqResult,
+        h1 : Step<WhnfCoreZst>,
+        h2 : Step<WhnfCoreZst>,
+        h3 : Step<DefEqLambdaZst>,
     },
     #[I]
     ProofIrrelEq {
@@ -2968,9 +3031,12 @@ pub enum DefEq<'a> {
         r : ExprPtr<'a>,
         l_w : ExprPtr<'a>,
         r_w : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<ProofIrrelEq<'a>>,
+        
+        #[result]
+        result : EqResult,
+        h1 : Step<WhnfCoreZst>,
+        h2 : Step<WhnfCoreZst>,
+        h3 : Step<ProofIrrelEqZst>,
     },
     #[D]
     DeltaShort {
@@ -2978,48 +3044,60 @@ pub enum DefEq<'a> {
         r : ExprPtr<'a>,
         l_w : ExprPtr<'a>,
         r_w : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<LazyDeltaStep<'a>>,
+        
+        #[result]
+        result : EqResult,
+        h1 : Step<WhnfCoreZst>,
+        h2 : Step<WhnfCoreZst>,
+        h3 : Step<LazyDeltaStepZst>,
     },
     #[C]
-    EqConst {
+    Const {
         l : ExprPtr<'a>,
         r : ExprPtr<'a>,
         l_w : ExprPtr<'a>,
         r_w : ExprPtr<'a>,
         l_d : ExprPtr<'a>,
         r_d : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<LazyDeltaStep<'a>>,
-        h4 : Step<DefEqConst<'a>>,
+        
+        #[result]
+        result : EqResult,
+        h1 : Step<WhnfCoreZst>,
+        h2 : Step<WhnfCoreZst>,
+        h3 : Step<LazyDeltaStepZst>,
+        h4 : Step<DefEqConstZst>,
     },
     #[X]
-    EqLocal {
+    Local {
         l : ExprPtr<'a>,
         r : ExprPtr<'a>,
         l_w : ExprPtr<'a>,
         r_w : ExprPtr<'a>,
         l_d : ExprPtr<'a>,
         r_d : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<LazyDeltaStep<'a>>,
-        h4 : Step<DefEqLocal<'a>>,
+        
+        #[result]
+        result : EqResult,
+        h1 : Step<WhnfCoreZst>,
+        h2 : Step<WhnfCoreZst>,
+        h3 : Step<LazyDeltaStepZst>,
+        h4 : Step<DefEqLocalZst>,
     },
     #[A]
-    EqApp {
+    App {
         l : ExprPtr<'a>,
         r : ExprPtr<'a>,
         l_w : ExprPtr<'a>,
         r_w : ExprPtr<'a>,
         l_d : ExprPtr<'a>,
         r_d : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<LazyDeltaStep<'a>>,
-        h4 : Step<DefEqApp<'a>>,
+        
+        #[result]
+        result : EqResult,
+        h1 : Step<WhnfCoreZst>,
+        h2 : Step<WhnfCoreZst>,
+        h3 : Step<LazyDeltaStepZst>,
+        h4 : Step<DefEqAppZst>,
     },
     #[U]
     EtaLr {
@@ -3029,10 +3107,13 @@ pub enum DefEq<'a> {
         r_w : ExprPtr<'a>,
         l_d : ExprPtr<'a>,
         r_d : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<LazyDeltaStep<'a>>,
-        h4 : Step<DefEqEta<'a>>,
+        
+        #[result]
+        result : EqResult,
+        h1 : Step<WhnfCoreZst>,
+        h2 : Step<WhnfCoreZst>,
+        h3 : Step<LazyDeltaStepZst>,
+        h4 : Step<DefEqEtaZst>,
     },
     #[V]
     EtaRl {
@@ -3042,40 +3123,47 @@ pub enum DefEq<'a> {
         r_w : ExprPtr<'a>,
         l_d : ExprPtr<'a>,
         r_d : ExprPtr<'a>,
-        h1 : Step<WhnfCore<'a>>,
-        h2 : Step<WhnfCore<'a>>,
-        h3 : Step<LazyDeltaStep<'a>>,
-        h4 : Step<DefEqEta<'a>>,
+        
+        #[result]
+        result : EqResult,
+        h1 : Step<WhnfCoreZst>,
+        h2 : Step<WhnfCoreZst>,
+        h3 : Step<LazyDeltaStepZst>,
+        h4 : Step<DefEqEtaZst>,
     },
 }
 
-#[is_step(tag="ES", fun = "trace_def_eq_sort")]
+#[is_step(tag="ES", result_type = "EqResult", fun = "trace_def_eq_sort")]
 #[derive(Debug, Clone, Copy)]
 pub enum DefEqSort<'a> {
     #[B]
     Base {
         l1 : LevelPtr<'a>,
         l2 : LevelPtr<'a>,
-        h1 : Step<EqAntisymm<'a>>,
+        #[result]
+        result : EqResult,
+        h1 : Step<EqAntisymmZst>,
         ind_arg1 : ExprPtr<'a>,
         ind_arg2 : ExprPtr<'a>,
     }
 }
 
 
-#[is_step(tag="EL", fun = "trace_def_eq_lambda")]
+#[is_step(tag="EL", result_type = "EqResult", fun = "trace_def_eq_lambda")]
 #[derive(Debug, Clone, Copy)]
 pub enum DefEqLambda<'a> {
     #[B]
     Base {
         l : ExprPtr<'a>,
         r : ExprPtr<'a>,
+        doms : ExprsPtr<'a>,
         l_prime : ExprPtr<'a>,
         r_prime : ExprPtr<'a>,
-        doms : ExprsPtr<'a>,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<DefEq<'a>>,
+        #[result]
+        result : EqResult,
+        h1 : Step<InstZst>,
+        h2 : Step<InstZst>,
+        h3 : Step<DefEqZst>,
     },
     #[E]
     Step {
@@ -3087,32 +3175,36 @@ pub enum DefEqLambda<'a> {
         rs : BinderStyle,
         lb : ExprPtr<'a>,
         rb : ExprPtr<'a>,
+        doms : ExprsPtr<'a>,
         lt_prime : ExprPtr<'a>,
         rt_prime : ExprPtr<'a>,
-        doms : ExprsPtr<'a>,
         local : ExprPtr<'a>,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<DefEq<'a>>,
-        h4 : Step<DefEqLambda<'a>>,
+        #[result]
+        result : EqResult,
+        h1 : Step<InstZst>,
+        h2 : Step<InstZst>,
+        h3 : Step<DefEqZst>,
+        h4 : Step<DefEqLambdaZst>,
         ind_arg1 : ExprPtr<'a>,
         ind_arg2 : ExprPtr<'a>,
     }    
 }
 
-#[is_step(tag="EP", fun = "trace_def_eq_pi")]
+#[is_step(tag="EP", result_type = "EqResult", fun = "trace_def_eq_pi")]
 #[derive(Debug, Clone, Copy)]
 pub enum DefEqPi<'a> {
     #[B]
     Base {
         l : ExprPtr<'a>,
         r : ExprPtr<'a>,
+        doms : ExprsPtr<'a>,
         l_prime : ExprPtr<'a>,
         r_prime : ExprPtr<'a>,
-        doms : ExprsPtr<'a>,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<DefEq<'a>>,
+        #[result]
+        result : EqResult,
+        h1 : Step<InstZst>,
+        h2 : Step<InstZst>,
+        h3 : Step<DefEqZst>,
     },
     #[E]
     Step {
@@ -3124,21 +3216,23 @@ pub enum DefEqPi<'a> {
         rs : BinderStyle,
         lb : ExprPtr<'a>,
         rb : ExprPtr<'a>,
+        doms : ExprsPtr<'a>,
         lt_prime : ExprPtr<'a>,
         rt_prime : ExprPtr<'a>,
-        doms : ExprsPtr<'a>,
         local : ExprPtr<'a>,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<DefEq<'a>>,
-        h4 : Step<DefEqPi<'a>>,
+        #[result]
+        result : EqResult,
+        h1 : Step<InstZst>,
+        h2 : Step<InstZst>,
+        h3 : Step<DefEqZst>,
+        h4 : Step<DefEqPiZst>,
         ind_arg1 : ExprPtr<'a>,
         ind_arg2 : ExprPtr<'a>,
     }    
 }
 
 
-#[is_step(tag="AF", fun = "trace_args_eq")]
+#[is_step(tag="AF", result_type = "EqResult", fun = "trace_args_eq")]
 #[derive(Debug, Clone, Copy)]
 pub enum ArgsEq<'a> {
     #[B]
@@ -3147,18 +3241,29 @@ pub enum ArgsEq<'a> {
         rs : ExprsPtr<'a>,
         ls_len : usize,
         rs_len : usize,
-        h1 : Step<Len<'a, Expr<'a>>>,
-        h2 : Step<Len<'a, Expr<'a>>>,
-        h3 : Step<ArgsEqAux<'a>>,
+        #[result]
+        result : EqResult,
+        h1 : Step<LenZst>,
+        h2 : Step<LenZst>,
+        h3 : Step<ArgsEqAuxZst>,
     },
 }
-#[is_step(tag="FX", fun = "trace_args_eq_aux")]
+#[is_step(tag="FX", result_type = "EqResult", fun = "trace_args_eq_aux")]
 #[derive(Debug, Clone, Copy)]
 pub enum ArgsEqAux<'a> {
+    #[R]
+    Refl {
+        ind_arg1 : ExprsPtr<'a>,
+        ind_arg2 : ExprsPtr<'a>,
+        #[result]
+        result : EqResult,
+    },
     #[B]
     Base {
         ind_arg1 : ExprsPtr<'a>,
         ind_arg2 : ExprsPtr<'a>,
+        #[result]
+        result : EqResult,
     },
     #[S]
     Step {
@@ -3166,14 +3271,16 @@ pub enum ArgsEqAux<'a> {
         y  : ExprPtr<'a>,
         xs : ExprsPtr<'a>,
         ys : ExprsPtr<'a>,
-        h1 : Step<DefEq<'a>>,
-        h2 : Step<ArgsEqAux<'a>>,
+        #[result]
+        result : EqResult,
+        h1 : Step<DefEqZst>,
+        h2 : Step<ArgsEqAuxZst>,
         ind_arg1 : ExprsPtr<'a>,
         ind_arg2 : ExprsPtr<'a>,
     }
 }
 
-#[is_step(tag="EC", fun = "trace_def_eq_const")]
+#[is_step(tag="EC", result_type = "EqResult", fun = "trace_def_eq_const")]
 #[derive(Debug, Clone, Copy)]
 pub enum DefEqConst<'a> {
     #[B]
@@ -3182,14 +3289,16 @@ pub enum DefEqConst<'a> {
         r_name : NamePtr<'a>,
         l_levels : LevelsPtr<'a>,
         r_levels : LevelsPtr<'a>,
-        h1 : Step<EqAntisymmMany<'a>>,
+        #[result]
+        result : EqResult,
+        h1 : Step<EqAntisymmManyZst>,
         ind_arg1 : ExprPtr<'a>,
         ind_arg2 : ExprPtr<'a>,
     }
 }
 
 
-#[is_step(tag="EX", fun = "trace_def_eq_local")]
+#[is_step(tag="EX", result_type = "EqResult", fun = "trace_def_eq_local")]
 #[derive(Debug, Clone, Copy)]
 pub enum DefEqLocal<'a> {
     #[B]
@@ -3200,6 +3309,8 @@ pub enum DefEqLocal<'a> {
         rs : BinderStyle,
         lt : ExprPtr<'a>,
         rt : ExprPtr<'a>,
+        #[result]
+        result : EqResult,
         l_serial : LocalSerial,
         r_serial : LocalSerial,
         ind_arg1 : ExprPtr<'a>,
@@ -3207,25 +3318,27 @@ pub enum DefEqLocal<'a> {
     }
 }
 
-#[is_step(tag="EA", fun = "trace_def_eq_app")]
+#[is_step(tag="EA", result_type = "EqResult", fun = "trace_def_eq_app")]
 #[derive(Debug, Clone, Copy)]
 pub enum DefEqApp<'a> {
     #[B]
     Base {
+        l : ExprPtr<'a>,
+        r : ExprPtr<'a>,
         l_fun : ExprPtr<'a>,
         r_fun : ExprPtr<'a>,
         l_args : ExprsPtr<'a>,
         r_args : ExprsPtr<'a>,
-        h1 : Step<UnfoldAppsAux<'a>>,
-        h2 : Step<UnfoldAppsAux<'a>>,
-        h3 : Step<DefEq<'a>>,
-        h4 : Step<ArgsEq<'a>>,
-        ind_arg1 : ExprPtr<'a>,
-        ind_arg2 : ExprPtr<'a>,
+        #[result]
+        result : EqResult,
+        h1 : Step<UnfoldAppsAuxZst>,
+        h2 : Step<UnfoldAppsAuxZst>,
+        h3 : Step<DefEqZst>,
+        h4 : Step<ArgsEqZst>,
     }
 }
 
-#[is_step(tag="ET", fun = "trace_def_eq_eta")]
+#[is_step(tag="ET", result_type = "EqResult", fun = "trace_def_eq_eta")]
 #[derive(Debug, Clone, Copy)]
 pub enum DefEqEta<'a> {
     #[B]
@@ -3239,9 +3352,11 @@ pub enum DefEqEta<'a> {
         rs : BinderStyle,
         lb : ExprPtr<'a>,
         rb : ExprPtr<'a>,
-        h1 : Step<Infer<'a>>,
-        h2 : Step<Whnf<'a>>,
-        h3 : Step<DefEq<'a>>,
+        #[result]
+        result : EqResult,
+        h1 : Step<InferZst>,
+        h2 : Step<WhnfZst>,
+        h3 : Step<DefEqZst>,
         ind_arg1 : ExprPtr<'a>,
     }
 }
@@ -3265,7 +3380,7 @@ pub enum EnsureSort<'a> {
         e : ExprPtr<'a>,
         #[result]
         level : LevelPtr<'a>,
-        h1 : Step<Whnf<'a>>,
+        h1 : Step<WhnfZst>,
     }
 }
 
@@ -3281,8 +3396,8 @@ pub enum EnsureType<'a> {
         e_type : ExprPtr<'a>,
         #[result]
         sort_level : LevelPtr<'a>,
-        h1 : Step<Infer<'a>>,
-        h2 : Step<EnsureSort<'a>>,
+        h1 : Step<InferZst>,
+        h2 : Step<EnsureSortZst>,
     },
 }
 
@@ -3294,15 +3409,15 @@ pub enum EnsurePi<'a> {
     Base {
         #[result]
         e : ExprPtr<'a>,
-        h1 : Step<IsPi<'a>>,
+        h1 : Step<IsPiZst>,
     },
     #[R]
     Reduce {
         e : ExprPtr<'a>,
         #[result]
         reduced : ExprPtr<'a>,
-        h1 : Step<Whnf<'a>>,
-        h2 : Step<IsPi<'a>>,
+        h1 : Step<WhnfZst>,
+        h2 : Step<IsPiZst>,
     }
 }
 
@@ -3311,13 +3426,13 @@ pub enum EnsurePi<'a> {
 #[is_step(tag="IN", result_type = "ExprPtr<'a>", fun = "trace_infer")]
 #[derive(Debug, Clone, Copy)]
 pub enum Infer<'a> {
-    #[H]
-    CacheHit {
+    #[S]
+    Sort {
         e : ExprPtr<'a>,
         flag : InferFlag,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<Infer<'a>>,
+        h1 : Step<InferSortZst>,
     },
     #[C]
     Const {
@@ -3325,15 +3440,7 @@ pub enum Infer<'a> {
         flag : InferFlag,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<InferConst<'a>>,
-    },
-    #[S]
-    Sort {
-        e : ExprPtr<'a>,
-        flag : InferFlag,
-        #[result]
-        inferred : ExprPtr<'a>,
-        h1 : Step<InferSort<'a>>,
+        h1 : Step<InferConstZst>,
     },
     #[A]
     App {
@@ -3342,9 +3449,9 @@ pub enum Infer<'a> {
         flag : InferFlag,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<UnfoldAppsAux<'a>>,
-        h2 : Step<Infer<'a>>,
-        h3 : Step<InferApp<'a>>,
+        h1 : Step<UnfoldAppsAuxZst>,
+        h2 : Step<InferZst>,
+        h3 : Step<InferAppZst>,
         ind_arg1 : ExprPtr<'a>,
     },
     #[P]
@@ -3353,7 +3460,7 @@ pub enum Infer<'a> {
         flag : InferFlag,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<InferPi<'a>>,
+        h1 : Step<InferPiZst>,
     },
     #[L]
     Lambda {
@@ -3361,7 +3468,7 @@ pub enum Infer<'a> {
         flag : InferFlag,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<InferLambda<'a>>,
+        h1 : Step<InferLambdaZst>,
     },
     #[Z]
     Let {
@@ -3369,7 +3476,7 @@ pub enum Infer<'a> {
         flag : InferFlag,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<InferLet<'a>>,
+        h1 : Step<InferLetZst>,
     },
     #[X]
     Local {
@@ -3377,45 +3484,9 @@ pub enum Infer<'a> {
         flag : InferFlag,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<InferLocal<'a>>,
+        h1 : Step<InferLocalZst>,
     }
 }
-
-
-#[is_step(tag="IC", result_type = "ExprPtr<'a>", fun = "trace_infer_const")]
-#[derive(Debug, Clone, Copy)]
-pub enum InferConst<'a> {
-    #[I]
-    InferOnly {
-        c_name : NamePtr<'a>,
-        c_levels : LevelsPtr<'a>,
-        flag : InferFlag,
-        dec : DeclarPtr<'a>,
-        dec_uparams : LevelsPtr<'a>,
-        dec_type : ExprPtr<'a>,
-        #[result]
-        inferred : ExprPtr<'a>,
-        ind_arg1 : ExprPtr<'a>,
-        h1 : Step<AdmitDeclar<'a>>,
-        h2 : Step<SubstE<'a>>,
-    },
-    #[C]
-    Checked {
-        c_name : NamePtr<'a>,
-        c_levels : LevelsPtr<'a>,
-        flag : InferFlag,
-        dec : DeclarPtr<'a>,
-        dec_uparams : LevelsPtr<'a>,
-        dec_type : ExprPtr<'a>,
-        #[result]
-        inferred : ExprPtr<'a>,
-        ind_arg1 : ExprPtr<'a>,
-        h1 : Step<AdmitDeclar<'a>>,
-        h2 : Step<ParamsDefinedMany<'a>>,
-        h3 : Step<SubstE<'a>>,
-    }
-}
-
 
 #[is_step(tag="IS", result_type = "ExprPtr<'a>", fun = "trace_infer_sort")]
 #[derive(Debug, Clone, Copy)]
@@ -3432,21 +3503,58 @@ pub enum InferSort<'a> {
         l : LevelPtr<'a>,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<ParamsDefined<'a>>,
+        h1 : Step<ParamsDefinedZst>,
         ind_arg1 : ExprPtr<'a>,
     }
 }
-#[is_step(tag="XX", result_type = "ExprPtr<'a>", fun = "trace_infer_app")]
+
+#[is_step(tag="IC", result_type = "ExprPtr<'a>", fun = "trace_infer_const")]
+#[derive(Debug, Clone, Copy)]
+pub enum InferConst<'a> {
+    #[I]
+    InferOnly {
+        c_name : NamePtr<'a>,
+        c_levels : LevelsPtr<'a>,
+        flag : InferFlag,
+        dec : DeclarPtr<'a>,
+        dec_uparams : LevelsPtr<'a>,
+        dec_type : ExprPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        ind_arg1 : ExprPtr<'a>,
+        h1 : Step<AdmitDeclarZst>,
+        h2 : Step<SubstEZst>,
+    },
+    #[C]
+    Checked {
+        c_name : NamePtr<'a>,
+        c_levels : LevelsPtr<'a>,
+        flag : InferFlag,
+        dec : DeclarPtr<'a>,
+        dec_uparams : LevelsPtr<'a>,
+        dec_type : ExprPtr<'a>,
+        #[result]
+        inferred : ExprPtr<'a>,
+        ind_arg1 : ExprPtr<'a>,
+        h1 : Step<AdmitDeclarZst>,
+        h2 : Step<ParamsDefinedManyZst>,
+        h3 : Step<SubstEZst>,
+    }
+}
+
+
+
+#[is_step(tag="INA", result_type = "ExprPtr<'a>", fun = "trace_infer_app")]
 #[derive(Debug, Clone, Copy)]
 pub enum InferApp<'a> {
     #[B]
     Base {
-        f_type : ExprPtr<'a>,
+        e_type : ExprPtr<'a>,
         context : ExprsPtr<'a>,
         flag : InferFlag,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<Inst<'a>>,
+        h1 : Step<InstZst>,
         ind_arg2 : ExprsPtr<'a>,
     },
     #[PI]
@@ -3459,7 +3567,7 @@ pub enum InferApp<'a> {
         context : ExprsPtr<'a>,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<InferApp<'a>>,
+        h1 : Step<InferAppZst>,
         ind_arg1 : ExprPtr<'a>,
     },
     #[PC]
@@ -3475,29 +3583,29 @@ pub enum InferApp<'a> {
         arg_type : ExprPtr<'a>,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Infer<'a>>,
-        h3 : Step<DefEq<'a>>,
-        h4 : Step<InferApp<'a>>,
+        h1 : Step<InstZst>,
+        h2 : Step<InferZst>,
+        h3 : Step<DefEqZst>,
+        h4 : Step<InferAppZst>,
         ind_arg1 : ExprPtr<'a>,
         ind_arg2 : ExprsPtr<'a>,
     },
     #[SN]
     StepNotPi {
-        f_type : ExprPtr<'a>,
+        e_type : ExprPtr<'a>,
         args : ExprsPtr<'a>,
         context : ExprsPtr<'a>,
-        f_type_prime : ExprPtr<'a>,
+        flag : InferFlag,
+        e_type_prime : ExprPtr<'a>,
         b_name : NamePtr<'a>,
         b_type : ExprPtr<'a>,
         b_style : BinderStyle,
         body : ExprPtr<'a>,
-        flag : InferFlag,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<EnsurePi<'a>>,
-        h3 : Step<InferApp<'a>>,
+        h1 : Step<InstZst>,
+        h2 : Step<EnsurePiZst>,
+        h3 : Step<InferAppZst>,
     }
 }
 
@@ -3511,8 +3619,8 @@ pub enum InferSortOf<'a> {
         e_type : ExprPtr<'a>,
         #[result]
         level : LevelPtr<'a>,
-        h1 : Step<Infer<'a>>,
-        h2 : Step<Whnf<'a>>,
+        h1 : Step<InferZst>,
+        h2 : Step<WhnfZst>,
     }
 }
 
@@ -3528,10 +3636,10 @@ pub enum InferPi<'a> {
         instd : ExprPtr<'a>,
         inferred_level : LevelPtr<'a>,
         folded : LevelPtr<'a>,
-        h1 : Step<IsPi<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<InferSortOf<'a>>,
-        h4 : Step<FoldImaxs<'a>>,
+        h1 : Step<IsPiZst>,
+        h2 : Step<InstZst>,
+        h3 : Step<InferSortOfZst>,
+        h4 : Step<FoldImaxsZst>,
         #[result]
         ind_arg5 : ExprPtr<'a>,
     },
@@ -3549,9 +3657,9 @@ pub enum InferPi<'a> {
         local : ExprPtr<'a>,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<InferSortOf<'a>>,
-        h3 : Step<InferPi<'a>>,
+        h1 : Step<InstZst>,
+        h2 : Step<InferSortOfZst>,
+        h3 : Step<InferPiZst>,
         ind_arg1 : ExprPtr<'a>,
     }
 }
@@ -3569,17 +3677,17 @@ pub enum FoldPisOnce<'a> {
     },
     #[S]
     Step {
+        t : ExprPtr<'a>,
         n : NamePtr<'a>,
         unused_t : ExprPtr<'a>,
         s : BinderStyle,
-        t : ExprPtr<'a>,
-        ls : ExprsPtr<'a>,
         ts : ExprsPtr<'a>,
+        ls : ExprsPtr<'a>,
         body : ExprPtr<'a>,
         combined : ExprPtr<'a>,
         #[result]
         out : ExprPtr<'a>,
-        h1 : Step<FoldPisOnce<'a>>,
+        h1 : Step<FoldPisOnceZst>,
         ind_arg1 : ExprsPtr<'a>,
         ind_arg2 : ExprsPtr<'a>,
     }
@@ -3599,11 +3707,11 @@ pub enum InferLambda<'a> {
         abstrd : ExprPtr<'a>,
         #[result]
         folded : ExprPtr<'a>,
-        h1 : Step<IsLambda<'a>>,
-        h2 : Step<Inst<'a>>,
-        h3 : Step<Infer<'a>>,
-        h4 : Step<Abstr<'a>>,
-        h5 : Step<FoldPisOnce<'a>>,
+        h1 : Step<IsLambdaZst>,
+        h2 : Step<InstZst>,
+        h3 : Step<InferZst>,
+        h4 : Step<AbstrZst>,
+        h5 : Step<FoldPisOnceZst>,
     },
     #[I]
     StepInferOnly {
@@ -3617,8 +3725,8 @@ pub enum InferLambda<'a> {
         b_type_prime : ExprPtr<'a>,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<InferLambda<'a>>,
+        h1 : Step<InstZst>,
+        h2 : Step<InferLambdaZst>,
 
     },
     #[C]
@@ -3634,9 +3742,9 @@ pub enum InferLambda<'a> {
         b_type_sort : LevelPtr<'a>,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<InferSortOf<'a>>, 
-        h3 : Step<InferLambda<'a>>,
+        h1 : Step<InstZst>,
+        h2 : Step<InferSortOfZst>, 
+        h3 : Step<InferLambdaZst>,
 
     },
 }
@@ -3657,8 +3765,8 @@ pub enum InferLet<'a> {
         b_prime : ExprPtr<'a>,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<Inst<'a>>,
-        h2 : Step<Infer<'a>>,
+        h1 : Step<InstZst>,
+        h2 : Step<InferZst>,
         ind_arg1 : ExprPtr<'a>,
     },
     #[C]
@@ -3674,11 +3782,11 @@ pub enum InferLet<'a> {
         b_prime : ExprPtr<'a>,
         #[result]
         inferred : ExprPtr<'a>,
-        h1 : Step<InferSortOf<'a>>,
-        h2 : Step<Infer<'a>>,
-        h3 : Step<DefEq<'a>>,
-        h4 : Step<Inst<'a>>,
-        h5 : Step<Infer<'a>>,
+        h1 : Step<InferSortOfZst>,
+        h2 : Step<InferZst>,
+        h3 : Step<DefEqZst>,
+        h4 : Step<InstZst>,
+        h5 : Step<InferZst>,
         ind_arg1 : ExprPtr<'a>,
     }
 }
@@ -3696,6 +3804,111 @@ pub enum InferLocal<'a> {
         ind_arg1 : ExprPtr<'a>,
     }
 }
+
+
+#[is_step(tag="LPS", result_type = "ExprsPtr<'a>", fun = "trace_mk_local_params")]
+#[derive(Debug, Clone, Copy)]
+pub enum MkLocalParams<'a> {
+    #[B]
+    Base {
+        rem_params : u16,
+        ind_type : ExprPtr<'a>,
+        #[result]
+        ind_arg3 : ExprsPtr<'a>,
+    },
+    #[S]
+    Step {
+        rem_params : u16,
+        n : NamePtr<'a>,
+        t : ExprPtr<'a>,
+        s : BinderStyle,
+        b : ExprPtr<'a>,
+        serial : LocalSerial,
+        b_prime : ExprPtr<'a>,
+        #[result]
+        sink : ExprsPtr<'a>,
+        h1 : Step<InstZst>,
+        h2 : Step<MkLocalParamsZst>,
+        ind_arg2 : ExprPtr<'a>,
+        ind_arg3 : ExprsPtr<'a>,
+    }
+
+
+    
+}
+
+#[is_step(tag="LIT", result_type = "ExprsPtr<'a>", fun = "trace_mk_local_indices1")]
+#[derive(Debug, Clone, Copy)]
+pub enum MkLocalIndices1<'a> {
+    #[B]
+    Base {
+        e : ExprPtr<'a>,
+        h1 : Step<IsPiZst>, 
+        ind_arg2 : ExprsPtr<'a>,
+        #[result]
+        ind_arg3 : ExprsPtr<'a>,
+    },
+    #[I]
+    StepIndex {
+        n : NamePtr<'a>,
+        t : ExprPtr<'a>,
+        s : BinderStyle,
+        b : ExprPtr<'a>,
+        serial : LocalSerial,
+        b_prime : ExprPtr<'a>,
+        local_indices : ExprsPtr<'a>,
+        h1 : Step<InstZst>, 
+        h2 : Step<MkLocalIndices1Zst>,
+        ind_arg1 : ExprPtr<'a>,
+        ind_arg2 : ExprsPtr<'a>,
+        #[result]
+        ind_arg3 : ExprsPtr<'a>,
+    },
+    #[P]
+    StepParam {
+        n : NamePtr<'a>,
+        t : ExprPtr<'a>,
+        s : BinderStyle,
+        b : ExprPtr<'a>,
+        b_prime : ExprPtr<'a>,
+        local_param : ExprPtr<'a>,
+        local_params : ExprsPtr<'a>,
+        #[result]
+        local_indices : ExprsPtr<'a>,
+        h1 : Step<InstZst>, 
+        h2 : Step<MkLocalIndices1Zst>,
+        ind_arg1 : ExprPtr<'a>,
+        ind_arg2 : ExprsPtr<'a>,
+    }
+}
+
+
+#[is_step(tag="LIS", result_type = "ExprsPtr<'a>", fun = "trace_mk_local_indices_aux")]
+#[derive(Debug, Clone, Copy)]
+pub enum MkLocalIndicesAux<'a> {
+    #[B]
+    Base {
+        #[result]
+        sink : ExprsPtr<'a>,
+    }
+}
+
+
+#[is_step(tag="CV", fun = "trace_check_vitals")]
+#[derive(Debug, Clone, Copy)]
+pub enum CheckVitals<'a> {
+    #[B]
+    Base {
+        n : NamePtr<'a>,
+        ups : LevelsPtr<'a>,
+        t : ExprPtr<'a>,
+        h1 : Step<NoDupesZst>,
+        h2 : Step<InferZst>,
+        h3 : Step<EnsureSortZst>,
+    }
+    
+}
+
 
 #[is_step(tag="AD", result_type = "NamePtr<'a>", fun = "trace_admit_declar")]
 #[derive(Debug, Clone, Copy)]
@@ -3733,7 +3946,6 @@ pub enum AdmitDeclar<'a> {
         uparams : LevelsPtr<'a>,
         type_ : ExprPtr<'a>,
         val : ExprPtr<'a>,
-        is_unsafe : bool,
     },
     #[QU]
     Quot {

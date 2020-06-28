@@ -3,283 +3,1087 @@ import .name
        .expr
        .env
 
-open Level Expr Declar
+open Name Level Expr Declar Env
 
-inductive InferFlag 
+/-
+In all locations where `env.getDeclar` gets used
+in this file, the export file will show a pointer
+to an `AdmitDeclar` step, which is the step at which
+the given declaration was admitted to the current environment.
+
+Also the reduction steps for quotient don't contain
+any explicit assertion that quotient has been admitted
+to the environment as of now.
+-/
+
+
+def qmk_name : Name := Str (Str Anon "quot") "mk"
+def qlift_name : Name := Str (Str Anon "quot") "lift"
+def qind_name : Name := Str (Str Anon "quot") "ind"
+
+inductive InferFlag
 | Check
 | InferOnly
 
 instance : decidable_eq InferFlag := by tactic.mk_dec_eq_instance
 
-open InferFlag
+inductive DeltaResult
+| DeltaEq
+| Exhausted : Expr -> Expr -> DeltaResult
+
+open InferFlag DeltaResult
 
 
+inductive unfoldDef : Expr -> Expr -> Prop
+| base 
+    (env : Env)
+    (e : Expr)
+    (c_name : Name)
+    (c_levels : list Level)
+    (args : list Expr)
+    (d_uparams : list Level)
+    (d_type : Expr)
+    (d_val : Expr)
+    (d_hint : Hint)
+    (d_is_unsafe : bool)
+    (uparams_len : nat)
+    (d_val' : Expr)
+    (e' : Expr)
+    :
+    unfoldApps e (mkConst c_name c_levels) args
+    -> env.getDeclar c_name (Definition c_name d_uparams d_type d_val d_hint d_is_unsafe)
+    -> listLen c_levels uparams_len
+    -> listLen d_uparams uparams_len
+    -> subst d_val d_uparams c_levels d_val'
+    -> foldlApps d_val' args e'
+    -> unfoldDef e e'
 
-inductive whnfSort : Expr -> Expr -> Prop
-| mk (l l' : Level) : simplify l l' -> whnfSort (mkSort l) (mkSort l')
+inductive mkNullaryCtor : Expr -> Expr -> Prop
+| base 
+    (env : Env)
+    (e : Expr)
+    (c_name : Name)
+    (c_levels : list Level)
+    (args : list Expr)
+    (d_uparams : list Level)
+    (d_type : Expr)
+    (d_num_params : nat)
+    (d_ind_names : list Name)
+    (d_ctor_names : list Name)
+    (d_is_unsafe : bool)
+    (zth_ctor_name : Name)
+    (taken : list Expr)
+    (out : Expr)
+    : unfoldApps e (mkConst c_name c_levels) args
+    -> env.getDeclar c_name (Inductive c_name d_uparams d_type d_num_params d_ind_names d_ctor_names d_is_unsafe)
+    -> listGet d_ctor_names 0 zth_ctor_name
+    -> listTake args d_num_params taken
+    -> foldlApps (mkConst zth_ctor_name c_levels) taken out
+    -> mkNullaryCtor e out
 
--- whnfLambda requires that the caller then call `whnf_core` on the result
--- to finish reduction. We don't include the call here to avoid the
--- need for a mutually inductive prop (whnf/whnflambda)
--- in the neither case (not a lambda and no args) you do `baseNoArgs`.
-inductive whnfLambda : Expr -> list Expr -> list Expr -> Expr -> Prop
-| baseNotLambda (e : Expr) 
-                (rem_args lambda_args : list Expr) 
-                (e' e'' : Expr) 
-                : isLambda e ff
-                  -> inst e lambda_args e'
-                  -> foldlApps e' rem_args e''
-                  -> whnfLambda e rem_args lambda_args e''
-
-| baseNoArgs  (e : Expr) 
-              (lambda_args : list Expr) 
-              (e' : Expr) 
-              : inst e lambda_args e'
-                -> whnfLambda e [] lambda_args e'
-
-| step (b_name : Name)
-       (b_type : Expr)
-       (b_style : Bstyle)
-       (body : Expr)
-       (hd_arg : Expr)
-       (tl_rem_args : list Expr)
-       (tl_lambda_args : list Expr)
-       (e' : Expr)
-       : whnfLambda body tl_rem_args (hd_arg :: tl_lambda_args) e'
-         -> whnfLambda (mkLambda b_name b_type b_style body) 
-                       (hd_arg :: tl_rem_args) 
-                       (tl_lambda_args) 
-                       e'
-                  
--- Requires that caller use whnf_core again on the produced result
-inductive whnfLet : Expr -> Expr -> Prop
-| mk (b_name : Name)
-     (b_type : Expr)
-     (b_style : Bstyle)
-     (val : Expr)
-     (body : Expr)
-     (body' : Expr)
-     : inst body [val] body'
-       -> whnfLet (mkLet b_name b_type b_style val body) body'
-
-inductive whnfCore : Expr -> Expr -> Prop
-| sort (e : Expr) 
-       (l : Level) 
-       (e' : Expr) 
-       : unfoldApps e (mkSort l) []
-         -> whnfSort (mkSort l) e'
-         -> whnfCore e e'
-
-| lambda (e lam : Expr) 
-         (all_args : list Expr) 
-         (e' e'' : Expr) 
-         : unfoldApps e lam all_args
-           -> whnfLambda lam all_args [] e'
-           -> whnfCore e' e''
-           -> whnfCore e e''
-
-| letE (e0 : Expr)
-       (let_ : Expr)
-       (args : list Expr)
-       (e1 : Expr)
-       (e2 : Expr)
-       (e3 : Expr)
-       : unfoldApps e0 let_ args
-         -> whnfLet let_ e1
-         -> foldlApps e1 args e2
-         -> whnfCore e2 e3
-         -> whnfCore e0 e3
-
-/-
---inductive whnf : Expr → Expr → Prop
---
---inductive whnfCore : Expr → Expr → Prop
---| mkSort (l l' : Level) : unfoldApps simplify l l' → whnfCore (sort l) (sort l')
---| mkLambda
---| mkLet
---| quotLift
---| quotInd
---| indRec
---| owise
-
-/-
-The check of whether or not (infer arg) =?= b_type isn't done here.
--/
-
--- This is the big-step version.
-inductive infer (dec_ups : option $ list Level) (flag : InferFlag) : Expr → Expr → Prop
---| baseLambda (b_names  : list Name)
---             (b_types  : list Expr)
---             (b_styles : list Bstyle)
---             (locals : list Expr)
---             (body instd infd abstrd : Expr) : inst body locals body'
---
---| stepLambda (b_type b_type' body body' : Expr)
---             (b_name : Name)
---             (b_style : Bstyle)
---             (serial : nat)
---             (flag : InferFlag)
---inductive inferChecked (dec_ups : list Level) : Expr → Expr → Prop
---| baseSort (l : Level) : allParamsDefined l dec_ups → inferChecked (mkSort l) (mkSort $ s l)
---| baseConst (n : Name) 
---            (levels : list Level) 
---            (env : Env) 
---            (d_name : Name)
---            (d_ups : list Level)
---            (d_type d_type' : Expr)
---            (d : Declar) : 
---            (d_name, d) ∈ env
---            → allParamsDefinedMany levels dec_ups
---            → declarVitals d d_name d_ups d_type
---            → subst d_ups levels d_type d_type'
---            → inferChecked (mkConst n levels) (d_type')
---            
---| baseLocal (b_name : Name) (b_type : Expr) (b_style : Bstyle) (serial : nat) : infer (mkLocal b_name b_type b_style serial) b_type
-
-
-inductive lazyDelta : Expr → Expr → Prop
-
-
-inductive isSortZero : Expr → Prop
-| base (e : Expr) : whnf e (mkSort z) → isSortZero e
-
-inductive isProposition (dec_ups : option $ list Level) : Expr → Prop
-| base (e infd : Expr) : infer dec_ups InferOnly e infd 
-                         → isSortZero infd 
-                         → isProposition e
-
--- Is this a value, whose type infers as some proposition P, where P will then necessarily infer as Sort 0
-inductive isProof (dec_ups : option $ list Level) : Expr → Expr → Prop
-| base (e infd : Expr) : infer dec_ups InferOnly e infd 
-                         → isProposition dec_ups infd 
-                         → isProof e infd
+inductive isDelta : Expr -> Declar -> Prop
+| base 
+    (env : Env)
+    (e : Expr)
+    (c_name : Name)
+    (c_levels : list Level)
+    (args : list Expr)
+    (d_uparams : list Level)
+    (d_type : Expr)
+    (d_val : Expr)
+    (d_hint : Hint)
+    (d_is_unsafe : bool)
+    : let defn := Definition c_name d_uparams d_type d_val d_hint d_is_unsafe
+    in
+    unfoldApps e (mkConst c_name c_levels) args
+    -> env.getDeclar c_name (Definition c_name d_uparams d_type d_val d_hint d_is_unsafe)
+    -> isDelta e (defn)
 
 
 
 
-/-
-The defEq constructors end up requiring more introductory evidnce about reduction (whnf → lazyDelta → ...)
-in the interest of making the spec and export file format to dovetail as nicely as possible, since the
-export file's shape is directly related to the control flow in the source code.
-IE we know that any time we actually use the defEq.eqApps constructor, we've already reduced both sides
-using whnfCore and then lazyDelta.
 
-It's true that it would be more general to have like a transitive relation that says 
-essentially "if there's a sequence of reduction steps bringing e1 to e1', and e1' is defEq to e2, then e1
-is defEq to e2", but getting that to show up correctly in the export file in a way that mm0 can understand it
-without doing extra work would require making changes to the source code. While I'm not generally opposed to doing that,
-the order of reduction steps taken in in the CPP code base (and also Nanoda) is the most efficient order,
-so we're just going to run with it.
+mutual inductive 
+    whnf,
+    whnfCore,
+    whnfSort,
+    whnfLambda,
+    whnfLet,
+    reduceQuotLift,
+    reduceQuotInd,
+    toCtorWhenK,
+    reduceIndRec,
+    defEq,
+    isSortZero,
+    isProposition,
+    isProof,
+    proofIrrelEq,
+    defEqSort,
+    defEqPi,
+    defEqLambda,
+    argsEq,
+    argsEqAux,
+    lazyDeltaStep,
+    defEqConst,
+    defEqLocal,
+    defEqApp,
+    defEqEta,
+    infer,
+    inferSortOf,
+    ensureSort,
+    ensureType,
+    ensurePi,
+    inferSort,
+    inferConst,
+    inferApp,
+    inferPi,
+    inferLambda,
+    inferLet,
+    inferLocal
+       
 
-Outside of the sequence, (whnfCore → lazyDelta → ...) there's not a whole lot that can be done anyway.
-You want to avoid using the unfolding/full version of `whnf` outside of specific places, since unfolding
-in the wrong place can be wildly expensive.
--/
+with whnf : Expr -> Expr -> Prop
+| coreOnly (e e' : Expr) : whnfCore e e' -> whnf e e'
+| unfolding (eA eB eC eD : Expr)
+    : whnfCore eA eB
+    -> unfoldDef eB eC
+    -> whnf eC eD
+    -> whnf eA eD
 
-inductive defEq (dec_ups : option $ list Level) : Expr → Expr → Prop
-| byRefl (e : Expr) : defEq e e
-| cacheHit (e1 e2 : Expr) : defEq e1 e2 → defEq e1 e2
-| eqSort (e1 e2 : Expr) 
-         (l1 l2 : Level) : whnfCore e1 (mkSort l1)
-                           → whnfCore e2 (mkSort l2)
-                           → eqAntisymm l1 l2 
-                           → defEq e1 e2
+with whnfCore : Expr -> Expr -> Prop
+| sort (e e' : Expr) : whnfSort e e' -> whnfCore e e'
 
-| eqPi (n1 n2 : Name)
-       (t1 t2 body1 body1' body2 body2' : Expr)
-       (s1 s2 : Bstyle)
-       (e1 e2 : Expr)
-       (serial : ℕ) :
-           let local1 : Expr := mkLocal n1 t1 s1 serial
-           in  
-           whnfCore e1 (mkPi n1 t1 s1 body1)
-              → whnfCore e2 (mkPi n2 t2 s2 body2)
-              → defEq t1 t2        
-              → inst1 body1 local1 body1'
-              → inst1 body2 local1 body2'
-              → defEq body1' body2'
-              → defEq e1 e2
+| lambda 
+    (e : Expr)
+    (f : Expr)
+    (args : list Expr)
+    (e' : Expr)
+    : unfoldApps e f args
+    -> whnfLambda f args [] e'
+    -> whnfCore e e'
 
-| eqLambda (b_name1 b_name2 : Name)
-           (b_type1 b_type2 body1 body1' body2 body2' : Expr)
-           (b_style1 b_style2 : Bstyle)
-           (e1 e2 : Expr)
-           (serial : ℕ) :
-               let local1 : Expr := mkLocal b_name1 b_type1 b_style1 serial
-               in  
-               whnfCore e1 (mkLambda b_name1 b_type1 b_style1 body1)
-                  → whnfCore e2 (mkLambda b_name2 b_type2 b_style2 body2)
-                  → defEq b_type1 b_type2        
-                  → inst1 body1 local1 body1'
-                  → inst1 body2 local1 body2'
-                  → defEq body1' body2'
-                  → defEq e1 e2            
+| let_ 
+    (e : Expr)
+    (f : Expr)
+    (args : list Expr)
+    (e' : Expr)
+    : unfoldApps e f args
+    -> whnfLet f args e'
+    -> whnfCore e e'
 
-| proofIrrel (e1 e2 e1' e2' some_prop : Expr) : whnfCore e1 e1'
-                                        → whnfCore e2 e2'
-                                        → isProof dec_ups e1' some_prop
-                                        → isProof dec_ups e2' some_prop
-                                        --→ infer e1' some_prop 
-                                        --→ infer e2' some_prop 
-                                        → defEq e1 e2
+| quotLift 
+    (e : Expr)
+    (f : Expr)
+    (args : list Expr)
+    (e' : Expr)
+    : unfoldApps e f args
+    -> reduceQuotLift f args e'
+    -> whnfCore e e'
 
-| eqConst (e1 e1' e2 e2' : Expr)
-          (n : Name) 
-          (ls1 ls2 : list Level) : whnfCore e1 e1'
-                                   → whnfCore e2 e2'
-                                   → lazyDelta e1' (mkConst n ls1)
-                                   → lazyDelta e2' (mkConst n ls2)
-                                   → eqAntisymmList ls1 ls2 
-                                   → defEq (mkConst n1 ls1) (mkConst n2 ls2)
+| quotInd 
+    (e : Expr)
+    (f : Expr)
+    (args : list Expr)
+    (e' : Expr)
+    : unfoldApps e f args
+    -> reduceQuotInd f args e'
+    -> whnfCore e e'
 
--- The proof obgligation is just that the serials are the same
-| eqLocal (b_name : Name)
-          (e1 e2 e1' e2' b_type : Expr)
-          (b_style  : Bstyle)
-          (serial : ℕ) : 
-          let sharedLocal := (mkLocal b_name b_type b_style serial) 
-          in whnfCore e1 e1'
-             → whnfCore e2 e2'
-             → lazyDelta e1' sharedLocal
-             → lazyDelta e2' sharedLocal
-             → defEq e1 e2
+| indRec 
+    (e : Expr)
+    (f : Expr)
+    (args : list Expr)
+    (e' : Expr)
+    : unfoldApps e f args
+    -> reduceIndRec f args e'
+    -> whnfCore e e'
 
-| eqApp (e1 e1' e2 e2' f1 f2 a1 a2 : Expr) : whnfCore e1 e1'
-                                             → whnfCore e2 e2'
-                                             → lazyDelta e1' (mkApp f1 a1)
-                                             → lazyDelta e2' (mkApp f2 a2)
-                                             → defEq f1 f2
-                                             → defEq a1 a2 
-                                             → defEq e1 e2
+with whnfSort : Expr -> Expr -> Prop
+| sort (l l' : Level ): simplify l l' -> whnfSort (mkSort l) (mkSort l')
+
+with whnfLambda : Expr -> list Expr -> list Expr -> Expr -> Prop
+| notLambda 
+    (eA : Expr)
+    (rem_args : list Expr)
+    (lambda_args : list Expr)
+    (eB eC eD : Expr)
+    : isLambda eA ff
+    -> inst eA lambda_args eB
+    -> foldlApps eB rem_args eC
+    -> whnfCore eC eD
+    -> whnfLambda eA rem_args lambda_args eD
+
+| noArgs 
+    (eA : Expr)
+    (lambda_args : list Expr)
+    (eB eC : Expr)
+    : inst eA lambda_args eB
+    -> whnfCore eB eC
+    -> whnfLambda eA [] lambda_args eC
+
+| step 
+    (n : Name)
+    (t : Expr)
+    (s : Bstyle)
+    (b : Expr)
+    (arg_hd : Expr)
+    (args_tl : list Expr)
+    (lambda_args : list Expr)
+    (b' : Expr)
+    : whnfLambda b args_tl (arg_hd :: lambda_args) b'
+    -> whnfLambda b (arg_hd :: args_tl) lambda_args b'
+
+with whnfLet : Expr -> list Expr -> Expr -> Prop      
+| base 
+    (n : Name)
+    (t : Expr)
+    (s : Bstyle)
+    (v : Expr)
+    (bodyA : Expr)
+    (args : list Expr)
+    (bodyB bodyC bodyD : Expr)
+    : 
+    inst1 bodyA v bodyB
+    -> foldlApps bodyB args bodyC
+    -> whnfCore bodyC bodyD
+    -> whnfLet (mkLet n t s v bodyA) args bodyD
+
+with reduceQuotLift : Expr -> list Expr -> Expr -> Prop
+| base 
+    (c_levels : list Level)
+    (args : list Expr)
+    (qmk_A_r_a_unred : Expr)
+    (qmk_A_r : Expr)
+    (a : Expr)
+    (qmk_levels : list Level)
+    (qmk_args : list Expr)
+    (f : Expr)
+    (skipped : list Expr)
+    (out_unred : Expr)
+    (out : Expr)
+    : let qmk_pos := 5,
+        f_pos := 3
+    in
+    -- assert that quotient has been declared with
+    -- env.getDeclar c_name (Definition <quot stuff>)
+    listGet args qmk_pos qmk_A_r_a_unred
+    -> whnf qmk_A_r_a_unred (mkApp qmk_A_r a)
+    -> unfoldApps (mkApp qmk_A_r a) (mkConst qmk_name qmk_levels) qmk_args
+    -> listGet args f_pos f
+    -> listSkip args (qmk_pos + 1) skipped
+    -> foldlApps (mkApp f a) skipped out_unred
+    -> whnfCore out_unred out
+    -> reduceQuotLift (mkConst qlift_name c_levels) args out
+
+with reduceQuotInd : Expr -> list Expr -> Expr -> Prop
+| base 
+    (c_levels : list Level)
+    (args : list Expr)
+    (qmk_A_r_a_unred : Expr)
+    (qmk_A_r : Expr)
+    (a : Expr)
+    (qmk_levels : list Level)
+    (qmk_args : list Expr)
+    (B_of : Expr)
+    (skipped : list Expr)
+    (out_unred : Expr)
+    (out : Expr)
+    :
+    let qmk_pos := 4,
+        B_of_pos := 3
+    in
+       -- assert that quotient has been declared with
+       -- env.getDeclar c_name (Definition <quot stuff>)
+       listGet args qmk_pos qmk_A_r_a_unred
+       -> whnf qmk_A_r_a_unred (mkApp qmk_A_r a)
+       -> unfoldApps (mkApp qmk_A_r a) (mkConst qmk_name qmk_levels) qmk_args
+       -> listGet args B_of_pos B_of
+       -> listSkip args (qmk_pos + 1) skipped
+       -> foldlApps (mkApp B_of a) skipped out_unred
+       -> whnfCore out_unred out
+       -> reduceQuotInd (mkConst qind_name c_levels) args out
+
+with toCtorWhenK : Expr -> Declar -> Expr -> Prop
+| skip (e : Expr) (d : Declar) : toCtorWhenK e d e
+
+| base 
+    (e : Expr)
+    (c_name : Name)
+    (d_uparams : list Level)
+    (d_type : Expr)
+    (d_names : list Name)
+    (d_num_params : nat)
+    (d_num_indices : nat)
+    (d_num_motives : nat)
+    (d_num_minors : nat)
+    (d_major_idx : nat)
+    (d_rec_rules : list RecRule)
+    (d_is_unsafe : bool)
+    (e_type_unred : Expr)
+    (e_type : Expr)
+    (c_name : Name)
+    (c_levels : list Level)
+    (c_args : list Expr)
+    (ctor_app : Expr)
+    (ctor_app_type : Expr)
+    : let recursor := 
+        Recursor 
+        (Str c_name "rec") 
+        d_uparams 
+        d_type 
+        d_names 
+        d_num_params 
+        d_num_indices 
+        d_num_motives 
+        d_num_minors 
+        d_major_idx 
+        d_rec_rules 
+        tt 
+        d_is_unsafe
+    in
+    infer e InferOnly e_type_unred
+    -> whnf e_type_unred e_type
+    -> unfoldApps e_type (mkConst c_name c_levels) c_args
+    -> mkNullaryCtor e_type ctor_app
+    -> infer ctor_app InferOnly ctor_app_type
+    -> defEq e_type ctor_app_type
+    -> toCtorWhenK e recursor ctor_app
 
 
-| etaRight (L L' R R' R'' R_T b_type1 b_type2 body1 body2 : Expr)
-          (b_name1 b_name2 : Name)
-          (b_style1 b_style2 : Bstyle) : 
-              whnfCore L L'
-              → whnfCore R R'
-              → lazyDelta L' (mkLambda b_name1 b_type1 b_style1 body1)
-              → lazyDelta R' R''
-              -- Where we actually enter the function try_eta_expand
-              → notLambda R''
-              → infer dec_ups InferOnly R'' R_T
-              → whnf R_T (mkPi b_name2 b_type2 b_style2 body2)
-              → defEq (mkLambda b_name1 b_type1 b_style1 body1) (mkLambda b_name2 b_type2 b_style2 (mkApp R'' (mkVar 0)))
-              → defEq L R
+with reduceIndRec : Expr -> list Expr -> Expr -> Prop
+| base 
+    (env : Env)
+    (c_name : Name)
+    (c_levels : list Level)
+    (args : list Expr)
+    -- Recursor info : recursor's name is c_name
+    (d_uparams : list Level)
+    (d_type : Expr)
+    (d_names : list Name)
+    (d_num_params : nat)
+    (d_num_indices : nat)
+    (d_num_motives : nat)
+    (d_num_minors : nat)
+    (d_major_idx : nat)
+    (d_rec_rules : list RecRule)
+    (d_is_k : bool)
+    (d_is_unsafe : bool)       
+    -- 
+    (major_unredA : Expr)
+    (major_unredB : Expr)
+    (major : Expr)
+    (major_fun : Expr)
+    (major_args : list Expr)
+    -- rec_rule info
+    (rr_ctor_name : Name)
+    (rr_num_fields : nat)
+    (rr_val : Expr)
+    --
+    (major_args_len : nat)
+    (skip1 : list Expr)
+    (take1 : list Expr)
+    (skip2 : list Expr)
+    (take2 : list Expr)
+    (r12 r13 r14 r15 r16 : Expr)
+    : let recursor := 
+        Recursor 
+        c_name
+        d_uparams 
+        d_type 
+        d_names 
+        d_num_params 
+        d_num_indices 
+        d_num_motives 
+        d_num_minors 
+        d_major_idx 
+        d_rec_rules 
+        d_is_k
+        d_is_unsafe
+    in       
+    env.getDeclar c_name recursor
+    -> listGet args d_major_idx major_unredA
+    -> toCtorWhenK major_unredA recursor major_unredB
+    -> whnf major_unredB major
+    -> unfoldApps major major_fun major_args
+    -> getRecRule d_rec_rules major_fun (RecRule.mk rr_ctor_name rr_num_fields rr_val)
+    -> listLen major_args major_args_len
+    -> listSkip major_args (major_args_len - rr_num_fields) skip1
+    -> listTake skip1 rr_num_fields take1
+    -> listSkip args (d_major_idx + 1) skip2
+    -> listTake args (d_num_params + d_num_motives + d_num_minors) take2
+    -> subst rr_val d_uparams c_levels r12
+    -> foldlApps r12 take2 r13
+    -> foldlApps r13 take1 r14
+    -> foldlApps r14 skip2 r15
+    -> whnfCore r15 r16
+    -> reduceIndRec (mkConst c_name c_levels) args r16
+     
 
 
+with defEq : Expr -> Expr -> Prop
+| reflexivity (e : Expr) : defEq e e
+| sort 
+    (l r : Expr) 
+    (l_w r_w : Expr)
+    : whnfCore l l_w
+    -> whnfCore r r_w
+    -> defEqSort l_w r_w
+    -> defEq l r
 
---inductive infer (dec_ups : list Level) : Expr → Expr → Prop
+| pi 
+    (l r : Expr)
+    (l_w r_w : Expr)
+    : whnfCore l l_w
+    -> whnfCore r r_w
+    -> defEqPi l_w r_w []
+    -> defEq l r
 
-inductive ensureSort (dec_ups : option $ list Level) : Expr → Level →  Prop
-| base (l : Level) : ensureSort (sort l) l
-| whnfStep (e e' : Expr) (l : Level) : whnf /-dec_ups-/ e (sort l)
-                                       → ensureSort e l
+| lambda 
+    (l r : Expr)
+    (l_w r_w : Expr)
+    : whnfCore l l_w
+    -> whnfCore r r_w
+    -> defEqLambda l_w r_w []
+    -> defEq l_w r_w
 
--- technically relies on not being called with a value that's in Prop
-inductive ensureType (dec_ups : option $ list Level) : Expr → Level → Prop
-| base (e e' : Expr) (l : Level) : infer dec_ups InferOnly e e'
-                                   → ensureSort dec_ups e' l
-                                   → ensureType e l
-                                   -/
-                            
+| proofIrrel 
+    (l r : Expr)
+    (l_w r_w : Expr)
+    : whnfCore l l_w
+    -> whnfCore r r_w
+    -> proofIrrelEq l_w r_w
+    -> defEq l r
+
+| deltaEq 
+    (l r : Expr)
+    (l_w r_w : Expr)
+    (l_d r_d : Expr)
+    : whnfCore l l_w
+    -> whnfCore r r_w
+    -> lazyDeltaStep r_w r_w DeltaEq
+    -> defEq l r
+
+| eqConst 
+    (l r : Expr)
+    (l_w r_w : Expr)
+    (l_d r_d : Expr)
+    : whnfCore l l_w
+    -> whnfCore r r_w
+    -> lazyDeltaStep r_w r_w (Exhausted l_d r_d)
+    -> defEqConst l_d r_d
+    -> defEq l r
+
+| eqLocal 
+    (l r : Expr)
+    (l_w r_w : Expr)
+    (l_d r_d : Expr)
+    : whnfCore l l_w
+    -> whnfCore r r_w
+    -> lazyDeltaStep r_w r_w (Exhausted l_d r_d)
+    -> defEqLocal l_d r_d
+    -> defEq l r
+
+| eqApp 
+    (l r : Expr)
+    (l_w r_w : Expr)
+    (l_d r_d : Expr)
+    : whnfCore l l_w
+    -> whnfCore r r_w
+    -> lazyDeltaStep r_w r_w (Exhausted l_d r_d)
+    -> defEqApp l_d r_d
+    -> defEq l r
+
+| etaLr 
+    (l r : Expr)
+    (l_w r_w : Expr)
+    (l_d r_d : Expr)
+    : whnfCore l l_w
+    -> whnfCore r r_w
+    -> lazyDeltaStep r_w r_w (Exhausted l_d r_d)
+    -> defEqEta l_d r_d
+    -> defEq l r
+
+| etaRl 
+    (l r : Expr)
+    (l_w r_w : Expr)
+    (l_d r_d : Expr)
+    : whnfCore l l_w
+    -> whnfCore r r_w
+    -> lazyDeltaStep r_w r_w (Exhausted l_d r_d)
+    -> defEqEta r_d l_d
+    -> defEq l r
+        
+
+with isSortZero : Expr -> Prop
+| base (e : Expr) : whnf e (mkSort z) -> isSortZero e
+
+with isProposition : Expr -> Expr -> Prop
+| base (e inferred : Expr)
+    : infer e InferOnly inferred
+    -> isSortZero inferred
+    -> isProposition e inferred
+
+with isProof : Expr -> Expr -> Prop
+| base (e inferred sort_of : Expr)
+    : infer e InferOnly inferred
+    -> isProposition inferred sort_of
+    -> isProof e inferred
+
+with proofIrrelEq : Expr -> Expr -> Prop
+| base (l r : Expr)
+       (l_type r_type : Expr)
+    : isProof l l_type
+    -> isProof r r_type
+    -> defEq l_type r_type
+    -> proofIrrelEq l_type r_type
+
+with defEqSort : Expr -> Expr -> Prop
+| base (l r : Level)
+    : eqAntisymm l r tt
+    -> defEqSort (mkSort l) (mkSort r)
+
+with defEqPi : Expr -> Expr -> list Expr -> Prop
+| base 
+    (l r : Expr)
+    (doms : list Expr)
+    (l' r' : Expr)
+    : isPi l ff
+    -> isPi r ff
+    -> inst l doms l'
+    -> inst r doms r'
+    -> defEq l' r'
+    -> defEq l r
+    -> defEqPi l r doms
+
+| step 
+    (ln rn : Name)
+    (lt rt : Expr)
+    (ls rs : Bstyle)
+    (lb rb : Expr)
+    (lt' rt' : Expr)
+    (doms : list Expr)
+    (serial : nat)
+    : inst lt doms lt'
+    -> inst rt doms rt'
+    -> defEq lt' rt'
+    -> defEqPi lb rb ((mkLocal ln lt' ls serial) :: doms) 
+    -> defEqPi (mkPi ln lt ls lb) (mkPi rn rt rs rb) doms
+
+
+with defEqLambda : Expr -> Expr -> list Expr -> Prop
+| base 
+    (l r : Expr)
+    (doms : list Expr)
+    (l' r' : Expr)
+    : isLambda l ff
+    -> isLambda r ff
+    -> inst l doms l'
+    -> inst r doms r'
+    -> defEq l' r'
+    -> defEq l r
+    -> defEqLambda l r doms
+
+| step 
+    (ln rn : Name)
+    (lt rt : Expr)
+    (ls rs : Bstyle)
+    (lb rb : Expr)
+    (lt' rt' : Expr)
+    (doms : list Expr)
+    (serial : nat)
+    : inst lt doms lt'
+    -> inst rt doms rt'
+    -> defEq lt' rt'
+    -> defEqLambda lb rb ((mkLocal ln lt' ls serial) :: doms) 
+    -> defEqLambda (mkLambda ln lt ls lb) (mkLambda rn rt rs rb) doms
+
+with argsEq : list Expr -> list Expr -> Prop
+| base 
+    (ls rs : list Expr)
+    (shared_len : nat)
+    : listLen ls shared_len
+    -> listLen rs shared_len
+    -> argsEqAux ls rs
+    -> argsEq ls rs
+
+with argsEqAux : list Expr -> list Expr -> Prop
+| base : argsEqAux [] []
+| step 
+    (l_hd r_hd : Expr)
+    (l_tl r_tl : list Expr)
+    : defEq l_hd r_hd
+    -> argsEqAux l_tl r_tl
+    -> argsEqAux (l_hd :: l_tl) (r_hd :: r_tl)
+
+with lazyDeltaStep : Expr -> Expr -> DeltaResult -> Prop
+| eqSort (l r : Expr) : defEqSort l r -> lazyDeltaStep l r DeltaEq
+| eqPi (l r : Expr) : defEqPi l r [] -> lazyDeltaStep l r DeltaEq
+| eqLambda (l r : Expr) : defEqLambda l r [] -> lazyDeltaStep l r DeltaEq
+| noneNone (l r : Expr) : lazyDeltaStep l r (Exhausted l r)
+| someNone 
+    (l r : Expr)
+    (l_def : Declar)
+    (l_defval_unred : Expr)
+    (l_defval : Expr)
+    (result : DeltaResult)
+    : isDelta l l_def
+    -> unfoldDef l l_defval_unred
+    -> whnfCore l_defval_unred l_defval
+    -> lazyDeltaStep l_defval r result
+    -> lazyDeltaStep l r result
+           
+| noneSome 
+    (l r : Expr)
+    (r_def : Declar)
+    (r_defval_unred : Expr)
+    (r_defval : Expr)
+    (result : DeltaResult)
+    : isDelta r r_def
+    -> unfoldDef r r_defval_unred
+    -> whnfCore r_defval_unred r_defval
+    -> lazyDeltaStep l r_defval result
+    -> lazyDeltaStep l r result
+
+| lt 
+    (l r : Expr)
+    (l_dname r_dname : Name)
+    (l_duparams r_duparams : list Level)
+    (l_dtype r_dtype : Expr)
+    (l_dval r_dval : Expr)
+    (l_dhint r_dhint : Hint)
+    (l_dis_unsafe r_dis_unsafe : bool) 
+    (r_defval_unred : Expr)
+    (r_defval : Expr)
+    (result : DeltaResult)
+    : let l_defn := Definition l_dname l_duparams l_dtype l_dval l_dhint l_dis_unsafe,
+    r_defn := Definition r_dname r_duparams r_dtype r_dval r_dhint r_dis_unsafe
+    in
+    isDelta l l_defn
+    -> isDelta r r_defn
+    -> l_dhint < r_dhint
+    -> unfoldDef r r_defval_unred
+    -> whnfCore r_defval_unred r_defval
+    -> lazyDeltaStep l r_defval result
+    -> lazyDeltaStep l r result
+
+| gt 
+    (l r : Expr)
+    (l_dname r_dname : Name)
+    (l_duparams r_duparams : list Level)
+    (l_dtype r_dtype : Expr)
+    (l_dval r_dval : Expr)
+    (l_dhint r_dhint : Hint)
+    (l_dis_unsafe r_dis_unsafe : bool) 
+    (l_defval_unred : Expr)
+    (l_defval : Expr)
+    (result : DeltaResult)
+    : let l_defn := Definition l_dname l_duparams l_dtype l_dval l_dhint l_dis_unsafe,
+    r_defn := Definition r_dname r_duparams r_dtype r_dval r_dhint r_dis_unsafe
+    in
+    isDelta l l_defn
+    -> isDelta r r_defn
+    -> r_dhint < l_dhint
+    -> unfoldDef l l_defval_unred
+    -> whnfCore l_defval_unred l_defval
+    -> lazyDeltaStep l l_defval result
+    -> lazyDeltaStep l r result
+
+| extensional 
+    (l r : Expr)
+    (shared_defn : Declar)
+    (shared_cname : Name)
+    (l_clevels r_clevels : list Level)
+    (l_args r_args : list Expr)
+    : isDelta l shared_defn
+    -> isDelta r shared_defn
+    -> unfoldApps l (mkConst shared_cname l_clevels) l_args
+    -> unfoldApps r (mkConst shared_cname r_clevels) r_args
+    -> argsEq l_args r_args
+    -> eqAntisymmMany l_clevels r_clevels tt
+    -> lazyDeltaStep l r DeltaEq
+
+| eqStep 
+    (l r : Expr)
+    (l_dname r_dname : Name)
+    (l_duparams r_duparams : list Level)
+    (l_dtype r_dtype : Expr)
+    (l_dval r_dval : Expr)
+    (dhint : Hint)
+    (l_dis_unsafe r_dis_unsafe : bool) 
+    (l_defval_unred : Expr)
+    (r_defval_unred : Expr)
+    (l_defval : Expr)
+    (r_defval : Expr)
+    (result : DeltaResult)
+    : let l_defn := Definition l_dname l_duparams l_dtype l_dval dhint l_dis_unsafe,
+    r_defn := Definition r_dname r_duparams r_dtype r_dval dhint r_dis_unsafe
+    in
+    isDelta l l_defn
+    -> isDelta r r_defn
+    -> unfoldDef l l_defval_unred
+    -> unfoldDef r r_defval_unred
+    -> whnfCore l_defval_unred l_defval
+    -> whnfCore r_defval_unred r_defval
+    -> lazyDeltaStep r_defval l_defval result
+    -> lazyDeltaStep l r result
+          
+with defEqConst : Expr -> Expr -> Prop
+| base 
+    (n : Name)
+    (l_levels r_levels : list Level)
+    : eqAntisymmMany l_levels r_levels tt
+    -> defEqConst (mkConst n l_levels) (mkConst n r_levels)
+
+-- Any time two Locals have the same serial, they (should be) guaranteed
+-- to be identical.
+with defEqLocal : Expr -> Expr -> Prop
+| base 
+    (n : Name)
+    (t : Expr)
+    (s : Bstyle)
+    (serial : nat)
+    : defEqLocal (mkLocal n t s serial) (mkLocal n t s serial)
+
+with defEqApp : Expr -> Expr -> Prop
+| base 
+    (l r : Expr)
+    (l_fun r_fun : Expr)
+    (l_args r_args : list Expr)
+    : unfoldApps l l_fun l_args
+    -> unfoldApps r r_fun r_args
+    -> defEq l_fun r_fun
+    -> argsEq l_args r_args
+    -> defEqApp l r
+
+with defEqEta : Expr -> Expr -> Prop
+| base 
+    (r : Expr)
+    (ln rn : Name)
+    (lt rt : Expr)
+    (ls rs : Bstyle)
+    (lb rb : Expr)
+    (r_type_unred : Expr)
+    : infer r InferOnly r_type_unred
+    -> whnf r_type_unred (mkPi rn rt rs rb)
+    -> defEq (mkLambda ln lt ls lb) (mkLambda rn rt rs (mkApp r (mkVar 0)))
+    -> defEqEta (mkLambda ln lt ls lb) r
+
+with infer : Expr -> InferFlag -> Expr -> Prop
+| sort 
+    (e : Expr)
+    (flag : InferFlag)
+    (inferred : Expr)
+    : inferSort e flag inferred
+    -> infer e flag inferred
+
+| const 
+    (e : Expr)
+    (flag : InferFlag)
+    (inferred : Expr)
+    : inferConst e flag inferred
+    -> infer e flag inferred
+
+| app 
+    (e : Expr) 
+    (flag : InferFlag)
+    (f : Expr)
+    (args : list Expr)
+    (f_type : Expr)
+    (inferred : Expr)
+    : unfoldApps e f args
+    -> infer f flag f_type
+    -> inferApp f_type args [] flag inferred
+    -> infer e flag inferred
+
+| pi 
+    (e : Expr)
+    (flag : InferFlag)
+    (inferred : Expr)
+    : inferPi e [] [] flag inferred
+    -> infer e flag inferred
+     
+| lambda 
+    (e : Expr)
+    (flag : InferFlag)
+    (inferred : Expr)
+    : inferLambda e [] [] flag inferred
+    -> infer e flag inferred
+
+| let_ (e : Expr)
+       (flag : InferFlag)
+       (inferred : Expr)
+       :
+       inferLet e flag inferred
+       -> infer e flag inferred
+
+| local_ 
+    (e : Expr)
+    (flag : InferFlag)
+    (inferred : Expr)
+    : inferLocal e flag inferred
+    -> infer e flag inferred
+      
+
+with inferSortOf : Expr -> InferFlag -> Level -> Prop
+| base 
+    (e : Expr)
+    (flag : InferFlag)
+    (inferred : Expr)
+    (l : Level)
+    : infer e flag inferred
+    -> whnf inferred (mkSort l)
+    -> inferSortOf e flag l
+
+with ensureSort : Expr -> Level -> Prop
+| base (l : Level) : ensureSort (mkSort l) l
+| step 
+    (e : Expr)
+    (l : Level)
+    : whnf e (mkSort l)
+    -> ensureSort e l
+
+with ensureType : Expr -> Level -> Prop
+| base 
+    (e : Expr)
+    (e_type : Expr)
+    (l : Level)
+    : infer e InferOnly e_type
+    -> ensureSort e_type l
+    -> ensureType e l
+
+with ensurePi : Expr -> Expr -> Prop
+| base (e : Expr) : isPi e tt -> ensurePi e e
+| step (e e' : Expr) : whnf e e' -> isPi e' tt -> ensurePi e e'
+       
+
+with inferSort : Expr -> InferFlag -> Expr -> Prop
+| inferOnly (l : Level) : inferSort (mkSort l) InferOnly (mkSort (s l))
+| checked 
+    (l : Level) 
+    (tc_uparams : list Level)
+    : paramsDefined l tc_uparams
+    -> inferSort (mkSort l) Check (mkSort (s l))
+            
+ 
+
+
+with inferConst : Expr -> InferFlag -> Expr -> Prop
+| inferOnly 
+    (env : Env)
+    (c_name : Name)
+    (c_levels : list Level)
+    (flag : InferFlag)
+    (d : Declar)
+    (d_uparams : list Level)
+    (d_type : Expr)
+    (inferred : Expr)
+    : env.getDeclar c_name d
+    /-
+    -> getDeclarUparams d d_uparams
+    -> getDeclarType d d_type
+    -/
+    -> subst d_type d_uparams c_levels inferred
+    -> inferConst (mkConst c_name c_levels) InferOnly inferred
+
+       
+-- tc_uparams is the set of universe parameters from the
+-- declaration currently being checked by the type checker.
+| check 
+    (env : Env)
+    (c_name : Name)
+    (c_levels : list Level)
+    (flag : InferFlag)
+    (tc_uparams : list Level)
+    (d : Declar)
+    (d_uparams : list Level)
+    (d_type : Expr)
+    (inferred : Expr)
+    : env.getDeclar c_name d
+    /-
+    -> getDeclarUparams d d_uparams
+    -> getDeclarType d d_type
+    -/
+    -> paramsDefinedMany c_levels tc_uparams
+    -> subst d_type d_uparams c_levels inferred
+    -> inferConst (mkConst c_name c_levels) Check inferred
+
+
+with inferApp : Expr -> list Expr -> list Expr -> InferFlag -> Expr -> Prop
+-- looks weird since the function body's type was inferred
+-- before we star using inferApp in order to prevent the need
+-- for an auxiliary function.
+| base 
+    (e : Expr)
+    (context : list Expr)
+    (flag : InferFlag)
+    (inferred : Expr)
+    : inst e context inferred
+    -> inferApp e [] context flag inferred
+
+| stepInferOnly 
+    (n : Name)
+    (t : Expr)
+    (s : Bstyle)
+    (b : Expr)
+    (hd : Expr)
+    (args_tl : list Expr)
+    (context : list Expr)
+    (inferred : Expr)
+    : inferApp b args_tl (hd :: context) InferOnly inferred
+    -> inferApp (mkPi n t s b) (hd :: args_tl) (context) InferOnly inferred
+
+| stepChecked   
+    (n : Name)
+    (t : Expr)
+    (s : Bstyle)
+    (b : Expr)
+    (hd : Expr)
+    (args_tl : list Expr)
+    (context : list Expr)
+    (t' : Expr)
+    (arg_type : Expr)
+    (inferred : Expr)
+    : inst t context t'
+    -> infer hd Check arg_type
+    -> defEq t' arg_type
+    -> inferApp b args_tl (hd :: context) Check inferred
+    -> inferApp (mkPi n t s b) (hd :: args_tl) (context) Check inferred
+
+| stepNotPi 
+    (e : Expr)
+    (args : list Expr)
+    (context : list Expr)
+    (flag : InferFlag)
+    (e' : Expr)
+    (n : Name)
+    (t : Expr)
+    (s : Bstyle)
+    (b : Expr)
+    (inferred : Expr)
+    : inst e context e'
+    -> ensurePi e' (mkPi n t s b)
+    -> inferApp (mkPi n t s b) args [] flag inferred
+    -> inferApp e args context flag inferred
+
+with inferPi : Expr -> list Expr -> list Level -> InferFlag -> Expr -> Prop
+| base 
+    (e : Expr)
+    (local_binders : list Expr)
+    (levels : list Level)
+    (flag : InferFlag)
+    (inferred : Expr)
+    (instd : Expr)
+    (inferred_level : Level)
+    (folded : Level)
+    : isPi e ff
+    -> inst e local_binders instd
+    -> inferSortOf instd flag inferred_level
+    -> foldImaxs levels inferred_level folded
+    -> inferPi e local_binders levels flag (mkSort folded)
+
+| step 
+    (n : Name)
+    (t : Expr)
+    (s : Bstyle)
+    (b : Expr)
+    (local_binders : list Expr)
+    (levels : list Level)
+    (flag : InferFlag)
+    (inferred : Expr)
+    (t' : Expr)
+    (inferred_level : Level)
+    (serial : nat)
+    : inst t local_binders t'
+    -> inferSortOf t' flag inferred_level
+    -> inferPi b ((mkLocal n t' s serial) :: local_binders) (inferred_level :: levels) flag inferred
+    -> inferPi (mkPi n t s b) local_binders levels flag inferred
+
+
+with inferLambda : Expr -> list Expr -> list Expr -> InferFlag -> Expr -> Prop
+| base 
+    (e : Expr)
+    (b_types : list Expr)
+    (local_binders : list Expr)
+    (flag : InferFlag)
+    (inferred : Expr)
+    (e' : Expr)
+    (inferred_inner : Expr)
+    (abstrd : Expr)
+    (folded : Expr)
+    : isLambda e ff
+    -> inst e local_binders e'
+    -> infer e' flag inferred_inner
+    -> abstr inferred_inner local_binders abstrd
+    -> foldPisOnce b_types local_binders abstrd folded
+    -> inferLambda e b_types local_binders flag folded
+
+| stepInferOnly 
+    (n : Name)       
+    (t : Expr)
+    (s : Bstyle)
+    (b : Expr)
+    (b_types : list Expr)
+    (local_binders : list Expr)
+    (inferred : Expr)
+    (t' : Expr)
+    (serial : nat)
+    : inst t local_binders t'
+    -> inferLambda b (t :: b_types) ((mkLocal n t' s serial) :: local_binders) InferOnly inferred
+    -> inferLambda (mkLambda n t s b) b_types local_binders InferOnly inferred
+
+       
+| stepChecked 
+    (n : Name)       
+    (t : Expr)
+    (s : Bstyle)
+    (b : Expr)
+    (b_types : list Expr)
+    (local_binders : list Expr)
+    (inferred : Expr)
+    (t' : Expr)
+    (b_type_sort : Level)
+    (serial : nat)
+    : inst t local_binders t'
+    -> inferSortOf t' Check b_type_sort
+    -> inferLambda b (t :: b_types) ((mkLocal n t' s serial) :: local_binders) Check inferred
+    -> inferLambda (mkLambda n t s b) b_types local_binders Check inferred
+
+
+with inferLet : Expr -> InferFlag -> Expr -> Prop
+| inferOnly 
+    (n : Name)
+    (t : Expr)
+    (s : Bstyle)
+    (v : Expr)
+    (b : Expr)
+    (b' : Expr)
+    (inferred : Expr)
+    : inst1 b v b'
+    -> infer b' InferOnly inferred
+    -> inferLet (mkLet n t s v b) InferOnly inferred
+
+| checked 
+    (n : Name)
+    (t : Expr)
+    (s : Bstyle)
+    (v : Expr)
+    (b : Expr)
+    (t_level : Level)
+    (v_type : Expr)
+    (b' : Expr)
+    (inferred : Expr)
+    : inferSortOf t Check t_level
+    -> infer v Check v_type
+    -> defEq v_type t
+    -> inst1 b v b'
+    -> infer b' Check inferred
+    -> inferLet (mkLet n t s v b) Check inferred
+
+with inferLocal : Expr -> InferFlag -> Expr -> Prop
+| base 
+    (n : Name)
+    (t : Expr)
+    (s : Bstyle)
+    (serial : nat)
+    (flag : InferFlag)
+    : inferLocal (mkLocal n t s serial) flag t

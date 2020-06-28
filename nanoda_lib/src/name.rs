@@ -1,6 +1,6 @@
 use crate::level::{ LevelPtr, Level::* };
 use crate::trace::IsTracer;
-use crate::trace::steps::{ Step, GetPrefix };
+use crate::trace::steps::*;
 use crate::utils::{ 
     alloc_str, 
     Ptr,
@@ -69,7 +69,7 @@ impl<'a> NamePtr<'a> {
         Param(self).alloc(ctx)
     }
 
-    pub fn get_prefix(self, ctx : &mut impl IsLiveCtx<'a>) -> (NamePtr<'a>, Step<GetPrefix<'a>>) {
+    pub fn get_prefix(self, ctx : &mut impl IsLiveCtx<'a>) -> (NamePtr<'a>, Step<GetPrefixZst>) {
         match self.read(ctx) {
             Anon => {
                 GetPrefix::BaseAnon {
@@ -116,33 +116,3 @@ impl<'a> HasNanodaDbg<'a> for Name<'a> {
     }
 }
 
-
-//impl<'a> HasTraceRepr<'a> for Name<'a> {
-//    fn repr(self, ctx : &impl IsCtx<'a>) -> String {
-//        match self {
-//            Anon => format!("ANON"),
-//            Str(pfx, sfx) => {
-//                format!("#NS {} {}", )
-//            }
-//            Num(pfx, sfx) => {
-//                format!("#NI {} {}")
-//            }
-//        }
-//    }
-//}
-
-/*
-impl<'a> HasItemRepr<'a> for NamePtr<'a> {
-    fn item_repr(self, ctx : &impl IsCtx<'a>) -> String {
-        match self {
-            Anon => format!("ANON"),
-            Str(pfx, sfx) => {
-                format!("#NS {} {}", )
-            }
-            Num(pfx, sfx) => {
-                format!("#NI {} {}")
-            }
-        }
-    }
-}
-*/

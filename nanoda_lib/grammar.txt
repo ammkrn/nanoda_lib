@@ -1,0 +1,156 @@
+exportFile ::= traceLine\n*
+
+traceLine ::= 
+    | item
+    | step
+
+nat ::= 0-9*
+alphaNum ::= a-zA-Z0-9
+
+/* 
+The only list literal/inline list kind is lists of nats. 
+They're used to keep track of some state in construction
+elements in the inductive module without having to either
+permit lists of lists, or having to add const lists of nats
+as an item tracked by arenas, which would be a huge pain
+in the ass.
+*/
+
+natList ::= '[]' | '[' nat,* ']'
+    
+// misc terminals.
+binderStyle ::= 'd' | 'i' | 's' | 'c'
+reducibilityHint ::= 'o' | 'a' | nat
+inferFlag ::= 'I' | 'C'
+bool ::= 't' | 'f'
+eqResult ::= 'EQ'
+deltaResult ::= eqResult | exprRef '.' exprRef
+
+item ::= 
+    | stringItem 
+    | name 
+    | level 
+    | expr 
+    | recRule 
+    | declar 
+    | nameList 
+    | levelList 
+    | exprList 
+    | recRuleList 
+    | declarList
+
+itemRef ::= 
+    | stringRef 
+    | nameRef 
+    | levelRef 
+    | exprRef 
+    | recRuleRef 
+    | declarRef
+
+
+stringRef ::= itemLoc nat 's'
+stringItem ::= itemLoc 's' '.' alphaNum*
+
+nameRef ::= itemLoc nat 'n'
+nameList ::= 
+    | listLoc nat 'n_'
+    | listLoc nat 'n.' nameRef '.' listLoc nat 'n'
+
+name ::= 
+    | itemLoc nat 'na' 
+    | itemLoc nat 'ns' '.' nameRef '.' stringRef
+    | itemLoc nat 'ni' '.' nameRef '.' nat
+
+
+
+levelRef ::= itemLoc nat 'l'
+levelList ::= 
+    | listLoc nat 'l_' 
+    | listLoc nat 'l.' levelRef '.' listLoc nat 'l'
+
+level ::=
+    | itemLoc nat 'lz'
+    | itemLoc nat 'ls' '.' levelRef
+    | itemLoc nat 'lm' '.' levelRef '.' levelRef
+    | itemLoc nat 'li' '.' levelRef '.' levelRef
+    | itemLoc nat 'lp' '.' nameRef
+
+
+exprRef ::= itemLoc nat 'e'
+exprList ::= 
+    | listLoc nat 'e_' 
+    | listLoc nat 'e.' exprRef '.' listLoc nat 'e'
+
+expr ::=  
+    | itemLoc nat 'ev' 0-9*
+    | itemLoc nat 'es' '.' levelRef
+    | itemLoc nat 'ec' '.' nameRef '.' itemListRef
+    | itemLoc nat 'ea' '.' exprRef '.' exprRef
+    | itemLoc nat 'ep' '.' nameRef '.' exprRef '.' binderStyle '.' exprRef
+    | itemLoc nat 'el' '.' nameRef '.' exprRef '.' binderStyle '.' exprRef
+    | itemLoc nat 'ez' '.' nameRef '.' exprRef '.' binderStyle '.' exprRef '.' exprRef
+    | itemLoc nat 'ex' '.' nameRef '.' exprRef '.' binderStyle '.' nat
+
+recRuleRef ::= itemLoc nat 'r'
+recRuleList ::= 
+    | listLoc nat 'r_' 
+    | listLoc nat 'r.' recRuleRef '.' listLoc nat 'r'
+
+recRule ::= itemLoc nat 'r' '.' nameRef '.' nat '.' exprRef
+
+declarRef ::= itemLoc nat 'd'
+declarList ::=
+    | listLoc nat 'd_'
+    | listLoc nat 'd.' declarRef '.' listLoc nat 'd'
+
+declar ::= 
+    | itemLoc nat 'da' '.' nameRef '.' itemListRef '.' exprRef '.' bool
+    | itemLoc nat 'dd' '.' nameRef '.' itemListRef '.' exprRef '.' exprRef '.' reducibilityHint '.' bool
+    | itemLoc nat 'dq' '.' nameRef '.' itemListRef '.' exprRef
+    | itemLoc nat 'di' '.' nameRef '.' itemListRef '.' exprRef '.' nat '.' itemListRef '.' itemListRef
+    | itemLoc nat 'dc' '.' nameRef '.' itemListRef '.' exprRef '.' nameRef '.' { 3 * nat '.' } bool
+    | itemLoc nat 'dr' '.' nameRef '.' itemListRef '.' exprRef '.' itemListRef '.' { 5 * nat '.' } itemListRef '.' bool '.' bool
+
+/*
+'theorem' and 'opaque' are not yet used by lean3 export files; they're kernel items
+in lean4 that may or may not be present in lean4 exports
+*/
+    | itemLoc nat 'dt' '.' nameRef '.' itemListRef '.' exprRef '.' exprRef
+    | itemLoc nat 'do' '.' nameRef '.' itemListRef '.' exprRef '.' exprRef
+
+
+/*
+The general format for steps is 
+
+stepDiscrim ::= A-Z*
+stepCtor ::= A-Z
+step ::= nat '.' stepDiscrim '.' stepCtor '.' child*
+
+There's a machine-generated file at ./step_grammar.txt that has a more detailed
+breakdown that dictates exactly how to parse each step so you have more options
+on how you want to write the parser, IE whether you want to use a general rule,
+or whether you want to have a more detailed/safe parser with specific rules
+for each different step.
+
+I tried to make the elements of each step match the order in which they appear
+in the lean spec, but since I think the spec might change wrt field projections
+and maybe some other things, I didn't agonize over it, and can't guarantee I haven't messed up. 
+I can say for sure that each step's children will appear (from left to right) 
+in the order in which they appear from top to bottom as fields in their corresponding 
+enum variant (they're all in trace::steps), so I would use that as a reference for now.
+*/
+
+
+-- item reference or a nat pointer to a previous step.
+-- the `'S' itemRef` and `'N'` ones represent Option<T>. These only ever appear in the
+-- chile position, and are either an option itemRef, or option nat.
+childItem ::= 
+    | itemRef
+    | nat
+    | 'S' itemRef
+    | 'S' nat
+    | 'N'
+
+child ::=  '.' childItem
+
+

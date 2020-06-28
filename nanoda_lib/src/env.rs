@@ -8,6 +8,7 @@ use crate::trace::IsTracer;
 use crate::trace::steps::*;
 use crate::utils::{ 
     Tc, 
+    IsTc,
     Ptr, 
     Env, 
     Live, 
@@ -123,6 +124,67 @@ impl<'l, 'e : 'l> DeclarSpec<'e> {
     pub fn new_inductive(indblock : IndBlock<'e>) -> Self {
         InductiveSpec(indblock)
     }        
+
+    pub fn compile_and_check(
+        self,
+        ctx : &mut Live<'l, 'e, impl 'e + IsTracer>
+    ) {
+        match self {
+            AxiomSpec { name, uparams, type_, is_unsafe } => {
+                let d = <DeclarPtr>::new_axiom(name, uparams, type_, is_unsafe, ctx);
+                check_vitals(
+                    d.name(ctx), 
+                    d.uparams(ctx), 
+                    d.type_(ctx), 
+                    ctx
+                );
+                ctx.admit_declar(d);
+            },
+            DefinitionSpec { name, uparams, type_, val, is_unsafe } if !is_unsafe => {
+                let d = <DeclarPtr>::new_definition(name, uparams, type_, val, is_unsafe, ctx);
+                let val_ = match d.read(ctx) {
+                    Definition { val, .. } => val,
+                    _ => unreachable!()
+                };
+                {
+                    let mut tc = ctx.as_tc(Some(uparams), None);
+                    check_vitals_w_tc(d.name(&tc), d.uparams(&tc), d.type_(&tc), &mut tc);
+                    let (val_type, h1) = val_.infer(Check, &mut tc);
+                    val_type.assert_def_eq(d.type_(&tc), &mut tc);
+                }
+
+                ctx.admit_declar(d);
+            },
+            DefinitionSpec { .. } => {
+           // DefinitionSpec { name, uparams, type_, val, is_unsafe } => {
+                unimplemented!()
+            },
+           // TheoremSpec { name, uparams, type_, val } => {
+            TheoremSpec { ..} => {
+                unimplemented!()
+            },
+            OpaqueSpec {..} => {
+           // OpaqueSpec { name, uparams, type_, val } => {
+                unimplemented!()
+            },
+            QuotSpec => {
+                add_quot(ctx);
+            },
+            InductiveSpec(mut indblock) => {
+                indblock.declare_ind_types(ctx);
+                indblock.declare_cnstrs(ctx);
+                indblock.mk_elim_level(ctx);
+                indblock.init_k_target(ctx);
+                indblock.mk_local_indices(ctx);
+                indblock.mk_majors_wrapper(ctx);
+                indblock.mk_motives_wrapper(ctx);
+                indblock.mk_minors_wrapper(ctx);
+                indblock.declare_rec_rules(ctx);
+                indblock.declare_recursors(ctx);                 
+            },
+        }
+    }
+       
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -227,7 +289,7 @@ pub enum Declar<'a> {
         num_motives : u16,
         num_minors : u16,
         major_idx : u16,
-        rec_rules : ListPtr<'a, RecRule<'a>>,
+        rec_rules : RecRulesPtr<'a>,
         is_k : bool,
         is_unsafe : bool,
     }
@@ -241,7 +303,7 @@ impl<'a> RecRulesPtr<'a> {
         self,
         major_name : NamePtr<'a>,
         ctx : &mut impl IsCtx<'a>
-    ) -> Option<(RecRulePtr<'a>, Step<GetRecRuleAux<'a>>)> {
+    ) -> Option<(RecRulePtr<'a>, Step<GetRecRuleAuxZst>)> {
         match self.read(ctx) {
             Nil => None,
             Cons(hd, tl) if hd.read(ctx).ctor_name == major_name => {
@@ -255,13 +317,16 @@ impl<'a> RecRulesPtr<'a> {
                 }.step(ctx))
             },
             Cons(x, tl) => {
-                let (rule, h1) = tl.get_rec_rule_aux(major_name, ctx)?;
+                let (out_rule, h1) = tl.get_rec_rule_aux(major_name, ctx)?;
                 Some(GetRecRuleAux::Step{
+                    ctor_name : x.read(ctx).ctor_name,
+                    num_fields : x.read(ctx).num_fields,
+                    val : x.read(ctx).val,
                     major_name,
-                    rules : self,
-                    x,
-                    rule,
+                    rest : tl,
+                    out_rule,
                     h1,
+                    ind_arg1 : self,
                 }.step(ctx))
             }
 
@@ -272,7 +337,7 @@ impl<'a> RecRulesPtr<'a> {
         self, 
         major : ExprPtr<'a>, 
         ctx : &mut impl IsLiveCtx<'a>
-    ) -> Option<(RecRulePtr<'a>, Step<GetRecRule<'a>>)> {
+    ) -> Option<(RecRulePtr<'a>, Step<GetRecRuleZst>)> {
         let ((major_fun, major_args), h1) = major.unfold_apps(ctx);
         let (major_name, major_levels) = major_fun.try_const_info(ctx)?;
         let (rule, h2) = self.get_rec_rule_aux(major_name, ctx)?;
@@ -406,6 +471,118 @@ impl<'a> DeclarPtr<'a> {
             | Recursor    { is_unsafe, .. } => is_unsafe,
         }
     }
+    
+    pub fn new_axiom<'e>(
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        is_unsafe : bool,
+        ctx : &mut Live<'a, 'e, impl 'e + IsTracer>,
+    ) -> Self {
+        Axiom {
+            name,
+            uparams,
+            type_,
+            is_unsafe,
+        }.alloc(ctx)
+    }
+
+    
+    pub fn new_definition<'e>(
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        val : ExprPtr<'a>,
+        is_unsafe : bool,
+        ctx : &mut Live<'a, 'e, impl 'e + IsTracer>,
+    ) -> Self {
+        let (height, h1) = val.calc_height(ctx);
+
+        Definition {
+            name,
+            uparams,
+            type_,
+            val,
+            hint : Reg(height),
+            is_unsafe,
+        }.alloc(ctx)
+    }
+
+    pub fn new_inductive<'e>(
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        num_params : u16,
+        all_ind_names : NamesPtr<'a>,
+        all_ctor_names : NamesPtr<'a>,
+        is_unsafe : bool,
+        ctx : &mut Live<'a, 'e, impl 'e + IsTracer>,
+    ) -> Self {
+        Inductive {
+            name,
+            uparams,
+            type_,
+            num_params,
+            all_ind_names,
+            all_ctor_names,
+            is_unsafe
+        }.alloc(ctx)
+    }    
+
+    pub fn new_cnstr<'e>(
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        parent_name : NamePtr<'a>,
+        minor_idx : u16,
+        num_params : u16,
+        is_unsafe : bool,
+        ctx : &mut Live<'a, 'e, impl 'e + IsTracer>
+    ) -> Self {
+        Constructor {
+            name,
+            uparams,
+            type_,
+            parent_name,
+            num_fields : type_.telescope_size(ctx).0 - num_params,
+            minor_idx,
+            num_params,
+            is_unsafe
+        }.alloc(ctx)
+    }      
+
+    pub fn new_recursor<'e>(
+        name : NamePtr<'a>,
+        uparams : LevelsPtr<'a>,
+        type_ : ExprPtr<'a>,
+        all_names : NamesPtr<'a>,
+        num_params : u16,
+        num_indices : u16,
+        num_motives : u16,
+        num_minors : u16,
+        major_idx : u16,
+        rec_rules : RecRulesPtr<'a>,
+        is_k : bool,
+        is_unsafe : bool,
+        ctx : &mut Live<'a, 'e, impl 'e + IsTracer>
+    ) -> Self {
+        Recursor {
+            name,
+            uparams,
+            type_,
+            all_names,
+            num_params,
+            num_indices,
+            num_motives,
+            num_minors,
+            major_idx,
+            rec_rules,
+            is_k,
+            is_unsafe,
+        }.alloc(ctx)
+    }           
+
+
 }
 
 impl<'a> Declar<'a> {
@@ -613,3 +790,38 @@ pub enum ReducibilityHint {
     Abbrev,
 }
 
+pub fn check_vitals_w_tc<'t, 'l : 't, 'e : 'l>(
+    name : NamePtr<'l>,
+    uparams : LevelsPtr<'l>,
+    type_ : ExprPtr<'l>,
+    tc : &mut impl IsTc<'t, 'l, 'e>
+) -> Step<CheckVitalsZst> {
+    assert!(name.in_env());
+    assert!(uparams.in_env());
+    assert!(type_.in_env());
+    assert!(!type_.has_locals(tc));
+    let (b1, h1) = uparams.no_dupes(tc);
+    assert!(b1);
+    let (inferred, h2) = type_.infer(Check, tc);
+    let (_, h3) = inferred.ensure_sort(tc);
+
+    CheckVitals::Base {
+        n : name,
+        ups : uparams,
+        t : type_,
+        h1,
+        h2,
+        h3,
+    }.step_only(tc)
+}
+
+pub fn check_vitals<'t, 'l : 't, 'e : 'l>(
+    name : NamePtr<'l>,
+    uparams : LevelsPtr<'l>,
+    type_ : ExprPtr<'l>,
+    /*safe_only : Option<bool>,*/ 
+    live : &mut Live<'l, 'e, impl 'e + IsTracer>
+) -> Step<CheckVitalsZst> {
+    let mut tc = live.as_tc(Some(uparams), None);
+    check_vitals_w_tc(name, uparams, type_, &mut tc)
+}    
