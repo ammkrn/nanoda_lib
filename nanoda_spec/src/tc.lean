@@ -201,6 +201,7 @@ with whnfCore : Expr -> Expr -> Prop
 with whnfSort : Expr -> Expr -> Prop
 | sort (l l' : Level ): simplify l l' -> whnfSort (mkSort l) (mkSort l')
 
+-- The lambda and args have already been unfolded by whnfCore
 with whnfLambda : Expr -> list Expr -> list Expr -> Expr -> Prop
 | notLambda 
     (eA : Expr)
@@ -222,9 +223,6 @@ with whnfLambda : Expr -> list Expr -> list Expr -> Expr -> Prop
     -> whnfLambda eA [] lambda_args eC
 
 | step 
-    (n : Name)
-    (t : Expr)
-    (s : Bstyle)
     (b : Expr)
     (arg_hd : Expr)
     (args_tl : list Expr)
