@@ -5,13 +5,14 @@ import
     .env
     .tc
 
-/-
-Todo
 
 open Name Level Expr Declar
 
 inductive checkIndType : Expr -> Prop
 inductive checkCtor : Expr -> Prop
+
+/-
+Todo
 
 inductive mkLocalParams : nat -> Expr -> list Expr -> Prop
 | base (e : Expr) : mkLocalParams 0 e []

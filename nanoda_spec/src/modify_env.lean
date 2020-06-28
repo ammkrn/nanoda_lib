@@ -86,6 +86,11 @@ inductive checkVitals : Name -> list Level -> Expr -> Prop
     -> ensureSort inferred sort_of
     -> checkVitals n ups t 
 
+-- Unfortunately check and admit despite being nice 
+-- starting places are the things that are going to fall
+-- into place until I get the inductive/field thing
+-- sorted out, so checkOk and admitDeclar don't
+-- perfectly match up with the Rust steps right now.
 /-
 Two notes about definitions:
 1.
@@ -104,20 +109,18 @@ reducibility hints, so right now we're just using the lean 3
 convention that all definitions have `Reg n` reducibility 
 hints indicating their height.
 -/
-inductive admitDeclar : Env -> Declar -> Prop
+
+inductive checkOk : Declar -> Prop
 | ax 
-    (env : Env)
     (n : Name)
     (ups : list Level)
     (t : Expr)
     (is_unsafe : bool)
-    : let d := Axiom n ups t is_unsafe
-    in checkVitals n ups t
-    -> admitDeclar ((n, d) :: env) d
+    : checkVitals n ups t 
+    -> checkOk (Axiom n ups t is_unsafe)
 
 -- see above comment about unsafe Definitions
 | defn
-  (env : Env)
   (n : Name)
   (ups : list Level)
   (t : Expr)
@@ -130,15 +133,15 @@ inductive admitDeclar : Env -> Declar -> Prop
   -> checkVitals n ups t
   -> infer v Check inferred
   -> defEq t inferred
-  -> admitDeclar ((n, d) :: env) d
+  -> checkOk d
 
 | quot
   (env : Env)
   (n : Name)
   (ups : list Level)
   (t : Expr)
-  : let d := Quot n ups t
-  in admitDeclar ((n, d) :: env) d
+  : checkOk (Quot n ups t)
+
 
 | ind
   (env : Env)
@@ -151,7 +154,7 @@ inductive admitDeclar : Env -> Declar -> Prop
   (is_unsafe : bool) 
   : let d := Inductive n ups t num_params all_ind_names all_ctor_names is_unsafe
   in checkIndType t
-  -> admitDeclar ((n, d) :: env) d
+  -> checkOk d
 
 | ctor
   (env : Env)
@@ -165,7 +168,7 @@ inductive admitDeclar : Env -> Declar -> Prop
   (is_unsafe : bool)  
   : let d := Constructor n ups t parent_name num_fields minor_idx num_params is_unsafe
   in checkIndType t
-  -> admitDeclar ((n, d) :: env) d
+  -> checkOk d
 
 | recursor
   (env : Env)
@@ -194,7 +197,16 @@ inductive admitDeclar : Env -> Declar -> Prop
       rec_rules 
       is_k 
       is_unsafe
-  in admitDeclar ((n, d) :: env) d
+  in checkOk d
 
+
+inductive admitDeclar : Env -> Declar -> Prop
+| mk 
+    (env : Env) 
+    (n : Name) 
+    (d : Declar) 
+    : getDeclarName d n 
+    -> checkOk d 
+    -> admitDeclar ((n, d) :: env) d
 
 axiom mem_iff_admitted (n : Name) (d : Declar) (env : Env) (h : getDeclarName d n) : admitDeclar env d ↔ (n, d) ∈ env
