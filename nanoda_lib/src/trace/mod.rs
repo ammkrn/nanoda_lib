@@ -315,7 +315,7 @@ pub trait IsTracer : std::io::Write {
     fn trace_name_list<'a>(l : NamesPtr<'a>, ctx : &mut impl IsCtx<'a>) {
         let result = match l.read(ctx) {
             Nil => write!(ctx.tracer(), "{}_\n", l),
-            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}", l, hd, tl),
+            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}\n", l, hd, tl),
         };
         ctx.mut_mgr().finish_write(result);
     }
@@ -323,7 +323,7 @@ pub trait IsTracer : std::io::Write {
     fn trace_level_list<'a>(l : LevelsPtr<'a>, ctx : &mut impl IsCtx<'a>) {
         let result = match l.read(ctx) {
             Nil => write!(ctx.tracer(), "{}_\n", l),
-            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}", l, hd, tl),
+            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}\n", l, hd, tl),
         };
         ctx.mut_mgr().finish_write(result);
     }    
@@ -331,7 +331,7 @@ pub trait IsTracer : std::io::Write {
     fn trace_expr_list<'a>(l : ExprsPtr<'a>, ctx : &mut impl IsCtx<'a>) {
         let result = match l.read(ctx) {
             Nil => write!(ctx.tracer(), "{}_\n", l),
-            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}", l, hd, tl),
+            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}\n", l, hd, tl),
         };
         ctx.mut_mgr().finish_write(result);
     }    
@@ -340,7 +340,7 @@ pub trait IsTracer : std::io::Write {
     fn trace_rec_rule_list<'a>(l : RecRulesPtr<'a>, ctx : &mut impl IsCtx<'a>) {
         let result = match l.read(ctx) {
             Nil => write!(ctx.tracer(), "{}_\n", l),
-            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}", l, hd, tl),
+            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}\n", l, hd, tl),
         };
         ctx.mut_mgr().finish_write(result);
     }    
@@ -348,7 +348,7 @@ pub trait IsTracer : std::io::Write {
     fn trace_declar_list<'a>(l : DeclarsPtr<'a>, ctx : &mut impl IsCtx<'a>) {
         let result = match l.read(ctx) {
             Nil => write!(ctx.tracer(), "{}_\n", l),
-            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}", l, hd, tl),
+            Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}\n", l, hd, tl),
         };
         ctx.mut_mgr().finish_write(result);
     }       
