@@ -613,7 +613,6 @@ impl<'a> Declar<'a> {
                     val_type.assert_def_eq(type_, &mut tc);
                 }
             },
-            //DefSpec { name, uparams, type_, val, is_unsafe } => {
             Definition {..} => {
                 unimplemented!("unsafe declar");
                 //assert!(is_unsafe);
