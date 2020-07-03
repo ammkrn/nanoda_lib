@@ -408,7 +408,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
             Pi { b_name, b_type, b_style, body, .. } => {
                 let local = <ExprPtr>::new_local(b_name, b_type, b_style, ctx);
                 let body = body.inst1(local, ctx);
-                self.check_positivity1(parent_ind_type, body, parent_ind_const, ctx)
+                self.check_positivity1(parent_ind_type, parent_ind_const, body, ctx)
             },
             // assertion-like
             _ => assert!(self.is_valid_ind_app(parent_ind_type, parent_ind_const, cnstr_type_cursor, ctx))
@@ -439,7 +439,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
 
                 self.check_cnstr1(parent_ind_type, parent_ind_const, body, tl, ctx)
             },
-            (Pi { b_type, .. }, Nil) => {
+            (Pi { b_name, b_type, b_style, body, .. }, Nil) => {
                 
                 // assertion that b_type is a well formed inhabitant of something.
                 let s = b_type.ensure_type(&mut ctx.as_tc(Some(self.uparams), None));
@@ -453,6 +453,11 @@ impl<'l, 'e : 'l> IndBlock<'l> {
                 } else {
                     self.check_positivity1(parent_ind_type, parent_ind_const, b_type, ctx)
                 }
+
+                let local = <ExprPtr>::new_local(b_name, b_type, b_style, ctx);
+                let body_prime = body.inst1(local, ctx);
+                self.check_cnstr1(parent_ind_type, parent_ind_const, body_prime, rem_params, ctx);
+
             },
             _ => {
                 assert!(self.is_valid_ind_app(parent_ind_type, parent_ind_const, cnstr_type_cursor, ctx))
