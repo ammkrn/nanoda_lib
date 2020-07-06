@@ -269,7 +269,6 @@ pub enum Declar<'a> {
         type_ : ExprPtr<'a>,
         parent_name : NamePtr<'a>,
         num_fields : u16,
-        minor_idx : u16,
         num_params : u16,
         is_unsafe : bool,        
     },
@@ -461,7 +460,6 @@ impl<'a> Declar<'a> {
         uparams : LevelsPtr<'a>,
         type_ : ExprPtr<'a>,
         parent_name : NamePtr<'a>,
-        minor_idx : u16,
         num_params : u16,
         is_unsafe : bool,
         ctx : &mut Live<'a, 'e>
@@ -472,7 +470,6 @@ impl<'a> Declar<'a> {
             type_,
             parent_name,
             num_fields : type_.telescope_size(ctx) - num_params,
-            minor_idx,
             num_params,
             is_unsafe
         }
@@ -569,14 +566,13 @@ impl<'a> Declar<'a> {
                     is_unsafe
                 }
             },
-            Constructor { parent_name, num_fields, minor_idx, num_params, is_unsafe, .. } => {
+            Constructor { parent_name, num_fields, num_params, is_unsafe, .. } => {
                 Constructor {
                     name,
                     uparams,
                     type_,
                     parent_name : parent_name.insert_env(env, live),
                     num_fields,
-                    minor_idx,
                     num_params,
                     is_unsafe
                 }
