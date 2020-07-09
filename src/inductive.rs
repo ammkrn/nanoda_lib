@@ -408,7 +408,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
             Pi { b_name, b_type, b_style, body, .. } => {
                 let local = <ExprPtr>::new_local(b_name, b_type, b_style, ctx);
                 let body = body.inst1(local, ctx);
-                self.check_positivity1(parent_ind_type, body, parent_ind_const, ctx)
+                self.check_positivity1(parent_ind_type, parent_ind_const, body, ctx)
             },
             // assertion-like
             _ => assert!(self.is_valid_ind_app(parent_ind_type, parent_ind_const, cnstr_type_cursor, ctx))
@@ -439,7 +439,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
 
                 self.check_cnstr1(parent_ind_type, parent_ind_const, body, tl, ctx)
             },
-            (Pi { b_type, .. }, Nil) => {
+            (Pi { b_name, b_type, b_style, body, .. }, Nil) => {
                 
                 // assertion that b_type is a well formed inhabitant of something.
                 let s = b_type.ensure_type(&mut ctx.as_tc(Some(self.uparams), None));
@@ -453,6 +453,11 @@ impl<'l, 'e : 'l> IndBlock<'l> {
                 } else {
                     self.check_positivity1(parent_ind_type, parent_ind_const, b_type, ctx)
                 }
+
+                let local = <ExprPtr>::new_local(b_name, b_type, b_style, ctx);
+                let body_prime = body.inst1(local, ctx);
+                self.check_cnstr1(parent_ind_type, parent_ind_const, body_prime, rem_params, ctx);
+
             },
             _ => {
                 assert!(self.is_valid_ind_app(parent_ind_type, parent_ind_const, cnstr_type_cursor, ctx))
@@ -468,7 +473,6 @@ impl<'l, 'e : 'l> IndBlock<'l> {
         ind_const : ExprPtr<'l>,
         rem_cnstr_names : NamesPtr<'l>,
         rem_cnstr_types : ExprsPtr<'l>,
-        cnstr_idx : u16,
         ctx : &mut Live<'l, 'e>
     ) -> Vec<Declar<'l>> {
         match (rem_cnstr_names.read(ctx), rem_cnstr_types.read(ctx)) {
@@ -480,10 +484,8 @@ impl<'l, 'e : 'l> IndBlock<'l> {
                     ind_const, 
                     ns, 
                     ts, 
-                    cnstr_idx + 1, 
                     ctx
                 );
-                // 
 
                 // assertion.
                 let _= self.check_cnstr1(ind_type, ind_const, t, self.local_params(), ctx);
@@ -493,7 +495,6 @@ impl<'l, 'e : 'l> IndBlock<'l> {
                     self.uparams, 
                     t, 
                     ind_name, 
-                    cnstr_idx,
                     self.num_params, 
                     self.is_unsafe, 
                     ctx
@@ -527,7 +528,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
                 let ct_hd = rem_cnstr_ts.take(*num as usize, ctx);
                 let ct_tl = rem_cnstr_ts.skip(*num as usize, ctx);
                 let mut sink = self.mk_cnstrs(i_ns, i_ts, i_cs, nums, cn_tl, ct_tl, ctx);
-                let hd = self.mk_cnstrs_group(i_n, i_t, i_c, cn_hd, ct_hd, 0, ctx);
+                let hd = self.mk_cnstrs_group(i_n, i_t, i_c, cn_hd, ct_hd, ctx);
                 sink.extend(hd);
                 sink
             },    
@@ -758,11 +759,12 @@ impl<'l, 'e : 'l> IndBlock<'l> {
     ) -> ExprPtr<'l> {
         let motive_base = self.elim_level().new_sort(live);
         let motive_type = local_indices.fold_pis(motive_base, live);
-        let motive_name = if self.ind_types.len(live) > 1 {
-            name!("C", live).new_num(ind_type_idx, live)
-        } else {
-            name!("C", live)
-        };
+        let motive_name = name!("C", live).new_num(ind_type_idx, live);
+        //let motive_name = if self.ind_types.len(live) > 1 {
+        //    name!("C", live).new_num(ind_type_idx, live)
+        //} else {
+        //    name!("C", live)
+        //};
 
         <ExprPtr>::new_local(motive_name, motive_type, Implicit, live)
     }    
@@ -777,11 +779,12 @@ impl<'l, 'e : 'l> IndBlock<'l> {
         let motive_base = self.elim_level().new_sort(live);
         let motive_type = major.apply_pi(motive_base, live);
         let motive_type = local_indices.fold_pis(motive_type, live);
-        let motive_name = if self.ind_types.len(live) > 1 {
-            name!("C", live).new_num(ind_type_idx, live)
-        } else {
-            name!("C", live)
-        };
+        let motive_name = name!("C", live).new_num(ind_type_idx, live);
+        //let motive_name = if self.ind_types.len(live) > 1 {
+        //    name!("C", live).new_num(ind_type_idx, live)
+        //} else {
+        //    name!("C", live)
+        //};
 
         <ExprPtr>::new_local(motive_name, motive_type, Implicit, live)
     }
@@ -843,7 +846,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
     // The main thing this does is make two lists, the one on the left is all of the 
     // constructor's arguments, and the one on the right is only the constructors arguments
     // that are recursive.
-    pub fn strip_cnstr(
+    pub fn sep_nonrec_rec_cnstr_args(
         &self, 
         ind_t : ExprPtr<'l>,
         ind_c : ExprPtr<'l>,
@@ -854,7 +857,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
         match (cnstr_type_cursor.read(live), rem_params.read(live)) {
             (Pi { body, .. }, Cons(hd, tl)) => {
                 let body = body.inst1(hd, live);
-                let (inner, all_args, rec_args) = self.strip_cnstr(
+                let (inner, all_args, rec_args) = self.sep_nonrec_rec_cnstr_args(
                     ind_t, 
                     ind_c, 
                     body, 
@@ -867,7 +870,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
                 let local = <ExprPtr>::new_local(b_name, b_type, b_style, live);
                 let body = body.inst1(local, live);
 
-                let (stripped, all_args, rec_args) = self.strip_cnstr(
+                let (stripped, all_args, rec_args) = self.sep_nonrec_rec_cnstr_args(
                     ind_t, 
                     ind_c, 
                     body, 
@@ -958,7 +961,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
             (Cons(c_n, c_ns), Cons(c_t, c_ts)) => {
                 let sink = self.mk_minors1group(ind_name, ind_type, ind_const, c_ns, c_ts, cnstr_idx + 1, live);
 
-                let (stripd_instd_cnstr_type, all_args, rec_args) = self.strip_cnstr(
+                let (stripd_instd_cnstr_type, all_args, rec_args) = self.sep_nonrec_rec_cnstr_args(
                                                                                     ind_type,
                                                                                     ind_const,
                                                                                     c_t,
@@ -1101,7 +1104,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
         this_minor : ExprPtr<'l>,
         live : &mut Live<'l, 'e>
     ) -> RecRulePtr<'l> {
-        let (_, all_args, rec_args) = self.strip_cnstr(ind_type,
+        let (_, all_args, rec_args) = self.sep_nonrec_rec_cnstr_args(ind_type,
                                                        ind_const,
                                                        cnstr_type,
                                                        self.local_params(),

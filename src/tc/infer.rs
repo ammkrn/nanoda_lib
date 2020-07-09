@@ -1,5 +1,4 @@
-use std::collections::VecDeque as VecD;
-use crate::name::{ NamePtr, Name };
+use crate::name::NamePtr;
 use crate::level::{ LevelPtr, LevelsPtr, Level };
 use crate::expr::{ Expr, ExprPtr, Expr::*, BinderStyle };
 use crate::utils::{ List::*, Tc, IsCtx, HasNanodaDbg };
@@ -290,7 +289,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         let r = match self.read(tc) {
             Sort { level } => self.infer_sort_core(level, flag, tc),
             Const { name, levels } => self.infer_const(name, levels, flag, tc),
-            App { fun, arg, .. } => self.infer_app(flag, tc),
+            App {..} => self.infer_app(flag, tc),
             Pi {..} => self.infer_pi(flag, tc),
             Lambda { .. } => self.infer_lambda(flag, tc), 
             Let { b_name, b_type, b_style, val, body, .. } => self.infer_let(b_name, b_type, b_style, val, body, flag, tc),
