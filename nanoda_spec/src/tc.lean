@@ -246,10 +246,6 @@ with whnfLet : ∀ (e : Expr) (args : list Expr) (e' : Expr), Prop
     -> whnfCore bodyC e'
     -> whnfLet e args e'
 
-/-
-For the quot reduction steps, qlift_name, qind_name, qmk_pos, f_pos, and B_of_pos
-are not going to be present in the output since they're literal constants.
--/
 with reduceQuotLift : ∀ (constE : Expr) (args : list Expr) (out : Expr), Prop
 | base 
     (c_levels : list Level)
@@ -260,14 +256,12 @@ with reduceQuotLift : ∀ (constE : Expr) (args : list Expr) (out : Expr), Prop
     (qmk_args : list Expr)
     (out_unred : Expr)
     (out : Expr) :
-    let qmk_pos := 5,
-        f_pos := 3,
-        skipped := args.drop (qmk_pos + 1),
+    let skipped := args.drop 6,
         qmk_const := mkConst qmk_name qmk_levels,
         qlift_const := mkConst qlift_name c_levels,
-        qmk_A_r_a_unred := getInfal args qmk_pos,
+        qmk_A_r_a_unred := getInfal args 5,
         qmk_A_r_a := mkApp qmk_A_r a,
-        f := getInfal args f_pos,
+        f := getInfal args 3,
         B := mkApp f a
     in
     -- ASSERT : quot is defined/exists in env
@@ -288,13 +282,11 @@ with reduceQuotInd : ∀ (constE : Expr) (args : list Expr) (out : Expr), Prop
     (B_of : Expr)
     (out_unred : Expr)
     (out : Expr) :
-    let qmk_pos := 4,
-        B_of_pos := 3,
-        skipped := args.drop (qmk_pos + 1),
+    let skipped := args.drop 5,
         qmk_const := mkConst qmk_name qmk_levels,
         qind_const := mkConst qind_name c_levels,
-        B_of := getInfal args B_of_pos,
-        qmk_A_r_a_unred := getInfal args qmk_pos,
+        B_of := getInfal args 3,
+        qmk_A_r_a_unred := getInfal args 4,
         qmk_A_r_a := mkApp qmk_A_r a,
         B_app := mkApp B_of a
     in
