@@ -35,7 +35,7 @@ pub enum Level<'a> {
 
 // You can never alloc somewhere higher/shorter lived than where you already are,
 // but for insert_env you can alloc down/longer lived
-// *** You can only be sure you've squashed to a lower one by DIRECTLy accessing
+// *** You can only be sure you've squashed to a lower one by DIRECTLY accessing
 // a specific store, like Env or something, since in this case you can't be sure
 // that the children are longer lived (even though they are.)
 impl<'a> Level<'a> {
@@ -123,43 +123,42 @@ impl<'a> LevelPtr<'a> {
         }
     }
 
-
     pub fn is_zero_lit(self, ctx : &mut impl IsLiveCtx<'a>) -> (bool, Step<IsZeroLitZst>) {
         match self.read(ctx) {
             Zero => {
                 IsZeroLit::Zero {
-                    ind_arg1 : self,
-                    ind_arg2 : true
+                    l : self,
+                    result : true
                 }.step(ctx)
             }
             Succ(pred) => {
                 IsZeroLit::Succ {
-                    l : pred,
-                    ind_arg1 : self,
-                    ind_arg2 : false,
+                    pred,
+                    l : self,
+                    result : false,
                 }.step(ctx)
             },
-            Max(l, r) => {
+            Max(fst, snd) => {
                 IsZeroLit::Max {
-                    l,
-                    r,
-                    ind_arg1 : self,
-                    ind_arg2 : false,
+                    fst,
+                    snd,
+                    l : self,
+                    result : false,
                 }.step(ctx)
             },
-            Imax(l, r) => {
+            Imax(fst, snd) => {
                 IsZeroLit::Imax {
-                    l,
-                    r,
-                    ind_arg1 : self,
-                    ind_arg2 : false,
+                    fst,
+                    snd,
+                    l : self,
+                    result : false,
                 }.step(ctx)
             },
             Param(n) => {
                 IsZeroLit::Param {
                     n,
-                    ind_arg1 : self,
-                    ind_arg2 : false,
+                    l : self,
+                    result : false,
                 }.step(ctx)
             }
         }
@@ -169,38 +168,38 @@ impl<'a> LevelPtr<'a> {
         match self.read(ctx) {
             Zero => {
                 IsSucc::Zero {
-                    ind_arg1 : self,
-                    ind_arg2 : false
+                    l : self,
+                    result : false
                 }.step(ctx)
             }
             Succ(pred) => {
                 IsSucc::Succ {
-                    l : pred,
-                    ind_arg1 : self,
-                    ind_arg2 : true,
+                    pred : pred,
+                    l : self,
+                    result : true,
                 }.step(ctx)
             },
-            Max(l, r) => {
+            Max(fst, snd) => {
                 IsSucc::Max {
-                    l,
-                    r,
-                    ind_arg1 : self,
-                    ind_arg2 : false,
+                    fst,
+                    snd,
+                    l : self,
+                    result : false,
                 }.step(ctx)
             },
-            Imax(l, r) => {
+            Imax(fst, snd) => {
                 IsSucc::Imax {
-                    l,
-                    r,
-                    ind_arg1 : self,
-                    ind_arg2 : false,
+                    fst,
+                    snd,
+                    l : self,
+                    result : false,
                 }.step(ctx)
             },
             Param(n) => {
                 IsSucc::Param {
                     n,
-                    ind_arg1 : self,
-                    ind_arg2 : false,
+                    l : self,
+                    result : false,
                 }.step(ctx)
             }        
         }
@@ -210,38 +209,38 @@ impl<'a> LevelPtr<'a> {
         match self.read(ctx) {
             Zero => {
                 IsAnyMax::Zero {
-                    ind_arg1 : self,
-                    ind_arg2 : false
+                    l : self,
+                    result : false
                 }.step(ctx)
             }
             Succ(pred) => {
                 IsAnyMax::Succ {
-                    l : pred,
-                    ind_arg1 : self,
-                    ind_arg2 : false,
+                    pred,
+                    l : self,
+                    result : false,
                 }.step(ctx)
             },
-            Max(l, r) => {
+            Max(fst, snd) => {
                 IsAnyMax::Max {
-                    l,
-                    r,
-                    ind_arg1 : self,
-                    ind_arg2 : true,
+                    fst,
+                    snd,
+                    l : self,
+                    result : true,
                 }.step(ctx)
             },
-            Imax(l, r) => {
+            Imax(fst, snd) => {
                 IsAnyMax::Imax {
-                    l,
-                    r,
-                    ind_arg1 : self,
-                    ind_arg2 : true,
+                    fst,
+                    snd,
+                    l : self,
+                    result : true,
                 }.step(ctx)
             },
             Param(n) => {
                 IsAnyMax::Param {
                     n,
-                    ind_arg1 : self,
-                    ind_arg2 : false,
+                    l : self,
+                    result : false,
                 }.step(ctx)
             }        
         }
@@ -252,26 +251,28 @@ impl<'a> LevelPtr<'a> {
             (Zero, _) => {
                 Combining::Lzero {
                     r : other,
-                    ind_arg1 : self,
+                    l : self,
+                    result : other,
                 }.step(ctx)
             }
             (_, Zero) => {
                 Combining::Rzero {
                     l : self,
-                    ind_arg2 : other,
+                    r : other,
+                    result : self,
                 }.step(ctx)
             }
-            (Succ(l), Succ(r)) => {
-                let (x, h1) = l.combining(r, ctx);
-                let ind_arg3 = x.new_succ(ctx);
+            (Succ(l_pred), Succ(r_pred)) => {
+                let (result_prime, h1) = l_pred.combining(r_pred, ctx);
+                let result = result_prime.new_succ(ctx);
                 Combining::Succ {
-                    l,
-                    r,
-                    x,
-                    h1,
-                    ind_arg1 : self,
-                    ind_arg2 : other,
-                    ind_arg3
+                    l_pred,
+                    r_pred,
+                    result_prime,
+                    l : self,
+                    r : other,
+                    result,
+                    h1
                 }.step(ctx)
             }
             _ => {
@@ -282,11 +283,11 @@ impl<'a> LevelPtr<'a> {
                 Combining::Owise {
                     l : self,
                     r : other,
+                    result : self.new_max(other, ctx),
                     h1,
                     h2,
                     h3,
                     h4,
-                    ind_arg3 : self.new_max(other, ctx)
                 }.step(ctx)
             }
         }
@@ -297,87 +298,91 @@ impl<'a> LevelPtr<'a> {
         match self.read(ctx) {
             Zero => {
                 Simplify::Zero {
-                    ind_arg1 : self,
+                    l : self,
+                    result : self,
                 }.step(ctx)
             }
             Param(n) => {
                 Simplify::Param {
                     n,
-                    ind_arg1 : self,
+                    l : self,
+                    result : self,
                 }.step(ctx)
             }
-            Succ(l) => {
-                let (l_prime, h1) = l.simplify(ctx);
-                let ind_arg2 = l_prime.new_succ(ctx);
+            Succ(pred) => {
+                let (pred_prime, h1) = pred.simplify(ctx);
+                let result = pred_prime.new_succ(ctx);
 
                 Simplify::Succ {
-                    l,
-                    l_prime,
+                    pred,
+                    pred_prime,
+                    l : self,
+                    result,
                     h1,
-                    ind_arg1 : self,
-                    ind_arg2,
                 }.step(ctx)
             }
-            Max(l, r) => {
-                let (l_prime, h1) = l.simplify(ctx);
-                let (r_prime, h2) = r.simplify(ctx);
-                let (x, h3) = l_prime.combining(r_prime, ctx);
+            Max(fst, snd) => {
+                let (fst_prime, h1) = fst.simplify(ctx);
+                let (snd_prime, h2) = snd.simplify(ctx);
+                let (result, h3) = fst_prime.combining(snd_prime, ctx);
                 Simplify::Max {
-                    l,
-                    r,
-                    l_prime,
-                    r_prime,
-                    x,
+                    fst,
+                    snd,
+                    fst_prime,
+                    snd_prime,
+                    result,
+                    l : self,
                     h1,
                     h2,
                     h3,
-                    ind_arg1 : self,
                 }.step(ctx)
             },
-            Imax(l, r) => {
-                let (rsimp, h1) = r.simplify(ctx);
-                match rsimp.read(ctx) {
+            Imax(fst, snd) => {
+                let (snd_prime, h1) = snd.simplify(ctx);
+                match snd_prime.read(ctx) {
                     Zero => {
                         Simplify::ImaxZero {
-                            l,
-                            r,
+                            fst,
+                            snd,
+                            snd_prime,
+                            l : self,
+                            result : snd_prime,
                             h1,
-                            ind_arg1 : self,
-                            ind_arg2 : rsimp,
                         }.step(ctx)
                     }
                     Succ(r_prime) => {
-                        let (l_prime, h2) = l.simplify(ctx);
-                        let (x, h3) = l_prime.combining(rsimp, ctx);
+                        let (fst_prime, h2) = fst.simplify(ctx);
+                        let (x, h3) = fst_prime.combining(snd_prime, ctx);
                         Simplify::ImaxSucc {
-                            l,
-                            r,
-                            l_prime,
-                            r_prime,
-                            x,
+                            fst,
+                            snd,
+                            fst_prime,
+                            snd_prime : r_prime,
+                            result : x,
+                            l : self,
+                            succ_snd_prime : snd_prime,
                             h1,
                             h2,
                             h3,
-                            ind_arg1 : self,
                         }.step(ctx)
                     }
                     _ => {
-                        let r_prime = rsimp;
+                        let r_prime = snd_prime;
                         let (_, h2) = r_prime.is_zero_lit(ctx);
                         let (_, h3) = r_prime.is_succ(ctx);
-                        let (l_prime, h4) = l.simplify(ctx);
-                        let ind_arg2 = l_prime.new_imax(r_prime, ctx);
+                        let (l_prime, h4) = fst.simplify(ctx);
+                        let result = l_prime.new_imax(r_prime, ctx);
                         Simplify::ImaxOwise {
-                            l,
-                            r,
-                            l_prime,
-                            r_prime,
+                            fst,
+                            snd,
+                            fst_prime : l_prime,
+                            snd_prime : r_prime,
+                            l : self,
+                            result,
                             h1,
                             h2,
                             h3,
                             h4,
-                            ind_arg1 : self,
-                            ind_arg2,
                         }.step(ctx)
                     }
                 }
@@ -397,8 +402,8 @@ impl<'a> LevelPtr<'a> {
             Zero => {
                 ParamsDefined::Zero {
                     params,
-                    ind_arg1 : self,
-                    out : true
+                    l : self,
+                    result : true
                 }.step(ctx)
             },
             Succ(pred) => {
@@ -406,9 +411,9 @@ impl<'a> LevelPtr<'a> {
                 ParamsDefined::Succ {
                     pred,
                     params,
+                    l : self,
+                    result : out,
                     h1,
-                    ind_arg1 : self,
-                    out
                 }.step(ctx)
             },
             Max(l, r) => {
@@ -416,13 +421,13 @@ impl<'a> LevelPtr<'a> {
                 let (out_r, h2) = r.params_defined(params, ctx);
                 let out = out_l && out_r;
                 ParamsDefined::Max {
-                    l,
-                    r,
+                    fst : l,
+                    snd : r,
                     params,
+                    l : self,
+                    result : out,
                     h1,
                     h2,
-                    ind_arg1 : self,
-                    out
                 }.step(ctx)
             }
             Imax(l, r) => {
@@ -430,13 +435,13 @@ impl<'a> LevelPtr<'a> {
                 let (out_r, h2) = r.params_defined(params, ctx);
                 let out = out_l && out_r;
                 ParamsDefined::Imax {
-                    l,
-                    r,
+                    fst : l,
+                    snd : r,
                     params,
+                    l : self,
+                    result : out,
                     h1,
                     h2,
-                    ind_arg1 : self,
-                    out
                 }.step(ctx)
             }
             Param(n) => match params.read(ctx) {
@@ -444,11 +449,10 @@ impl<'a> LevelPtr<'a> {
                 Cons(hd, tl) if self == hd => {
                     ParamsDefined::BaseParam {
                         n,
-                        hd,
                         tl,
-                        ind_arg1 : self,
-                        ind_arg2 : params,
-                        out : true
+                        l : self,
+                        params,
+                        result : true
                     }.step(ctx)
                 },
                 Cons(hd, tl) => {
@@ -457,10 +461,10 @@ impl<'a> LevelPtr<'a> {
                         n,
                         hd,
                         tl,
+                        l : self,
+                        params,
+                        result : out,
                         h1,
-                        ind_arg1 : self,
-                        ind_arg2 : params,
-                        out
                     }.step(ctx)
                 }
             }
@@ -478,63 +482,63 @@ impl<'a> LevelPtr<'a> {
                 SubstL::Zero {
                     ks,
                     vs,
-                    ind_arg1 : self,
+                    l : self,
+                    l_prime : self,
                 }.step(ctx)
             },
             Succ(pred) => {
                 let (pred_prime, h1) = pred.subst(ks, vs, ctx);
-                let ind_arg2 = pred_prime.new_succ(ctx);
+                let l_prime = pred_prime.new_succ(ctx);
                 SubstL::Succ {
                     pred,
                     pred_prime,
                     ks,
                     vs,
+                    l : self,
+                    l_prime,
                     h1,
-                    ind_arg1 : self,
-                    ind_arg2,
                 }.step(ctx)
             },
-            Max(l, r) => {
-                let (l_prime, h1) = l.subst(ks, vs, ctx);
-                let (r_prime, h2) = r.subst(ks, vs, ctx);
-                let ind_arg2 = l_prime.new_max(r_prime, ctx);
+            Max(fst, snd) => {
+                let (fst_prime, h1) = fst.subst(ks, vs, ctx);
+                let (snd_prime, h2) = snd.subst(ks, vs, ctx);
+                let lvl_prime = fst_prime.new_max(snd_prime, ctx);
                 SubstL::Max {
-                    l,
-                    r,
-                    l_prime,
-                    r_prime,
+                    fst,
+                    snd,
+                    fst_prime,
+                    snd_prime,
+                    l : self,
+                    l_prime : lvl_prime,
                     ks,
                     vs,
                     h1,
                     h2,
-                    ind_arg1 : self,
-                    ind_arg2
                 }.step(ctx)
             },
-            Imax(l, r) => {
-                let (l_prime, h1) = l.subst(ks, vs, ctx);
-                let (r_prime, h2) = r.subst(ks, vs, ctx);
-                let ind_arg2 = l_prime.new_imax(r_prime, ctx);
+            Imax(fst, snd) => {
+                let (fst_prime, h1) = fst.subst(ks, vs, ctx);
+                let (snd_prime, h2) = snd.subst(ks, vs, ctx);
+                let lvl_prime = fst_prime.new_imax(snd_prime, ctx);
                 SubstL::Imax {
-                    l,
-                    r,
-                    l_prime,
-                    r_prime,
+                    fst,
+                    snd,
+                    fst_prime,
+                    snd_prime,
+                    l : self,
+                    l_prime : lvl_prime,
                     ks,
                     vs,
                     h1,
                     h2,
-                    ind_arg1 : self,
-                    ind_arg2
                 }.step(ctx)                
             },
             Param(n) => match (ks.read(ctx), vs.read(ctx)) {
                 (Nil, Nil) => {
                     SubstL::ParamNil {
                         n,
-                        ind_arg1 : self,
-                        ind_arg2 : ks,
-                        ind_arg3 : vs,
+                        l : self,
+                        nil : ks,
                     }.step(ctx)
                 }
                 (Cons(k, ks_tl), Cons(v, vs_tl)) if self == k => {
@@ -543,14 +547,13 @@ impl<'a> LevelPtr<'a> {
                         v,
                         ks_tl,
                         vs_tl,
-                        ind_arg1 : self,
-                        ind_arg2 : ks,
-                        ind_arg3 : vs,
+                        l : self,
+                        ks,
+                        vs,
                     }.step(ctx)
                 }
                 (Cons(k, ks_tl), Cons(v, vs_tl)) => {
-                    let h1 = self == k;
-                    let (l_prime, h2) = self.subst(ks_tl, vs_tl, ctx);
+                    let (l_prime, h1) = self.subst(ks_tl, vs_tl, ctx);
                     SubstL::ParamMiss {
                         n,
                         k,
@@ -558,17 +561,78 @@ impl<'a> LevelPtr<'a> {
                         l_prime,
                         ks_tl,
                         vs_tl,
+                        l : self,
+                        ks,
+                        vs,
                         h1,
-                        h2,
-                        ind_arg1 : self,
-                        ind_arg2 : ks,
-                        ind_arg3 : vs,
                     }.step(ctx)
                 }
                 _ => unreachable!("level::subst must get lists of equal length!")
             }
         }
     }
+
+
+    fn ensure_imax_leq(
+        self, 
+        lhs : Self,
+        rhs : Self,
+        l_h : usize,
+        r_h : usize,
+        ctx : &mut impl IsLiveCtx<'a>
+    ) -> (bool, Step<EnsureImaxLeqZst>) {
+
+        assert!(self.is_param(ctx).0);
+        let i_snd_list = levels!([self], ctx);
+        let zero_list = levels!([Zero.alloc(ctx)], ctx);
+        let succ_list = levels!([self.new_succ(ctx)], ctx);
+
+        let (l_z, h1) = lhs.subst(i_snd_list, zero_list, ctx);
+        let (r_z, h2) = rhs.subst(i_snd_list, zero_list, ctx);
+        let (l_z_prime, h3) = l_z.simplify(ctx);
+        let (r_z_prime, h4) = r_z.simplify(ctx);
+        let (b1, h5) = l_z_prime.leq_core(r_z_prime, l_h, r_h, ctx);
+
+        let (l_s, h6) = lhs.subst(i_snd_list, succ_list, ctx);
+        let (r_s, h7) = rhs.subst(i_snd_list, succ_list, ctx);
+        let (l_s_prime, h8) = l_s.simplify(ctx);
+        let (r_s_prime, h9) = r_s.simplify(ctx);
+        let (b2, h10) = l_s_prime.leq_core(r_s_prime, l_h, r_h, ctx);
+        let result = b1 && b2;
+
+        EnsureImaxLeq::Base {
+            i_snd : self,
+            l : lhs,
+            r : rhs,
+            l_h,
+            r_h,
+            l_z,
+            r_z,
+            l_z_prime,
+            r_z_prime,
+            l_s,
+            r_s,
+            l_s_prime,
+            r_s_prime,
+            b1,
+            b2,
+            pp : i_snd_list,
+            zz : zero_list,
+            s_pp : succ_list,
+            result,
+            h1,
+            h2,
+            h3,
+            h4,
+            h5,
+            h6,
+            h7,
+            h8,
+            h9,
+            h10
+        }.step(ctx)
+
+    }   
 
     fn leq_core(
         self,
@@ -583,9 +647,8 @@ impl<'a> LevelPtr<'a> {
                     r : other,
                     l_h,
                     r_h,
-                    h1 : l_h <= r_h,
-                    ind_arg1 : self,
-                    res : true
+                    l : self,
+                    result : true
                 }.step(ctx)
             },
             (_, Zero) if r_h < l_h => {
@@ -593,9 +656,8 @@ impl<'a> LevelPtr<'a> {
                     l : self,
                     l_h,
                     r_h,
-                    h1 : r_h < l_h,
-                    ind_arg2 : other,
-                    res : false
+                    r : other,
+                    result : false
                 }.step(ctx)
             },
             (Param(n1), Param(n2)) => {
@@ -604,9 +666,9 @@ impl<'a> LevelPtr<'a> {
                     n2,
                     l_h,
                     r_h,
-                    ind_arg1 : self,
-                    ind_arg2 : other,
-                    res : ((n1 == n2) && (l_h <= r_h)),
+                    l : self,
+                    r : other,
+                    result : ((n1 == n2) && (l_h <= r_h)),
                 }.step(ctx)
             },
             (Param(n), Zero) => {
@@ -614,9 +676,9 @@ impl<'a> LevelPtr<'a> {
                     n,
                     l_h,
                     r_h,
-                    ind_arg1 : self,
-                    ind_arg2 : other,
-                    res : false
+                    l : self,
+                    r : other,
+                    result : false
                 }.step(ctx)
             },
             (Zero, Param(n)) => {
@@ -624,201 +686,139 @@ impl<'a> LevelPtr<'a> {
                     n,
                     l_h,
                     r_h,
-                    ind_arg1 : self,
-                    ind_arg2 : other,
-                    res : l_h <= r_h
+                    l : self,
+                    r : other,
+                    result : l_h <= r_h
                 }.step(ctx)
             },
             (Succ(pred), _) => {
-                let (res, h1) = pred.leq_core(other, 1 + l_h, r_h, ctx);
+                let (result, h1) = pred.leq_core(other, 1 + l_h, r_h, ctx);
                 LeqCore::SuccAny {
-                    l : pred,
+                    l_pred : pred,
                     r : other,
                     l_h,
                     r_h,
-                    b : res,
+                    result,
+                    l_h_prime : 1 + l_h,
+                    l : self,
                     h1,
-                    ind_arg1 : self,
                 }.step(ctx)
             },
             (_, Succ(pred)) => {
-                let (res, h1) = self.leq_core(pred, l_h, 1 + r_h, ctx);
+                let (result, h1) = self.leq_core(pred, l_h, 1 + r_h, ctx);
                 LeqCore::AnySucc {
                     l : self,
-                    r : pred,
+                    r_pred : pred,
                     l_h,
                     r_h,
-                    b : res,
+                    result,
+                    r_h_prime : 1 + r_h,
+                    r : other,
                     h1,
-                    ind_arg2 : other,
                 }.step(ctx)
             },
-            (Max(a, b), _) => {
-                let (b1, h1) = a.leq_core(other, l_h, r_h, ctx);
-                let (b2, h2) = b.leq_core(other, l_h, r_h, ctx);
-                let res = b1 && b2;
+            (Max(fst, snd), _) => {
+                let (b1, h1) = fst.leq_core(other, l_h, r_h, ctx);
+                let (b2, h2) = snd.leq_core(other, l_h, r_h, ctx);
+                let result = b1 && b2;
                 LeqCore::MaxAny {
-                    a,
-                    b,
+                    fst,
+                    snd,
                     r : other,
                     l_h,
                     r_h,
                     b1,
                     b2,
+                    l : self,
+                    result,
                     h1,
                     h2,
-                    ind_arg1 : self,
-                    res
                 }.step(ctx)
             },
-            (Param(n), Max(x, y)) => {
-                let (b1, h1) = self.leq_core(x, l_h, r_h, ctx);
-                let (b2, h2) = self.leq_core(y, l_h, r_h, ctx);
-                let res = b1 || b2;
+            (Param(n), Max(fst, snd)) => {
+                let (b1, h1) = self.leq_core(fst, l_h, r_h, ctx);
+                let (b2, h2) = self.leq_core(snd, l_h, r_h, ctx);
+                let result = b1 || b2;
                 LeqCore::ParamMax {
                     n,
-                    x,
-                    y,
+                    fst,
+                    snd,
                     b1,
                     b2,
                     l_h,
                     r_h,
+                    l : self,
+                    r : other,
+                    result,
                     h1,
                     h2,
-                    ind_arg1 : self,
-                    ind_arg2 : other,
-                    res
                 }.step(ctx)
             },
-            (Zero, Max(x, y)) => {
-                let (b1, h1) = self.leq_core(x, l_h, r_h, ctx);
-                let (b2, h2) = self.leq_core(y, l_h, r_h, ctx);
-                let res = b1 || b2;
+            (Zero, Max(fst, snd)) => {
+                let (b1, h1) = self.leq_core(fst, l_h, r_h, ctx);
+                let (b2, h2) = self.leq_core(snd, l_h, r_h, ctx);
+                let result = b1 || b2;
                 LeqCore::ZeroMax {
-                    x,
-                    y,
+                    fst,
+                    snd,
                     b1,
                     b2,
                     l_h,
                     r_h,
+                    l : self,
+                    r : other,
+                    result,
                     h1,
                     h2,
-                    ind_arg1 : self,
-                    ind_arg2 : other,
-                    res
                 }.step(ctx)
             },
             (Imax(a, b), Imax(x, y)) if a == b && x == y => {
                 LeqCore::ImaxCongr {
-                    l : a,
-                    r : b,
+                    fst : a,
+                    snd : b,
                     l_h,
                     r_h,
-                    ind_arg1 : self,
-                    ind_arg2 : other,
-                    res : true
+                    l : self,
+                    r : other,
+                    result : true
                 }.step(ctx)
             },
-            (Imax(a, p), _) if p.is_param(ctx).0 => {
-                let n = match p.read(ctx) {
+            (Imax(fst, snd), _) if snd.is_param(ctx).0 => {
+                let n = match snd.read(ctx) {
                     Param(n) => n,
-                    _ => unreachable!("Checked pattern; leq_core ImaxParamL")
+                    _ => unreachable!()
                 };
 
-                let ks = levels!([p], ctx);
-                let z_vs = levels!([Zero.alloc(ctx)], ctx);
-                let succ_vs = levels!([p.new_succ(ctx)], ctx);
-
-                let (l_z, h1) = self.subst(ks, z_vs, ctx);
-                let (r_z, h2) = other.subst(ks, z_vs, ctx);
-                let (l_z_prime, h3) = l_z.simplify(ctx);
-                let (r_z_prime, h4) = r_z.simplify(ctx);
-
-                let (l_succ, h5) = self.subst(ks, succ_vs, ctx);
-                let (r_succ, h6) = other.subst(ks, succ_vs, ctx);
-                let (l_succ_prime, h7) = l_succ.simplify(ctx);
-                let (r_succ_prime, h8) = r_succ.simplify(ctx);
-                let (b1, h9) = l_z_prime.leq_core(r_z_prime, l_h, r_h, ctx);
-                let (b2, h10) = l_succ_prime.leq_core(r_succ_prime, l_h, r_h, ctx);
-                let res = b1 && b2;
+                let (result, h1) = snd.ensure_imax_leq(self, other, l_h, r_h, ctx);
                 LeqCore::ImaxParamL {
                     n,
-                    a,
+                    fst,
                     r : other,
-                    l_z,
-                    r_z,
-                    l_z_prime,
-                    r_z_prime,
-                    l_succ,
-                    r_succ,
-                    l_succ_prime,
-                    r_succ_prime,
                     l_h,
                     r_h,
-                    b1,
-                    b2,
-                    h1,
-                    h2,
-                    h3,
-                    h4,
-                    h5,
-                    h6,
-                    h7,
-                    h8,
-                    h9,
-                    h10,
-                    ind_arg1 : self,
-                    res
+                    result,
+                    snd,
+                    l : self,
+                    h1
                 }.step(ctx)
             },
-            (_, Imax(x, p)) if p.is_param(ctx).0 => {
-                let n = match p.read(ctx) {
+            (_, Imax(fst, snd)) if snd.is_param(ctx).0 => {
+                let n = match snd.read(ctx) {
                     Param(n) => n,
-                    _ => unreachable!("Checked pattern match; LeqCore::ImaxParamR"),
+                    _ => unreachable!()
                 };
 
-                let ks = levels!([p], ctx);
-                let z_vs = levels!([Zero.alloc(ctx)], ctx);
-                let succ_vs = levels!([p.new_succ(ctx)], ctx);
-                let (l_z, h1) = self.subst(ks, z_vs, ctx);
-                let (r_z, h2) = other.subst(ks, z_vs, ctx);
-                let (l_z_prime, h3) = l_z.simplify(ctx);
-                let (r_z_prime, h4) = r_z.simplify(ctx);
-                let (l_succ, h5) = self.subst(ks, succ_vs, ctx);
-                let (r_succ, h6) = other.subst(ks, succ_vs, ctx);
-                let (l_succ_prime, h7) = l_succ.simplify(ctx);
-                let (r_succ_prime, h8) = r_succ.simplify(ctx);
-                let (b1, h9) = l_z_prime.leq_core(r_z_prime, l_h, r_h, ctx);
-                let (b2, h10) = l_succ_prime.leq_core(r_succ_prime, l_h, r_h, ctx);
-                let res = b1 && b2;
+                let (result, h1) = snd.ensure_imax_leq(self, other, l_h, r_h, ctx);
                 LeqCore::ImaxParamR {
                     n,
-                    x,
+                    fst,
                     l : self,
-                    l_z,
-                    r_z,
-                    l_z_prime,
-                    r_z_prime,
-                    l_succ,
-                    r_succ,
-                    l_succ_prime,
-                    r_succ_prime,
                     l_h,
                     r_h,
-                    b1,
-                    b2,
-                    h1,
-                    h2,
-                    h3,
-                    h4,
-                    h5,
-                    h6,
-                    h7,
-                    h8,
-                    h9,
-                    h10,
-                    ind_arg2 : other,
-                    res,
+                    result,
+                    snd,
+                    r : other,
+                    h1
                 }.step(ctx)
             },
             (Imax(a, b), _) if b.is_any_max(ctx).0 => match b.read(ctx) {
@@ -826,24 +826,25 @@ impl<'a> LevelPtr<'a> {
                     let im_a_d  = <Self>::new_imax(a, d, ctx); 
                     let im_c_d = <Self>::new_imax(c, d, ctx);
                     let new_max = <Self>::new_max(im_a_d, im_c_d, ctx);
-                    let (res, h1) = new_max.leq_core(other, l_h, r_h, ctx);
+                    let (result, h1) = new_max.leq_core(other, l_h, r_h, ctx);
                     LeqCore::ImaxImaxAny {
                         a,
                         c,
                         d,
                         r : other,
+                        l_prime : new_max,
+                        l : self,
                         l_h,
                         r_h,
-                        b : res,
+                        result,
                         h1,
-                        ind_arg1 : self,
                     }.step(ctx)
                 },
                 Max(c, d) => {
                     let im_a_c = <Self>::new_imax(a, c, ctx);
                     let im_a_d = <Self>::new_imax(a, d, ctx);
                     let (new_max_prime, h1) = <Self>::new_max(im_a_c, im_a_d, ctx).simplify(ctx);
-                    let (res, h2) = new_max_prime.leq_core(other, l_h, r_h, ctx);
+                    let (result, h2) = new_max_prime.leq_core(other, l_h, r_h, ctx);
                     LeqCore::ImaxMaxAny {
                         a,
                         c,
@@ -852,10 +853,11 @@ impl<'a> LevelPtr<'a> {
                         new_max_prime,
                         l_h,
                         r_h,
-                        b : res,
+                        result,
+                        l_prime : new_max_prime,
+                        l : self,
                         h1,
                         h2,
-                        ind_arg1 : self,
                     }.step(ctx)
                 },
                 _ => unreachable!("checked pattern : ImaxParamL")
@@ -866,7 +868,7 @@ impl<'a> LevelPtr<'a> {
                     let im_x_k = <Self>::new_imax(x, k, ctx);
                     let im_j_k = <Self>::new_imax(j, k, ctx);
                     let new_max = <Self>::new_max(im_x_k, im_j_k, ctx);                    
-                    let (res, h1) = self.leq_core(new_max, l_h, r_h, ctx);
+                    let (result, h1) = self.leq_core(new_max, l_h, r_h, ctx);
                     LeqCore::AnyImaxImax {
                         l : self,
                         x,
@@ -874,16 +876,17 @@ impl<'a> LevelPtr<'a> {
                         k,
                         l_h,
                         r_h,
-                        b : res,
+                        result,
+                        r_prime : new_max,
+                        r : other,
                         h1,
-                        ind_arg2 : other,
                     }.step(ctx)
                 },
                 Max(j, k) => {
                     let im_x_j = <Self>::new_imax(x, j, ctx);
                     let im_x_k = <Self>::new_imax(x, k, ctx);
                     let (new_max_prime, h1) = <Self>::new_max(im_x_j, im_x_k, ctx).simplify(ctx);                    
-                    let (res, h2) = self.leq_core(new_max_prime, l_h, r_h, ctx);
+                    let (result, h2) = self.leq_core(new_max_prime, l_h, r_h, ctx);
                     LeqCore::AnyImaxMax {
                         l : self,
                         x,
@@ -892,10 +895,11 @@ impl<'a> LevelPtr<'a> {
                         new_max_prime,
                         l_h,
                         r_h,
-                        b : res,
+                        result,
+                        r_prime : new_max_prime,
+                        r : other,
                         h1,
                         h2,
-                        ind_arg2 : other,
                     }.step(ctx)
                 },
                 _ => unreachable!("checked pattern : ImaxParamR")
@@ -903,6 +907,7 @@ impl<'a> LevelPtr<'a> {
             _ => unreachable!("leq_core2")
         }
     }
+
 
     pub fn leq(
         self,
@@ -978,11 +983,31 @@ impl<'t, 'l : 't, 'e : 'l> LevelPtr<'l> {
             r : other,
             b1,
             b2,
+            result : b1 && b2,
             h1,
             h2,
-            ind_arg3 : b1 && b2
         }.step(tc)
     }   
+
+      pub fn assert_eq_antisymm(
+        self,
+        other : LevelPtr<'l>,
+        tc : &mut impl IsLiveCtx<'l>,
+    ) -> (bool, Step<EqAntisymmZst>) {
+        let (b1, h1) = self.leq(other, tc);
+        let (b2, h2) = other.leq(self, tc);
+        EqAntisymm::Base {
+            l : self,
+            r : other,
+            b1,
+            b2,
+            result : b1 && b2,
+            h1,
+            h2,
+        }.step(tc)
+    }      
+
+    
 
 }
 
@@ -996,41 +1021,44 @@ impl<'t, 'l : 't, 'e : 'l> LevelsPtr<'l> {
         match (self.read(tc), other.read(tc)) {
             (Nil, Nil) => {
                 EqAntisymmMany::Base {
-                    ind_arg1 : self,
-                    b : true,
+                    ls : self,
+                    rs : other,
+                    result : true,
                 }.step(tc)
             },
-            (Cons(l, ls), Nil) => {
+            (Cons(hd, tl), Nil) => {
                 EqAntisymmMany::BaseFL {
-                    l,
-                    ls,
-                    ind_arg2 : other,
-                    b : false,
+                    hd,
+                    tl,
+                    ls : self,
+                    rs : other,
+                    result : false,
                 }.step(tc)
             }
-            (Nil, Cons(r, rs)) => {
+            (Nil, Cons(hd, tl)) => {
                 EqAntisymmMany::BaseFR {
-                    r,
-                    rs,
-                    ind_arg1 : self,
-                    b : false
+                    hd,
+                    tl,
+                    ls : self,
+                    rs : other,
+                    result : false
                 }.step(tc)
             },
-            (Cons(l, ls), Cons(r, rs)) => {
-                let (b1, h1) = l.try_eq_antisymm(r, tc);
-                let (b2, h2) = ls.try_eq_antisymm_many(rs, tc);
+            (Cons(l_hd, l_tl), Cons(r_hd, r_tl)) => {
+                let (b1, h1) = l_hd.try_eq_antisymm(r_hd, tc);
+                let (b2, h2) = l_tl.try_eq_antisymm_many(r_tl, tc);
                 EqAntisymmMany::Step {
-                    l,
-                    r,
-                    ls,
-                    rs,
+                    l_hd,
+                    r_hd,
+                    l_tl,
+                    r_tl,
                     b1,
                     b2,
+                    ls : self,
+                    rs : other,
+                    result : b1 && b2,
                     h1,
                     h2,
-                    ind_arg1 : self,
-                    ind_arg2 : other,
-                    b : b1 && b2
                 }.step(tc)
             },
         }
@@ -1047,9 +1075,9 @@ impl<'a> LevelsPtr<'a> {
         match self.read(ctx) {
             Nil => {
                 ParamsDefinedMany::Base {
-                    dec_ups,
-                    ind_arg1 : self,
-                    out : true
+                    params : dec_ups,
+                    ls  : self,
+                    result : true
                 }.step(ctx)
             },
             Cons(hd, tl) => {
@@ -1059,11 +1087,11 @@ impl<'a> LevelsPtr<'a> {
                 ParamsDefinedMany::Step {
                     hd,
                     tl,
-                    dec_ups,
+                    params : dec_ups,
+                    ls : self,
+                    result : out,
                     h1,
                     h2,
-                    ind_arg1 : self,
-                    out
                 }.step(ctx)
             }
         }
@@ -1078,25 +1106,27 @@ impl<'a> LevelsPtr<'a> {
         match self.read(ctx) {
             Nil => {
                 SubstLMany::Base {
+                    ls : self,
                     ks,
                     vs,
-                    ind_arg1 : self,
+                    ls_prime : self,
                 }.step(ctx)
             },
             Cons(hd, tl) => {
                 let (hd_prime, h1) = hd.subst(ks, vs, ctx);
                 let (tl_prime, h2) = tl.subst_many(ks, vs, ctx);
+                let ls_prime = Cons(hd_prime, tl_prime).alloc(ctx);
                 SubstLMany::Step {
-                    hd,
-                    hd_prime,
-                    tl,
-                    tl_prime,
+                    ls_hd : hd,
+                    ls_hd_prime : hd_prime,
+                    ls_tl : tl,
+                    ls_tl_prime : tl_prime,
                     ks,
                     vs,
+                    ls : self,
+                    ls_prime,
                     h1,
                     h2,
-                    ind_arg1 : self,
-                    ind_arg2 : Cons(hd_prime, tl_prime).alloc(ctx),
                 }.step(ctx)
             }
         }
@@ -1111,19 +1141,21 @@ impl<'a> LevelsPtr<'a> {
         match self.read(ctx) {
             Nil => {
                 FoldImaxs::Base {
-                    sink,
-                    ind_arg1 : self,
+                    l : sink,
+                    ls : self,
+                    result : sink,
                 }.step(ctx)
             },
             Cons(hd, tl) => {
                 let combined = <LevelPtr>::new_imax(hd, sink, ctx);
-                let (out, h1) = tl.fold_imaxs(combined, ctx);
+                let (result, h1) = tl.fold_imaxs(combined, ctx);
                 FoldImaxs::Step {
                     hd,
                     tl,
-                    r : sink,
-                    out,
-                    ind_arg1 : self,
+                    l : sink,
+                    result,
+                    ls : self,
+                    combined,
                     h1,
                 }.step(ctx)
             }

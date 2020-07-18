@@ -1,22 +1,14 @@
-use crate::{ ret_none_if, name, param, arrow, sort, app };
-use crate::name::{ NamePtr, NamesPtr, Name, Name::* };
-use crate::level::{ LevelPtr, LevelsPtr, Level, Level::* };
-use crate::expr::{ Expr, ExprsPtr, ExprPtr, Expr::*, BinderStyle, BinderStyle::* };
-use crate::trace::{ IsTracer };
+use crate::name::NamePtr;
+use crate::level::{ LevelPtr, LevelsPtr, Level };
+use crate::expr::{ Expr, ExprsPtr, ExprPtr, Expr::*, BinderStyle };
 use crate::trace::steps::*;
 use crate::utils::{ 
-    Ptr,
     List::*,
-    ListPtr,
-    Env,
     IsLiveCtx,
     IsTc,
-    Tc,
-    Pfinder,
     HasNanodaDbg 
 };
 
-use crate::tc::eq::EqResult::*;
 use InferFlag::*;                    
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -32,14 +24,15 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         flag : InferFlag,
         tc : &mut impl IsTc<'t, 'l, 'e>
     ) -> (LevelPtr<'l>, Step<InferSortOfZst>) {
-        let (infd, h1) = self.infer(flag, tc);
-        let (whnfd, h2) = infd.whnf(tc);
+        let (inferred, h1) = self.infer(flag, tc);
+        let (whnfd, h2) = inferred.whnf(tc);
         match whnfd.read(tc) {
             Sort { level } => {
                 InferSortOf::Base {
                     e : self,
-                    e_type : infd,
+                    inferred,
                     level,
+                    e_prime : whnfd,
                     h1,
                     h2,
                 }.step(tc)
@@ -58,7 +51,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             Sort { level } => {
                 EnsureSort::Base {
                     level,
-                    ind_arg1 : self
+                    e : self
                 }.step(tc)
             },
             _ => {
@@ -68,6 +61,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                         EnsureSort::Reduce {
                             e : self,
                             level,
+                            e_prime : whnfd,
                             h1
                         }.step(tc)
                     },
@@ -251,8 +245,8 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 let inferred = l.new_succ(tc).new_sort(tc);
                 InferSort::InferOnly {
                     l,
-                    inferred,
-                    ind_arg1 : self,
+                    e : self,
+                    e_prime : inferred,
                 }.step(tc)
             },
             Check => {
@@ -261,9 +255,9 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 let inferred = l.new_succ(tc).new_sort(tc);
                 InferSort::Checked {
                     l,
-                    inferred,
+                    e : self,
+                    e_prime : inferred,
                     h1,
-                    ind_arg1 : self,
                 }.step(tc)
             }
         }
@@ -276,28 +270,28 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         flag : InferFlag,
         tc : &mut impl IsTc<'t, 'l, 'e>
     ) -> (Self, Step<InferConstZst>) {
-        let (dec, h1) = match tc.get_declar(c_name) {
-            Some((d, h1)) => (d, h1),
+        let (d_view, h_admitted) = match tc.get_declar_view(c_name) {
+            Some(tup) => tup,
             _ => panic!(
-                "Cannot infer type of undeclared declaration \
+                "Cannot infer type of unadmitted Declar item \
                 {}", c_name.nanoda_dbg(tc)
             )
         };
-
-        let (dec_uparams, dec_type) = (dec.uparams(tc), dec.type_(tc));
+        let h1 = (c_name, h_admitted, d_view);
 
         match flag {
             InferOnly => {
-                let (inferred, h2) = dec_type.subst(dec_uparams, c_levels, tc);
+                let (inferred, h2) = d_view.type_.subst(d_view.uparams, c_levels, tc);
                 InferConst::InferOnly {
                     c_name,
                     c_levels,
-                    flag,
-                    dec,
-                    dec_uparams,
-                    dec_type,
+                    d_uparams : d_view.uparams,
+                    d_type : d_view.type_,
+                    d_val : d_view.val,
                     inferred,
-                    ind_arg1 : self,
+                    flag,
+                    e : self,
+                    declar_view : d_view,
                     h1,
                     h2,
                 }.step(tc)
@@ -305,16 +299,18 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             Check => {
                 let (b, h2) = c_levels.params_defined_many(tc.dec_uparams(), tc);
                 assert!(b);
-                let (inferred, h3) = dec_type.subst(dec_uparams, c_levels, tc);
+                let (inferred, h3) = d_view.type_.subst(d_view.uparams, c_levels, tc);
                 InferConst::Checked {
                     c_name,
                     c_levels,
-                    flag,
-                    dec,
-                    dec_uparams,
-                    dec_type,
+                    tc_uparams : tc.dec_uparams(),
+                    d_uparams : d_view.uparams,
+                    d_type : d_view.type_,
+                    d_val : d_view.val,
                     inferred,
-                    ind_arg1 : self,
+                    flag,
+                    e : self,
+                    declar_view : d_view,
                     h1,
                     h2,
                     h3
@@ -345,9 +341,10 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 }.step(tc)
             },
             (Pi { b_name, b_type, b_style, body, .. }, Cons(hd, tl), InferOnly) => {
+                let context_prime = Cons(hd, context).alloc(tc);
                 let (inferred, h1) = body.infer_app(
                     tl,
-                    Cons(hd, context).alloc(tc),
+                    context_prime,
                     flag,
                     tc
                 );
@@ -356,11 +353,14 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     b_type,
                     b_style,
                     body,
-                    args,
+                    hd,
+                    args_tl : tl,
                     context,
                     inferred,
+                    e : self,
+                    args,
+                    context_prime,
                     h1,
-                    ind_arg1 : self,
                 }.step(tc)
             },
             (Pi { b_name, b_type, b_style, body, .. }, Cons(hd, tl), Check) => {
@@ -368,9 +368,10 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 let (arg_type, h2) = hd.infer(Check, tc);
                 let h3 = b_type_prime.assert_def_eq(arg_type, tc);
 
+                let context_prime = Cons(hd, context).alloc(tc);
                 let (inferred, h4) = body.infer_app(
                     tl,
-                    Cons(hd, context).alloc(tc),
+                    context_prime,
                     flag,
                     tc
                 );
@@ -385,17 +386,18 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     b_type_prime,
                     arg_type,
                     inferred,
+                    e : self,
+                    context_prime,
+                    args,
                     h1,
                     h2,
                     h3,
                     h4,
-                    ind_arg1 : self,
-                    ind_arg2 : args,
                 }.step(tc)                
             },
             (_, Cons(..), _) => {
-                let (e_type_prime, h1) = self.inst(context, tc);
-                let (as_pi, h2) = e_type_prime.ensure_pi(tc);
+                let (e_prime, h1) = self.inst(context, tc);
+                let (as_pi, h2) = e_prime.ensure_pi(tc);
                 match as_pi.read(tc) {
                     Pi { b_name, b_type, b_style, body, .. } => {
                         let (inferred, h3) = as_pi.infer_app(
@@ -405,16 +407,17 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                             tc
                         );
                         InferApp::StepNotPi {
-                            e_type : self,
+                            e : self,
+                            e_prime,
                             args,
                             context,
                             flag,
-                            e_type_prime,
                             b_name,
                             b_type,
                             b_style,
                             body,
                             inferred,
+                            as_pi,
                             h1,
                             h2,
                             h3,
@@ -442,9 +445,11 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 let (b_type_prime, h1) = b_type.inst(local_binders, tc);
                 let (inferred_level, h2) = b_type_prime.infer_sort_of(flag, tc);
                 let local = <ExprPtr>::new_local(b_name, b_type_prime, b_style, tc);
+                let localsA = Cons(local, local_binders).alloc(tc);
+                let levelsA = Cons(inferred_level, levels).alloc(tc);
                 let (inferred, h3) = body.infer_pi(
-                    Cons(local, local_binders).alloc(tc),
-                    Cons(inferred_level, levels).alloc(tc),
+                    localsA,
+                    levelsA,
                     flag,
                     tc
                 );
@@ -457,14 +462,17 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     local_binders,
                     levels,
                     flag,
+                    inferred,
                     b_type_prime,
                     inferred_level,
+                    serial : local.local_serial_infal(tc),
+                    e : self,
+                    levelsA,
                     local,
-                    inferred,
+                    localsA,
                     h1,
                     h2,
                     h3,
-                    ind_arg1 : self
                 }.step(tc)
             },
             _ => {
@@ -503,9 +511,11 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             (Lambda { b_name, b_type, b_style, body, .. }, InferOnly) => {
                 let (b_type_prime, h1) = b_type.inst(local_binders, tc);
                 let local = <ExprPtr>::new_local(b_name, b_type_prime, b_style, tc);
+                let b_typesA = Cons(b_type, b_types).alloc(tc);
+                let localsA = Cons(local, local_binders).alloc(tc);
                 let (inferred, h2) = body.infer_lambda(
-                    Cons(b_type, b_types).alloc(tc),
-                    Cons(local, local_binders).alloc(tc),
+                    b_typesA,
+                    localsA,
                     flag,
                     tc
                 );
@@ -517,9 +527,13 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     body,
                     b_types,
                     local_binders,
-                    flag,
                     b_type_prime,
                     inferred,
+                    serial : local.local_serial_infal(tc),
+                    e : self,
+                    local_expr : local,
+                    b_typesA,
+                    localsA,
                     h1,
                     h2,
                 }.step(tc)
@@ -530,9 +544,11 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 let (b_type_prime, h1) = b_type.inst(local_binders, tc);
                 let (b_type_sort, h2) = b_type_prime.infer_sort_of(flag, tc);
                 let local = <ExprPtr>::new_local(b_name, b_type_prime, b_style, tc);
+                let b_typesA = Cons(b_type, b_types).alloc(tc);
+                let localsA = Cons(local, local_binders).alloc(tc);
                 let (inferred, h3) = body.infer_lambda(
-                    Cons(b_type, b_types).alloc(tc),
-                    Cons(local, local_binders).alloc(tc),
+                    b_typesA,
+                    localsA,
                     flag,
                     tc
                 );
@@ -544,10 +560,14 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     body,
                     b_types,
                     local_binders,
-                    flag,
+                    inferred,
                     b_type_prime,
                     b_type_sort,
-                    inferred,
+                    serial : local.local_serial_infal(tc),
+                    e : self,
+                    local_expr : local,
+                    b_typesA,
+                    localsA ,
                     h1,
                     h2,                    
                     h3,
@@ -604,10 +624,10 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     body,
                     flag,
                     b_prime : instd,
+                    e : self,
                     h1,
                     h2,
                     inferred,
-                    ind_arg1 : self,
                 }.step(tc)
             },
             Check => {
@@ -627,12 +647,12 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     val_type,
                     b_prime : instd,
                     inferred,
+                    e : self,
                     h1,
                     h2,
                     h3,
                     h4,
                     h5,
-                    ind_arg1 : self,
                 }.step(tc)
             }
         }
@@ -640,16 +660,16 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
 
     fn infer_local(
         self,
-        b_name : NamePtr<'l>,
-        b_type : ExprPtr<'l>,
-        b_style : BinderStyle,
+        n : NamePtr<'l>,
+        t : ExprPtr<'l>,
+        s : BinderStyle,
         tc : &mut impl IsTc<'t, 'l, 'e>
     ) -> (Self, Step<InferLocalZst>) {
         InferLocal::Base {
-            b_name,
-            b_type,
-            b_style,
-            ind_arg1 : self
+            n ,
+            t,
+            s,
+            e : self,
         }.step(tc)
     }
 
@@ -667,28 +687,30 @@ pub fn fold_pis_once<'a>(
         (Nil, Nil) => {
             FoldPisOnce::Base {
                 out : body,
-                ind_arg1 : local_binders,
-                ind_arg2 : b_types,
+                b_types,
+                local_binders,
             }.step(ctx)
         },
         (Cons(t, ts), Cons(l, ls)) => {
             match l.read(ctx) {
-                Local { b_name, b_style, b_type : unused_t, .. } => {
-                    let combined = <ExprPtr>::new_pi(b_name, t, b_style, body, ctx);
-                    let (out, h1) = fold_pis_once(ts, ls, combined, ctx);
+                Local { b_name, b_style, b_type : unused_t, serial } => {
+                    let folded_pi = <ExprPtr>::new_pi(b_name, t, b_style, body, ctx);
+                    let (out, h1) = fold_pis_once(ts, ls, folded_pi, ctx);
                     FoldPisOnce::Step {
-                        t,
                         n : b_name,
-                        unused_t,
+                        t,
                         s : b_style,
-                        ts,
-                        ls,
                         body,
-                        combined,
+                        serial,
+                        ts,
+                        unused_t,
+                        local_binders : ls,
                         out,
+                        local_expr : l,
+                        local_binders_prime : local_binders,
+                        ts_prime : b_types,
+                        folded_pi,
                         h1,
-                        ind_arg1 : local_binders,
-                        ind_arg2 : b_types,
                     }.step(ctx)
                 },
                 _ => unreachable!("unreachable pattern match; fold_pis_once")

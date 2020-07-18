@@ -5,15 +5,14 @@ use crate::tc::infer::InferFlag::*;
 use crate::quot::add_quot;
 use crate::inductive::IndBlock;
 use crate::trace::IsTracer;
+use crate::trace::items::HasTraceItem;
 use crate::trace::steps::*;
 use crate::utils::{ 
-    Tc, 
     IsTc,
     Ptr, 
     Env, 
     Live, 
     IsCtx, 
-    IsLiveCtx, 
     LiveZst, 
     ListPtr, 
     List::*, 
@@ -52,7 +51,7 @@ impl<'a> Notation<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DeclarSpec<'a> {
     AxiomSpec {
         name : NamePtr<'a>,
@@ -132,59 +131,81 @@ impl<'l, 'e : 'l> DeclarSpec<'e> {
         match self {
             AxiomSpec { name, uparams, type_, is_unsafe } => {
                 let d = <DeclarPtr>::new_axiom(name, uparams, type_, is_unsafe, ctx);
-                check_vitals(
-                    d.name(ctx), 
-                    d.uparams(ctx), 
-                    d.type_(ctx), 
-                    ctx
-                );
-                ctx.admit_declar(d);
+                if ctx.env.is_actual {
+                    let h1 = check_vitals(name, uparams, type_, ctx);
+                    let step = AdmitDeclar::Axiom {
+                        env : ctx.last_admit(),
+                        n : name,
+                        ups : uparams,
+                        t : type_,
+                        is_unsafe,
+                        d,
+                        h1
+                    }.step_only(ctx);
+                    ctx.admit_declar(d, step);
+                } else {
+                    let d = <DeclarPtr>::new_axiom(name, uparams, type_, is_unsafe, ctx);
+                    let step = AdmitDeclar::Unchecked {
+                        name
+                    }.step_only(ctx);
+                    ctx.admit_declar(d, step);
+                }
             },
             DefinitionSpec { name, uparams, type_, val, is_unsafe } if !is_unsafe => {
                 let d = <DeclarPtr>::new_definition(name, uparams, type_, val, is_unsafe, ctx);
-                let val_ = match d.read(ctx) {
-                    Definition { val, .. } => val,
-                    _ => unreachable!()
-                };
-                {
+                if ctx.env.is_actual {
                     let mut tc = ctx.as_tc(Some(uparams), None);
-                    check_vitals_w_tc(d.name(&tc), d.uparams(&tc), d.type_(&tc), &mut tc);
-                    let (val_type, h1) = val_.infer(Check, &mut tc);
-                    val_type.assert_def_eq(d.type_(&tc), &mut tc);
+                    let h1 = check_vitals_w_tc(name, uparams, type_, &mut tc);
+                    let (inferred, h2) = val.infer(Check, &mut tc);
+                    let h3 = inferred.assert_def_eq(type_, &mut tc);
+                    let step = AdmitDeclar::SafeDef {
+                        env : tc.live.last_admit(),
+                        name,
+                        uparams,
+                        type_,
+                        val,
+                        hint : d.get_hint(&tc).unwrap(),
+                        inferred,
+                        is_unsafe,
+                        d,
+                        h1,
+                        h2,
+                        h3
+                    }.step_only(&mut tc);
+                    tc.live.admit_declar(d, step);
+                } else {
+                    let step = AdmitDeclar::Unchecked {
+                        name
+                    }.step_only(ctx);
+                    ctx.admit_declar(d, step);
                 }
-
-                ctx.admit_declar(d);
             },
-            DefinitionSpec { .. } => {
-           // DefinitionSpec { name, uparams, type_, val, is_unsafe } => {
-                unimplemented!()
-            },
-           // TheoremSpec { name, uparams, type_, val } => {
-            TheoremSpec { ..} => {
-                unimplemented!()
-            },
-            OpaqueSpec {..} => {
-           // OpaqueSpec { name, uparams, type_, val } => {
-                unimplemented!()
-            },
-            QuotSpec => {
-                add_quot(ctx);
-            },
-            InductiveSpec(mut indblock) => {
-                indblock.declare_ind_types(ctx);
-                indblock.declare_cnstrs(ctx);
-                indblock.mk_elim_level(ctx);
-                indblock.init_k_target(ctx);
-                indblock.mk_local_indices(ctx);
-                indblock.mk_majors_wrapper(ctx);
-                indblock.mk_motives_wrapper(ctx);
-                indblock.mk_minors_wrapper(ctx);
-                indblock.declare_rec_rules(ctx);
-                indblock.declare_recursors(ctx);                 
+            DefinitionSpec {..} => unimplemented!(),
+            TheoremSpec {..} => unimplemented!(),
+            OpaqueSpec {..} => unimplemented!(),
+            QuotSpec => { add_quot(ctx); },
+            InductiveSpec(indblock) => {
+                indblock.trace_item(ctx);
+                let (mut b, _) = indblock.declare_ind_types(ctx);
+                b.declare_ctors(ctx);
+                let (_, h4) = b.mk_elim_level(ctx);
+                let (_, h5) = b.init_k_target(ctx);
+                let h6 = b.mk_majors(ctx);
+                let h7 = b.mk_motives(ctx);
+                let h8 = b.mk_minors(ctx);
+                let h9 = b.declare_rec_rules(ctx);
+                b.declare_recursors(
+                    h4,
+                    h5,
+                    h6,
+                    h7,
+                    h8,
+                    h9,
+                    ctx
+                );                 
             },
         }
-    }
-       
+    }         
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -254,6 +275,7 @@ pub enum Declar<'a> {
         uparams : LevelsPtr<'a>,
         type_ : ExprPtr<'a>,
         val : ExprPtr<'a>,
+        is_unsafe : bool,
     },
     Quot {
         name : NamePtr<'a>,
@@ -275,7 +297,6 @@ pub enum Declar<'a> {
         type_ : ExprPtr<'a>,
         parent_name : NamePtr<'a>,
         num_fields : u16,
-        minor_idx : u16,
         num_params : u16,
         is_unsafe : bool,        
     },
@@ -299,67 +320,75 @@ pub enum Declar<'a> {
 
 
 impl<'a> RecRulesPtr<'a> {
-    pub fn get_rec_rule_aux(
+    // Only steps if it finds one, otherwise the whole reduction step
+    // for the recursor is just never taken.
+    pub fn get_rec_rule(
         self,
         major_name : NamePtr<'a>,
         ctx : &mut impl IsCtx<'a>
-    ) -> Option<(RecRulePtr<'a>, Step<GetRecRuleAuxZst>)> {
+    ) -> Option<(RecRulePtr<'a>, Step<GetRecRuleZst>)> {
         match self.read(ctx) {
             Nil => None,
             Cons(hd, tl) if hd.read(ctx).ctor_name == major_name => {
-                Some(GetRecRuleAux::Base {
+                Some(GetRecRule::Base {
                     major_name,
                     num_fields : hd.read(ctx).num_fields,
                     val : hd.read(ctx).val,
-                    tl,
-                    ind_arg1 : self,
-                    ind_arg3 : hd
+                    rrs_tl : tl,
+                    rec_rule : hd,
+                    rrs : self,
                 }.step(ctx))
             },
             Cons(x, tl) => {
-                let (out_rule, h1) = tl.get_rec_rule_aux(major_name, ctx)?;
-                Some(GetRecRuleAux::Step{
+                let (rec_rule, h1) = tl.get_rec_rule(major_name, ctx)?;
+                Some(GetRecRule::Step{
                     ctor_name : x.read(ctx).ctor_name,
                     num_fields : x.read(ctx).num_fields,
                     val : x.read(ctx).val,
+                    rrs_tl : tl,
                     major_name,
-                    rest : tl,
-                    out_rule,
+                    out : rec_rule,
+                    x,
+                    rec_rules : self,
                     h1,
-                    ind_arg1 : self,
                 }.step(ctx))
             }
 
         }
     }
+}
 
-    pub fn get_rec_rule(
-        self, 
-        major : ExprPtr<'a>, 
-        ctx : &mut impl IsLiveCtx<'a>
-    ) -> Option<(RecRulePtr<'a>, Step<GetRecRuleZst>)> {
-        let ((major_fun, major_args), h1) = major.unfold_apps(ctx);
-        let (major_name, major_levels) = major_fun.try_const_info(ctx)?;
-        let (rule, h2) = self.get_rec_rule_aux(major_name, ctx)?;
-        Some(GetRecRule::ByAux {
-            major,
-            major_name,
-            major_levels,
-            major_args,
-            rrs : self,
-            rule,
-            h1,
-            h2,
-        }.step(ctx))
-    }    
+#[derive(Debug, Clone, Copy)]
+pub struct DeclarView<'a> {
+    pub pointee : DeclarPtr<'a>,
+    pub name : NamePtr<'a>,
+    pub uparams : LevelsPtr<'a>,
+    pub type_ : ExprPtr<'a>,
+    pub val : Option<ExprPtr<'a>>
 }
 
 
 impl<'a> DeclarPtr<'a> {
-    pub fn get_hint(self, ctx : &impl IsCtx<'a>) -> ReducibilityHint {
+    pub fn as_view(self, ctx : &impl IsCtx<'a>) -> DeclarView<'a> {
+        let name = self.name(ctx);
+        let uparams = self.uparams(ctx);
+        let type_ = self.type_(ctx);
+        let val = self.val(ctx);
+
+        DeclarView {
+            pointee : self,
+            name,
+            type_,
+            uparams,
+            val
+        }
+    }
+
+    pub fn get_hint(self, ctx : &impl IsCtx<'a>) -> Option<ReducibilityHint> {
         match self.read(ctx) {
-            Definition { hint, .. } => hint,
-            owise => unreachable!("Only Definition declars have a reducibility hint! found {:#?}", owise)
+            Definition { hint, .. } => Some(hint),
+            Opaque {..} | Theorem {..} => Some(Opaq),
+            _ => None
         }
     }
 
@@ -459,6 +488,15 @@ impl<'a> DeclarPtr<'a> {
         }
     }
 
+    pub fn val(&self, ctx : &impl IsCtx<'a>) -> Option<ExprPtr<'a>> {
+        match self.read(ctx) {
+            | Definition  { val, .. }
+            | Theorem     { val, .. }
+            | Opaque      { val, .. } => Some(val),
+            _ => None
+        }
+    }
+    
     pub fn is_unsafe(&self, ctx : &impl IsCtx<'a>) -> bool {
         match self.read(ctx) {
             Theorem  {..}
@@ -471,6 +509,16 @@ impl<'a> DeclarPtr<'a> {
             | Recursor    { is_unsafe, .. } => is_unsafe,
         }
     }
+
+    /*
+    gets the uparams, type, and (if it has one) the value.
+    */
+    //pub fn get_declar_info(
+    //    &self,
+    //    ctx : &mut impl IsCtx<'a>
+    //) -> ((LevelsPtr<'a>, ExprPtr<'a>, Option<ExprPtr<'a>>), Step<GetDeclarInfoZst>) {
+    //    unimplemented!()
+    //}
     
     pub fn new_axiom<'e>(
         name : NamePtr<'a>,
@@ -487,6 +535,7 @@ impl<'a> DeclarPtr<'a> {
         }.alloc(ctx)
     }
 
+
     
     pub fn new_definition<'e>(
         name : NamePtr<'a>,
@@ -496,7 +545,8 @@ impl<'a> DeclarPtr<'a> {
         is_unsafe : bool,
         ctx : &mut Live<'a, 'e, impl 'e + IsTracer>,
     ) -> Self {
-        let (height, h1) = val.calc_height(ctx);
+        // As of now we're not using this hypothesis in the constructor.
+        let (height, _) = val.calc_height(ctx);
 
         Definition {
             name,
@@ -529,12 +579,12 @@ impl<'a> DeclarPtr<'a> {
         }.alloc(ctx)
     }    
 
-    pub fn new_cnstr<'e>(
+    pub fn new_ctor<'e>(
         name : NamePtr<'a>,
         uparams : LevelsPtr<'a>,
         type_ : ExprPtr<'a>,
         parent_name : NamePtr<'a>,
-        minor_idx : u16,
+        num_fields : u16,
         num_params : u16,
         is_unsafe : bool,
         ctx : &mut Live<'a, 'e, impl 'e + IsTracer>
@@ -544,8 +594,7 @@ impl<'a> DeclarPtr<'a> {
             uparams,
             type_,
             parent_name,
-            num_fields : type_.telescope_size(ctx).0 - num_params,
-            minor_idx,
+            num_fields,// : type_.telescope_size(ctx).0 - num_params,
             num_params,
             is_unsafe
         }.alloc(ctx)
@@ -716,12 +765,13 @@ impl<'a> Declar<'a> {
                     val : val.insert_env(env, live),
                 }.alloc(env)
             },
-            Opaque { val, ..  } => {
+            Opaque { val, is_unsafe, ..  } => {
                 Opaque {
                     name,
                     uparams,
                     type_,
                     val : val.insert_env(env, live),
+                    is_unsafe,
                 }.alloc(env)
             },
             Quot { .. } => {
@@ -742,14 +792,13 @@ impl<'a> Declar<'a> {
                     is_unsafe
                 }.alloc(env)
             },
-            Constructor { parent_name, num_fields, minor_idx, num_params, is_unsafe, .. } => {
+            Constructor { parent_name, num_fields, num_params, is_unsafe, .. } => {
                 Constructor {
                     name,
                     uparams,
                     type_,
                     parent_name : parent_name.insert_env(env, live),
                     num_fields,
-                    minor_idx,
                     num_params,
                     is_unsafe
                 }.alloc(env)
@@ -778,8 +827,30 @@ impl<'a> Declar<'a> {
 
 
 impl<'a> HasNanodaDbg<'a> for Declar<'a> {
-    fn nanoda_dbg(self, _ctx : &impl IsCtx<'a>) -> String {
-        unimplemented!()
+    fn nanoda_dbg(self, ctx : &impl IsCtx<'a>) -> String {
+        match self {
+            Inductive {
+                name,
+                uparams,
+                type_,
+                num_params,
+                all_ind_names,
+                all_ctor_names,
+                is_unsafe,
+            } => {
+                let mut base = format!("Inductive :\n");
+                base.push_str(format!("    name : {}\n", name.nanoda_dbg(ctx)).as_str());
+                base.push_str(format!("    uparams : {}\n", uparams.nanoda_dbg(ctx)).as_str());
+                base.push_str(format!("    type_ : {}\n", type_.nanoda_dbg(ctx)).as_str());
+                base.push_str(format!("    num_params : {}\n", num_params).as_str());
+                base.push_str(format!("    all_ind_names : {}\n", all_ind_names.nanoda_dbg(ctx)).as_str());
+                base.push_str(format!("    all_ctor_names : {}\n", all_ctor_names.nanoda_dbg(ctx)).as_str());
+                base.push_str(format!("    is_unsafe : {}\n", is_unsafe).as_str());
+
+                base
+            }
+            _ => unimplemented!()
+        }
     }
 }
 

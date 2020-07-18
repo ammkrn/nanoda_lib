@@ -14,7 +14,7 @@ fn trace_test0() {
     let l1 = Nil::<Level>.alloc(&mut env);
     let l2 = param!(["a", "b"], &mut env);
     let target = param!(["a", "b"], &mut env);
-    assert_eq!(l1.concat(l2, &mut env).0, target);
+    assert_eq!(l1.concat(l2, &mut env), target);
 }
 
 
@@ -27,7 +27,7 @@ fn trace_test1() {
     let l1 = Nil::<Level>.alloc(&mut live);
     let l2 = param!(["a", "b"], &mut live);
     let target = param!(["a", "b"], &mut live);
-    assert_eq!(l1.concat(l2, &mut live).0, target);
+    assert_eq!(l1.concat(l2, &mut live), target);
 }
 
 #[test]
@@ -39,7 +39,7 @@ fn trace_test2() {
     let l1 = Nil::<Level>.alloc(&mut live);
     let l2 = param!(["a", "b"], &mut live);
     let target = param!(["a", "b"], &mut live);
-    assert_eq!(l1.concat(l2, &mut live).0, target);
+    assert_eq!(l1.concat(l2, &mut live), target);
 
 }
 

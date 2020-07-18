@@ -377,6 +377,7 @@ impl VariantInfo {
                     field_info.push((f.ident.clone().expect("Need a named fields enum"), f.ty.clone()));
                 }
             },
+            syn::Fields::Unit => (),
             _ => unreachable!("Need a named fields struct")
         }
 
@@ -396,11 +397,23 @@ impl VariantInfo {
     }
 }
 
+fn is_bool(type_ : &syn::Type) -> bool {
+    match type_ {
+        syn::Type::Path(syn::TypePath { path, .. }) => {
+            match path.segments.first() {
+                Some(p) if p.ident.to_string().as_str() == "bool" => true,
+                _ => false
+            }
+        },
+        _ => false,
+    }
+}
+
 fn is_option(type_ : &syn::Type) -> bool {
     match type_ {
         syn::Type::Path(syn::TypePath { path, .. }) => {
             match path.segments.first() {
-                Some(p) if p.ident.to_string() == String::from("Option") => true,
+                Some(p) if p.ident.to_string().as_str() == "Option" => true,
                 _ => false,
             }
         },
@@ -408,10 +421,10 @@ fn is_option(type_ : &syn::Type) -> bool {
     }
 }
 
-fn is_pair(type_ : &syn::Type) -> bool {
+fn is_tuple(type_ : &syn::Type) -> Option<usize> {
     match type_ {
-        syn::Type::Tuple(..) => true,
-        _ => false
+        syn::Type::Tuple(type_tuple) => Some(type_tuple.elems.len()),
+        _ => None
     }
 }
 
@@ -421,9 +434,7 @@ fn mk_match_arm1(variant_info : &VariantInfo) -> syn::Arm {
     let step_tag_ident = format_ident!("step_tag__");
     let step_ctor_tag_ident = format_ident!("step_ctor_tag__");
 
-    if variant_info.field_info.len() == 0 {
-        panic!("zero fields enum can't be handled by current macro");
-    }
+    // Unit enums just render as IDX . Tag . Ctor
 
     let mut string_lit = String::from("{}.{}.{}.");
     let prefixes : Punctuated::<Ident, Comma> = parse_quote! {
@@ -439,10 +450,14 @@ fn mk_match_arm1(variant_info : &VariantInfo) -> syn::Arm {
     for (ident, type_) in variant_info.field_info.iter() {
         string_lit.push_str("{}.");
         field_idents.push(ident.clone());
-        let as_expr : syn::Expr = if is_option(type_) {
+        let as_expr : syn::Expr = if is_bool(type_) {
+            parse_quote!(crate::trace::items::NewtypeBool(#ident))
+        } else if is_option(type_) {
             parse_quote!(crate::trace::items::NewtypeOption(#ident))
-        } else if is_pair(type_) {
-            parse_quote!(crate::trace::items::NewtypeTuple(#ident))
+        } else if let Some(2) = is_tuple(type_) {
+            parse_quote!(crate::trace::items::NewtypePair(#ident))
+        } else if let Some(3) = is_tuple(type_) {
+            parse_quote!(crate::trace::items::NewtypeTriple(#ident))
         } else {
             parse_quote!(#ident)
         };
@@ -595,7 +610,8 @@ fn mk_step_fun_with_result(
                 if (<CTX as IsCtx>::IS_PFINDER) {
                     (self.get_result(), Step::new_pfind(ctx))
                 } else if <CTX as IsCtx>::Tracer::NOOP {
-                    (self.get_result(), Step::new_noop(ctx))
+                    let step = Step::new_noop(ctx);
+                    (self.get_result(), step)
                 } else {
                     // the trace function returns the step_idx since that :
                     // 1. Prevents us from needing to coordinate two copies, (which would
@@ -666,7 +682,7 @@ fn mk_grammar_additions(
                                 variant_ident,
                                 step_tag, 
                                 ctor_tag
-                            )
+                            ).and_then(|_| guard.flush())
                         },
                         _ => {
                             write!(
@@ -677,7 +693,7 @@ fn mk_grammar_additions(
                                 step_tag, 
                                 ctor_tag,
                                 num_children
-                            )
+                            ).and_then(|_| guard.flush())
                         }
                     };
 
@@ -690,8 +706,6 @@ fn mk_grammar_additions(
             }
         }
     }
-
-
 }
 
 

@@ -1,311 +1,686 @@
 import .name
 
 inductive Level
-| z : Level
-| s  (pred : Level) : Level
-| m  (l : Level) (r : Level) : Level
-| im (l : Level) (r : Level) : Level
-| p  (n : Name) : Level
+| Zero : Level
+| Succ  (pred : Level) : Level
+| Max  (l : Level) (r : Level) : Level
+| Imax (l : Level) (r : Level) : Level
+| Param  (n : Name) : Level
 
 instance : decidable_eq Level := by tactic.mk_dec_eq_instance
 
 namespace Level
 
+def mkSucc (l : Level) : Level := Succ l
 
-def mkSucc (l : Level) : Level := s l
+def mkMax (a b : Level) : Level := Max a b
 
-def mkMax (a b : Level) : Level := m a b
+def mkImax (a b : Level) : Level := Imax a b
 
-def mkImax (a b : Level) : Level := im a b
+def mkParam (n : Name) : Level := Param n
 
-def mkParam (n : Name) : Level := p n
+inductive isZeroLit : ∀ (l : Level) (result : bool), Prop
+| ofZero : 
+    let l := Zero,
+        result := tt
+    in isZeroLit l result
+| ofSucc (pred : Level) :
+    let l := Succ pred,
+        result := ff
+    in isZeroLit l result
+| ofMax (fst snd : Level) : 
+    let l := Max fst snd,
+        result := ff
+    in isZeroLit l result
+| ofImax (fst snd : Level) : 
+    let l := Imax fst snd,
+        result := ff
+    in isZeroLit l result
+| ofParam (n : Name) : 
+    let l := Param n,
+        result := ff
+    in isZeroLit l result
 
-inductive isZeroLit : Level -> bool -> Prop
-| zero               : isZeroLit z tt
-| succ (l : Level)   : isZeroLit (s l) ff
-| max (l r : Level)  : isZeroLit (m l r) ff
-| imax (l r : Level) : isZeroLit (im l r) ff
-| param (n : Name)   : isZeroLit (p n) ff
+inductive isSucc : ∀ (l : Level) (result : bool), Prop
+| ofZero : 
+    let l := Zero,
+        result := ff 
+    in 
+    isSucc l result
+
+| ofSucc (pred : Level) : 
+    let l := Succ pred,
+        result := tt
+    in isSucc l result
+
+| ofMax (fst snd : Level ) : 
+    let l := Max fst snd,
+        result := ff
+    in isSucc l result
+
+| ofImax (fst snd : Level) : 
+    let l := Imax fst snd,
+        result := ff
+    in isSucc l result
+
+| ofParam (n : Name) : 
+    let l := Param n,
+        result := ff
+    in isSucc l result
 
 
-inductive isSucc : Level -> bool -> Prop
-| zero               : isSucc z ff
-| succ (l : Level)   : isSucc (s l) tt
-| max (l r : Level ) : isSucc (m l r) ff
-| imax (l r : Level) : isSucc (im l r) ff
-| param (n : Name)   : isSucc (p n) ff
+inductive isAnyMax : ∀ (l : Level) (result : bool), Prop
+| ofZero : 
+    let l := Zero,
+        result := ff
+    in isAnyMax l result
+| ofSucc (pred : Level) : 
+    let l := Succ pred,
+        result := ff
+    in isAnyMax l result
+| ofMax  (fst snd : Level) : 
+    let l := Max fst snd,
+        result := tt
+    in isAnyMax l result
+| ofImax (fst snd : Level) : 
+    let l := Imax fst snd,
+        result := tt
+    in isAnyMax l result
+| ofParam (n : Name) : 
+    let l := Param n,
+        result := ff
+    in isAnyMax l result
 
+inductive combining : ∀ (l : Level) (r : Level) (result : Level), Prop
+| lzero (r : Level) : 
+    let l := Zero,
+        result := r
+    in combining l r result
+| rzero (l : Level) : 
+    let r := Zero,
+        result := l
+    in combining l r result
+| succ 
+    (l_pred : Level)
+    (r_pred : Level)
+    (result' : Level) : 
+    let l := Succ l_pred,
+        r := Succ r_pred,
+        result := Succ result'
+    in
+    combining l_pred r_pred result' 
+    -> combining l r result
 
-inductive isAnyMax : Level -> bool -> Prop
-| zero               : isAnyMax z ff
-| succ (l : Level)   : isAnyMax (s l) ff
-| max  (l r : Level) : isAnyMax (m l r) tt
-| imax (l r : Level) : isAnyMax (im l r) tt
-| param (n : Name)   : isAnyMax (p n) ff
-
--- lhs -> rhs -> result
-inductive combining : Level -> Level -> Level -> Prop
-| lzero (r : Level) : combining z r r
-| rzero (l : Level) : combining l z l
-| succ (l r x : Level) : combining l r x -> combining (s l) (s r) (s x)
-| owise (l r : Level)
-    : isZeroLit l ff
-    → isZeroLit r ff
+| owise (l r : Level) : 
+    let result := Max l r
+    in
+    isZeroLit l ff
+    -> isZeroLit r ff
     -> isSucc l ff
     -> isSucc r ff
-    -> combining l r (m l r)
+    -> combining l r result
 
-inductive simplify : Level -> Level -> Prop
-| zero : simplify z z
-| param (n : Name) : simplify (p n) (p n)
-| succ (l l' : Level) : simplify l l' -> simplify (s l) (s l')
-| max (l r l' r' x : Level)
-    : simplify l l'
-    -> simplify r r'
-    -> combining l' r' x
-    -> simplify (m l r) x
+inductive simplify : ∀ (l : Level) (result : Level), Prop
+| zero : 
+    let l := Zero,
+        result := Zero
+    in simplify l result
 
-| imaxzero (l r : Level) : simplify r z -> simplify (im l r) z
+| param (n : Name) : 
+    let l := Param n,
+        result := Param n
+    in simplify l result
 
-| imaxsucc (l r l' r' x : Level)
-    : simplify r (s r')
-    -> simplify l l'
-    -> combining l' (s r') x
-    -> simplify (im l r) x
+| succ (pred : Level) (pred' : Level) : 
+    let l := Succ pred,
+        result := Succ pred'
+    in
+    simplify pred pred'
+    -> simplify l result
 
-| imaxowise (l r l' r' : Level)
-    : simplify r r'
-    -> isZeroLit r' ff
-    -> isSucc r' ff
-    -> simplify l l'
-    -> simplify (im l r) (im l' r')
+| max 
+    (fst : Level)
+    (snd : Level)
+    (fst' : Level)
+    (snd' : Level)
+    (result : Level) : 
+    let l := Max fst snd
+    in
+    simplify fst fst'
+    -> simplify snd snd'
+    -> combining fst' snd' result
+    -> simplify (Max fst snd) result
+
+| imaxzero (fst : Level) (snd : Level) : 
+    let l := Imax fst snd,
+        snd' := Zero,
+        result := Zero
+    in
+    simplify snd snd'
+    -> simplify l result
+
+| imaxsucc 
+    (fst : Level)
+    (snd : Level)
+    (fst' : Level)
+    (snd' : Level)
+    (result : Level) :
+    let l := Imax fst snd,
+        succ_snd' := Succ snd'
+    in
+    simplify snd succ_snd'
+    -> simplify fst fst'
+    -> combining fst' succ_snd' result
+    -> simplify l result
+
+| imaxowise 
+    (fst : Level)
+    (snd : Level)
+    (fst' : Level)
+    (snd' : Level) :
+    let l := Imax fst snd,
+        result := Imax fst' snd'
+    in
+    simplify snd snd'
+    -> isZeroLit snd' ff
+    -> isSucc snd' ff
+    -> simplify fst fst'
+    -> simplify l result
 
 
--- This doesn't have a false branch since it's used as an assertion
+
+-- The implementation/output also outputs a bool, but it should always
+-- be true.
 -- that all universe parameters in a given declaration are defined.
-inductive paramsDefined : Level -> list Level -> Prop
-| baseZero (ls : list Level) : paramsDefined z ls
-| stepS (l : Level) (ls : list Level) : paramsDefined l ls -> paramsDefined (s l) ls
+inductive paramsDefined : ∀ (l : Level) (params : list Level), Prop
+| zero (params : list Level) : 
+    let l := Zero in paramsDefined l params
 
-| stepM (l r : Level) (ls : list Level)
-    : paramsDefined l ls                                          
-    -> paramsDefined r ls
-    -> paramsDefined (m l r) ls
+| succ (pred : Level) (params : list Level) : 
+    let l := Succ pred
+    in 
+    paramsDefined pred params -> paramsDefined l params
 
-| stepIm (l r : Level) (ls : list Level) 
-    : paramsDefined l ls                                          
-    -> paramsDefined r ls
-    -> paramsDefined (im l r) ls
-| baseParam (n : Name) (hd : Level) (tl : list Level) : paramsDefined (p n) (p n :: tl)
+| max (fst snd : Level) (params : list Level) :
+    let l := Max fst snd
+    in
+    paramsDefined fst params
+    -> paramsDefined snd params
+    -> paramsDefined l params
 
-| stepParam 
-    (n : Name)
-    (hd : Level)
-    (tl : list Level) 
-    : paramsDefined (p n) tl
-    -> paramsDefined (p n) (hd :: tl)
+| imax (fst : Level) (snd : Level) (params : list Level) :
+    let l := Imax fst snd
+    in
+    paramsDefined fst params
+    -> paramsDefined snd params
+    -> paramsDefined l params
 
-inductive paramsDefinedMany : list Level -> list Level -> Prop 
-| base (dec_ups : list Level) : paramsDefinedMany [] dec_ups
-| step (hd : Level) (tl dec_ups : list Level) 
-    : paramsDefinedMany tl dec_ups
-    -> paramsDefined hd dec_ups
-    -> paramsDefinedMany (hd :: tl) dec_ups
+| baseParam (n : Name) (tl : list Level) : 
+    let l := Param n,
+        params := l :: tl
+    in
+    paramsDefined l params
+
+| stepParam (n : Name) (hd : Level) (tl : list Level) :
+    let l := Param n,
+        params := hd :: tl
+    in
+    paramsDefined l tl
+    -> paramsDefined l params
+
+inductive paramsDefinedMany : ∀ (ls : list Level) (params : list Level), Prop 
+| base (params : list Level) : 
+    let ls : list Level := []
+    in
+    paramsDefinedMany ls params
+
+| step (hd : Level) (tl : list Level) (params : list Level) :
+    let ls := hd :: tl
+    in
+    paramsDefinedMany tl params
+    -> paramsDefined hd params
+    -> paramsDefinedMany ls params
 
 
                           
 
-inductive subst : Level -> list Level -> list Level -> Level -> Prop
-| mkZero (ks vs : list Level) : subst z ks vs z
+inductive subst : ∀ (l : Level) (ks : list Level) (vs : list Level) (l' : Level), Prop
+| zero (ks : list Level) (vs : list Level) : 
+    let l := Zero,
+        l' := Zero
+    in
+    subst l ks vs l'
 
-| mkSucc (pred pred' : Level) (ks vs : list Level) 
-    : subst pred ks vs pred'
-    -> subst (s pred) ks vs (s pred')
+| succ 
+    (pred : Level)
+    (pred' : Level)
+    (ks : list Level)
+    (vs : list Level) : 
+    let l := Succ pred,
+        l' := Succ pred'
+    in
+    subst pred ks vs pred'
+    -> subst l ks vs l'
 
-| mkMax (l r l' r' : Level) (ks vs : list Level) 
-    : subst l ks vs l'
-    -> subst r ks vs r'
-    -> subst (m l r) ks vs (m l' r')
+| max
+    (fst : Level)
+    (snd : Level)
+    (fst' : Level)
+    (snd' : Level)
+    (ks : list Level)
+    (vs : list Level) :
+    let l := Max fst snd,
+        l' := Max fst' snd'
+    in
+    subst fst ks vs fst'
+    -> subst snd ks vs snd'
+    -> subst l ks vs l'
 
-| mkImax (l r l' r' : Level) (ks vs : list Level) 
-    : subst l ks vs l'
-    -> subst r ks vs r'
-    -> subst (im l r) ks vs (im l' r')
+| imax
+    (fst : Level)
+    (snd : Level)
+    (fst' : Level)
+    (snd' : Level)
+    (ks : list Level)
+    (vs : list Level) :
+    let l := Imax fst snd,
+        l' := Imax fst' snd'
+    in
+    subst fst ks vs snd'
+    -> subst snd ks vs snd'
+    -> subst l ks vs l'
 
-| mkParamNil (n : Name) : subst (p n) [] [] (p n)
-| mkParamEq 
+| paramNil (n : Name) : 
+    let l := Param n,
+        ks : list Level := [],
+        vs : list Level := []
+    in
+    subst l ks vs l
+
+| paramEq 
     (n : Name) 
     (v : Level) 
-    (ks_tl vs_tl : list Level) 
-    : subst (p n) (p n :: ks_tl) (v :: vs_tl) v
+    (ks_tl : list Level)
+    (vs_tl : list Level) :
+    let l := Param n,
+        ks := l :: ks_tl,
+        vs := v :: vs_tl
+    in
+    subst l ks vs v
 
-| mkParamNe 
+| paramMiss
     (n : Name) 
-    (k v l' : Level)
-    (ks vs : list Level) 
-    : p n ≠ k
-    -> subst (p n) ks vs (l')
-    -> subst (p n) (k :: ks) (v :: vs) (l')
+    (k : Level)
+    (v : Level)
+    (l' : Level)
+    (ks_tl : list Level)
+    (vs_tl : list Level) :
+    let l := Param n,
+        ks := k :: ks_tl,
+        vs := v :: vs_tl
+    in
+    -- ASSERT : Param n ≠ k
+    subst l ks_tl vs_tl l'
+    -> subst l ks vs l'
 
 
-inductive substMany : list Level -> list Level -> list Level -> list Level -> Prop 
-| base (ks vs : list Level) : substMany [] ks vs []
-| step (hd hd' : Level) 
-       (ks vs ls ls' : list Level) 
-       : substMany ls ks vs ls' 
-       -> subst hd ks vs hd' 
-       -> substMany (hd :: ls) ks vs (hd' :: ls')
+inductive substMany : ∀ (ls : list Level) (ks : list Level) (vs : list Level) (ls' : list Level), Prop
+| base (ks vs : list Level) : 
+    let ls : list Level := [],
+        ls' : list Level := []
+    in 
+    substMany ls ks vs ls'
+
+| step 
+    (ls_hd : Level) 
+    (ls_hd' : Level) 
+    (ls_tl : list Level)
+    (ls_tl' : list Level)
+    (ks : list Level)
+    (vs : list Level) :
+    let ls := ls_hd :: ls_tl,
+        ls' := ls_hd' :: ls_tl'
+    in
+    substMany ls_tl ks vs ls_tl' 
+    -> subst ls_hd ks vs ls_hd' 
+    -> substMany ls ks vs ls'
 
 
+-- `false : bool` used both to mean ¬(L ≤ R) and that it can't
+-- be determined whether or not L ≤ R
+mutual inductive ensureImaxLeq, leqCore
+-- If you get either (Imax _ (Param n) ≤ R) or (L ≤ Imax _ Param n),
+-- check that ≤ holds if Param n is both zero and non-zero.
+with ensureImaxLeq : 
+    ∀ (i_snd : Level) 
+      (l : Level) 
+      (r : Level) 
+      (l_h : nat) 
+      (r_h : nat) 
+      (result : bool), 
+      Prop
+| base 
+    (i_snd : Level)
+    (l : Level)
+    (r : Level)
+    (l_h : nat)
+    (r_h : nat) 
+    (l_z : Level)
+    (r_z : Level)
+    (l_z' : Level)
+    (r_z' : Level)
+    (l_s : Level)
+    (r_s : Level)
+    (l_s' : Level)
+    (r_s' : Level)
+    (b1 : bool)
+    (b2 : bool) :
+    let pp := [i_snd],
+        zz := [Zero],
+        s_pp := [Succ i_snd],
+        result := b1 && b2
+    in
+    subst l pp zz l_z
+    -> subst r pp zz r_z
+    -> simplify l_z l_z'
+    -> simplify r_z r_z'
+    -> leqCore l_z' r_z' l_h r_h b1
+    -> subst l pp s_pp l_s
+    -> subst r pp s_pp r_s
+    -> simplify l_s l_s'
+    -> simplify r_s r_s'
+    -> leqCore l_s' r_s' l_h r_h b2
+    -> ensureImaxLeq i_snd l r l_h r_h result
 
+with leqCore : ∀ (l : Level) (r : Level) (l_h : nat) (r_h : nat) (result : bool), Prop
+| z_any 
+    (r : Level) 
+    (l_h : nat)
+    (r_h : nat) : 
+    let l := Zero,
+        result := tt
+    in
+    -- ASSERT : l_h ≤ r_h
+    leqCore l r l_h r_h result
 
--- Some cases look weird since `false : bool` is used to 
--- indicate that in some cases, we don't know whether L ≤ R.
--- A good example is the (p_z) constructor. In the case that
--- l_h and r_h were the same, then a substitution of zero for
--- the parameter in L would mean they're equal, but without knowing
--- what the substitution is/will be, we cannot say that L ≤ R,
--- so we return false.
-inductive leqCore : Level -> Level -> nat -> nat -> bool -> Prop
-| z_any (r : Level) (l_h r_h : nat) : l_h ≤ r_h -> leqCore z r l_h r_h tt
-| any_z (l : Level) (l_h r_h : nat) : r_h < l_h -> leqCore l z l_h r_h ff
---| p_p (n : Name) (l_h r_h : nat) : l_h ≤ r_h -> leqCore (p n) (p n) l_h r_h tt
-| p_p (n1 n2 : Name) (l_h r_h : nat) : leqCore (p n1) (p n2) l_h r_h ((n1 = n2) && (l_h ≤ r_h))
-| p_z (n : Name) (l_h r_h : nat) : leqCore (p n) z l_h r_h ff
-| z_p (n : Name) (l_h r_h : nat) : leqCore z (p n) l_h r_h (l_h ≤ r_h)
-| s_any (l r : Level) (l_h r_h : nat) (b : bool) 
-    : leqCore l r (nat.succ l_h) (r_h) b
-    -> leqCore (s l) r l_h r_h b
-| any_s (l r : Level) (l_h r_h : nat) (b : bool) 
-    : leqCore l r l_h (nat.succ r_h) b
-    -> leqCore l (s r) l_h r_h b
+| any_z 
+    (l : Level) 
+    (l_h : nat)
+    (r_h : nat) : 
+    let r := Zero,
+        result := ff
+    in
+    -- ASSERT : r_h < l_h 
+    leqCore l r l_h r_h result
 
-| max_any (a b r : Level) 
-          (l_h r_h : nat) 
-          (b1 b2 : bool)
-          : leqCore a r l_h r_h b1
-          -> leqCore b r l_h r_h b2
-          -> leqCore (m a b) r l_h r_h (b1 && b2)
+| p_p 
+    (n1 : Name)
+    (n2 : Name) 
+    (l_h : nat)
+    (r_h : nat) : 
+    let l := Param n1,
+        r := Param n2,
+        result := (n1 = n2) && (l_h ≤ r_h)
+    in
+    leqCore l r l_h r_h result
+
+| p_z 
+    (n : Name) 
+    (l_h : nat)
+    (r_h : nat) : 
+    let l := Param n,
+        r := Zero,
+        result := ff
+    in
+    leqCore l r l_h r_h result
+
+| z_p 
+    (n : Name) 
+    (l_h : nat)
+    (r_h : nat) : 
+    let l := Zero,
+        r := Param n,
+        result := l_h ≤ r_h
+    in
+    leqCore l r l_h r_h result
+
+| s_any 
+    (l_pred : Level) 
+    (r : Level) 
+    (l_h : nat)
+    (r_h : nat) 
+    (result : bool) :
+    let l_h' := (1 + l_h),
+        l := Succ l_pred
+    in
+    leqCore l_pred r l_h' r_h result
+    -> leqCore l r l_h r_h result
+
+| any_s 
+    (l : Level)
+    (r_pred : Level) 
+    (l_h : nat)
+    (r_h : nat) 
+    (result : bool) :
+    let r_h' := 1 + r_h,
+        r := Succ r_pred
+    in
+    leqCore l r l_h r_h' result
+    -> leqCore l r l_h r_h result
+
+| max_any 
+    (fst : Level)
+    (snd  : Level)
+    (r : Level) 
+    (l_h : nat) 
+    (r_h : nat) 
+    (b1 : bool)
+    (b2 : bool) :
+    let l := Max fst snd,
+        result := b1 && b2
+    in
+    leqCore fst r l_h r_h b1
+    -> leqCore snd r l_h r_h b2
+    -> leqCore l r l_h r_h result
             
-| p_max (n : Name)
-       (x y : Level)
-       (b1 b2 : bool)
-       (l_h r_h : nat)
-       : leqCore (p n) x l_h r_h b1
-       -> leqCore (p n) y l_h r_h b2
-       -> leqCore (p n) (m x y) l_h r_h (b1 || b2)
+| p_max 
+    (n : Name)
+    (fst  : Level)
+    (snd : Level)
+    (b1  : bool)
+    (b2 : bool)
+    (l_h : nat)
+    (r_h : nat) :
+    let l := Param n,
+        r := Max fst snd,
+        result := b1 || b2
+    in
+    leqCore (Param n) fst l_h r_h b1
+    -> leqCore (Param n) snd l_h r_h b2
+    -> leqCore (Param n) r l_h r_h result
 
-| z_max (x y : Level)
-        (b1 b2 : bool)
-        (l_h r_h : nat)
-        : leqCore z x l_h r_h b1
-        -> leqCore z y l_h r_h b2
-        -> leqCore z (m x y) l_h r_h (b1 || b2)
+| z_max 
+    (fst : Level)
+    (snd : Level)
+    (b1 : bool)
+    (b2 : bool)
+    (l_h  : nat)
+    (r_h : nat) :
+    let l := Zero,
+        r := Max fst snd,
+        result := b1 || b2
+    in
+    leqCore l fst l_h r_h b1
+    -> leqCore l snd l_h r_h b2
+    -> leqCore l r l_h r_h result
 
-| imim_congr (l r : Level) (l_h r_h : nat) : leqCore (im l r) (im l r) l_h r_h tt
--- im_p_any and any_imp_p inline `ensure_imax_leq` to avoid the need for mutuals.
-| im_p_any (n : Name) 
-           (a r l_z r_z l_s r_s l_z' r_z' l_s' r_s' : Level) 
-           (l_h r_h : nat)
-           (b1 b2 : bool) 
-           : subst (im a (p n)) [p n] [z] l_z
-           -> subst r [p n] [z] r_z
-           -> simplify l_z l_z'
-           -> simplify r_z r_z'
-           -> subst (im a (p n)) [p n] [s $ p n] l_s
-           -> subst r [p n] [s $ p n] r_s
-           -> simplify l_s l_s'
-           -> simplify r_s r_s'
-           -> leqCore l_z' r_z' l_h r_h b1
-           -> leqCore l_s' r_s' l_h r_h b2
-           -> leqCore (im a (p n)) r l_h r_h (b1 && b2)
+| imim_congr 
+    (fst : Level)
+    (snd : Level) 
+    (l_h : nat)
+    (r_h : nat) : 
+    let l := Imax fst snd,
+        r := Imax fst snd,
+        result := tt
+    in
+    leqCore l r l_h r_h result
 
-| any_im_p (n : Name)
-           (x l l_z r_z l_s r_s l_z' r_z' l_s' r_s' : Level) 
-           (l_h r_h : nat)
-           (b1 b2 : bool) 
-           : subst l [p n] [z] l_z
-           -> subst (im x (p n)) [p n] [z] r_z
-           -> simplify l_z l_z'
-           -> simplify r_z r_z'
-           -> subst l [p n] [s $ p n] l_s
-           -> subst (im x (p n)) [p n] [s $ p n] r_s
-           -> simplify l_s l_s'
-           -> simplify r_s r_s'
-           -> leqCore l_z' r_z' l_h r_h b1
-           -> leqCore l_s' r_s' l_h r_h b2
-           -> leqCore l (im x (p n)) l_h r_h (b1 && b2)
+| im_p_any 
+    (n : Name)
+    (fst : Level)
+    (r : Level)
+    (l_h : nat)
+    (r_h : nat) 
+    (result : bool) :
+    let snd := Param n,
+        l := Imax fst snd
+    in
+    ensureImaxLeq snd l r l_h r_h result
+    -> leqCore l r l_h r_h result
 
-| imim_any (a c d r : Level)
-           (l_h r_h : nat)
-           (b : bool)
-           : leqCore (m (im a d) (im c d)) r l_h r_h b
-           -> leqCore (im a (im c d)) r l_h r_h b
+| any_im_p 
+    (n : Name)
+    (fst : Level)
+    (l : Level)
+    (l_h : nat)
+    (r_h : nat)
+    (result : bool) :
+    let snd := Param n,
+        r := Imax fst snd
+    in
+    ensureImaxLeq snd l r l_h r_h result
+    -> leqCore l r l_h r_h result
 
-| imm_any (a c d r new_max' : Level)
-          (l_h r_h : nat)
-          (b : bool)
-          : simplify (m (im a c) (im a d)) new_max'
-          -> leqCore new_max' r l_h r_h b
-          -> leqCore (im a (m c d)) r l_h r_h b
 
-| any_imim (l x j k : Level)
-           (l_h r_h : nat)
-           (b : bool)
-           : leqCore l (m (im x k) (im j k)) l_h r_h b
-           -> leqCore l (im x (im j k)) l_h r_h b
+| imim_any 
+    (a : Level) 
+    (c : Level) 
+    (d : Level) 
+    (r : Level)
+    (l_h : nat)
+    (r_h : nat)
+    (result : bool) :
+    let l' := Max (Imax a d) (Imax c d),
+        l := Imax a (Imax c d)
+    in
+    leqCore l' r l_h r_h result
+    -> leqCore l r l_h r_h result
 
-| any_imm (l x j k new_max' : Level)
-          (l_h r_h : nat)
-          (b : bool)
-          : simplify (m (im x j) (im x k)) new_max'
-          -> leqCore l new_max' l_h r_h b
-          -> leqCore l (im x (m j k)) l_h r_h b
+| imm_any 
+    (a : Level)
+    (c : Level) 
+    (d : Level) 
+    (r : Level) 
+    (new_max' : Level)
+    (l_h : nat)
+    (r_h : nat)
+    (b : bool) :
+    let l' := Max (Imax a c) (Imax a d),
+        l := Imax a (Max c d)
+    in
+    simplify l' new_max'
+    -> leqCore new_max' r l_h r_h b
+    -> leqCore l r l_h r_h b
 
-inductive leq : Level -> Level -> bool -> Prop
-| mk (l r l' r' : Level) (b : bool) 
-    : simplify l l' 
+| any_imim 
+    (l : Level)
+    (x : Level)
+    (j : Level)
+    (k : Level)
+    (l_h : nat)
+    (r_h : nat)
+    (result : bool) :
+    let r' := Max (Imax x k) (Imax j k),
+        r := Imax x (Imax j k)
+    in
+    leqCore l r' l_h r_h result
+    -> leqCore l r l_h r_h result
+
+| any_imm 
+    (l : Level)
+    (x : Level) 
+    (j : Level) 
+    (k : Level) 
+    (new_max' : Level)
+    (l_h : nat)
+    (r_h : nat)
+    (result : bool) :
+    let r' := Max (Imax x j) (Imax x k),
+        r := Imax x (Max j k)
+    in
+    simplify (Max (Imax x j) (Imax x k)) new_max'
+    -> leqCore l new_max' l_h r_h result
+    -> leqCore l (Imax x (Max j k)) l_h r_h result
+
+inductive leq : ∀ (l : Level) (r : Level) (b : bool), Prop
+| mk
+    (l : Level)
+    (r : Level)
+    (l' : Level)
+    (r' : Level)
+    (b : bool) :
+    simplify l l'
     -> simplify r r'
     -> leqCore l' r' 0 0 b
     -> leq l r b
 
-
-inductive eqAntisymm : Level -> Level -> bool -> Prop
-| mk (l r : Level) (b1 b2 : bool) 
-    : leq l r b1 
+inductive eqAntisymm : ∀ (l : Level) (r : Level) (b : bool), Prop
+| mk 
+    (l : Level)
+    (r : Level)
+    (b1 : bool)
+    (b2 : bool) :
+    let result := b1 && b2
+    in
+    leq l r b1 
     -> leq r l b2 
-    -> eqAntisymm l r (b1 && b2)
+    -> eqAntisymm l r result
 
+inductive isZero : ∀ (l : Level) (b : bool), Prop
+| mk (l : Level) (b : bool) : leq l Zero b -> isZero l b
 
-inductive geq : Level -> Level -> bool -> Prop
-| mk (l r : Level) (b1 b2 : bool) 
-    : eqAntisymm l r b1
-    -> leq r l b2 
-    -> geq l r (b1 || b2)
+inductive isNonzero : Level -> bool -> Prop
+| mk (l : Level) (b : bool) : leq (Succ Zero) l b -> isNonzero l b
 
-inductive is_zero : Level -> bool -> Prop
-| mk (l : Level) (b : bool) : leq l z b -> is_zero l b
+inductive maybeZero : Level -> bool -> Prop
+| mk (l : Level) (b : bool) : isNonzero l b -> maybeZero l (¬b)
 
-inductive is_nonzero : Level -> bool -> Prop
-| mk (l : Level) (b : bool) : leq (s z) l b -> is_nonzero l b
-
-inductive maybe_zero : Level -> bool -> Prop
-| mk (l : Level) (b : bool) : is_nonzero l b -> maybe_zero l (¬b)
-
-inductive maybe_nonzero : Level -> bool -> Prop
-| mk (l : Level) (b : bool) : is_zero l b -> maybe_nonzero l (¬b)
+inductive maybeNonzero : Level -> bool -> Prop
+| mk (l : Level) (b : bool) : isZero l b -> maybeNonzero l (¬b)
 
 inductive eqAntisymmMany : list Level -> list Level -> bool -> Prop
-| baseT : eqAntisymmMany [] [] tt
-| baseFL (l : Level) (ls : list Level) : eqAntisymmMany (l :: ls) [] ff
-| baseFR (r : Level) (rs : list Level) : eqAntisymmMany [] (r :: rs) ff
+| baseT : 
+    let ls : list Level := [],
+        rs : list Level := [],
+        result := tt
+    in eqAntisymmMany ls rs result
+| baseFL (hd : Level) (tl : list Level) : 
+    let ls := hd :: tl,
+        rs : list Level := [],
+        result := ff
+    in
+    eqAntisymmMany ls rs result
+
+| baseFR (hd : Level) (tl : list Level) : 
+    let ls : list Level := [],
+        rs := hd :: tl,
+        result := ff
+    in
+    eqAntisymmMany ls rs result
 | step 
-    (l r : Level) 
-    (ls rs : list Level)
-    (b1 b2 : bool)
-    : eqAntisymm l r b1
-    -> eqAntisymmMany ls rs b2
-    -> eqAntisymmMany (l :: ls) (r :: rs) (b1 && b2)
+    (l_hd : Level)
+    (r_hd : Level) 
+    (l_tl : list Level)
+    (r_tl : list Level)
+    (b1 : bool)
+    (b2 : bool) :
+    let ls := l_hd :: l_tl,
+        rs := r_hd :: r_tl,
+        result := b1 && b2
+    in
+    eqAntisymm l_hd r_hd b1
+    -> eqAntisymmMany l_tl r_tl b2
+    -> eqAntisymmMany ls rs result
 
 /-
 Used for inference of Pis. From ([C, B, A], L)
@@ -318,13 +693,22 @@ create
               /  \
              C    L
 -/
-inductive foldImaxs : list Level -> Level -> Level -> Prop
-| base (out : Level) : foldImaxs [] out out
-| step (hd : Level)
-       (tl : list Level)
-       (r : Level)
-       (out : Level)
-       : foldImaxs tl (im hd r) out
-       -> foldImaxs (hd :: tl) r out
+inductive foldImaxs : ∀ (ls : list Level) (l : Level) (result : Level), Prop
+| base (l : Level) : 
+    let ls : list Level := [],
+        result := l
+    in
+    foldImaxs ls l result
+
+| step 
+    (hd : Level)
+    (tl : list Level)
+    (l : Level)
+    (result : Level) :
+    let ls := hd :: tl,
+        combined := Imax hd l
+    in
+    foldImaxs tl combined result
+    -> foldImaxs ls l result
 
 end Level

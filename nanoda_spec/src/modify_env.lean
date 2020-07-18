@@ -6,17 +6,21 @@ import
     .tc
     .ind
     
-open Expr Declar InferFlag
+open Level Expr Hint Declar InferFlag
 
-inductive calcHeightAux : Expr -> nat -> Prop
-| cacheHit 
-    (e : Expr)
-    (height : nat)
-    : calcHeightAux e height -> calcHeightAux e height
 
-| var (dbj : nat) : calcHeightAux (mkVar dbj) 0
+inductive calcHeightAux : ∀ (e : Expr) (base_height : nat), Prop
+| var (dbj : nat) : 
+    let e := mkVar dbj,
+        height := 0
+    in 
+    calcHeightAux e height
 
-| sort (l : Level) : calcHeightAux (mkSort l) 0
+| sort (l : Level) : 
+    let e := mkSort l,
+        height := 0
+    in
+    calcHeightAux e height
 
 | constHit 
     (env : Env)
@@ -26,39 +30,56 @@ inductive calcHeightAux : Expr -> nat -> Prop
     (t : Expr)
     (v : Expr)
     (height : nat)
-    (is_unsafe : bool)
-    : env.getDeclar n (Definition n ups t v (Hint.Reg height) is_unsafe)
-      -> calcHeightAux (mkConst n levels) height
+    (is_unsafe : bool) :
+    let e := mkConst n levels,
+        hint := Hint.Reg height,
+        defn := Definition n ups t v hint is_unsafe
+    in
+    env.getDeclar n defn
+    -> calcHeightAux e height
 
-| constMiss (n : Name) (levels : list Level) : calcHeightAux (mkConst n levels) 0
+| constMiss (n : Name) (levels : list Level) : 
+    let e := mkConst n levels,
+        height := 0
+    in 
+    calcHeightAux e height
 
 | app 
     (f : Expr)
     (a : Expr)
-    (height1 height2 : nat)
-    : calcHeightAux f height1
+    (height1 height2 : nat) :
+    let e := mkApp f a,
+        height := max height1 height2
+    in
+    calcHeightAux f height1
     -> calcHeightAux a height2
-    -> calcHeightAux (mkApp f a) (max height1 height2)
+    -> calcHeightAux e height
 
 | pi
     (n : Name)
     (t : Expr)
     (s : Bstyle)
     (b : Expr)
-    (height1 height2 : nat)
-    : calcHeightAux t height1
+    (height1 height2 : nat) :
+    let e := mkPi n t s b,
+        height := max height1 height2
+    in
+    calcHeightAux t height1
     -> calcHeightAux b height2
-    -> calcHeightAux (mkPi n t s b) (max height1 height2)
+    -> calcHeightAux e height
 
 | lambda
     (n : Name)
     (t : Expr)
     (s : Bstyle)
     (b : Expr)
-    (height1 height2 : nat)
-    : calcHeightAux t height1
+    (height1 height2 : nat) :
+    let e := mkLambda n t s b,
+        height := max height1 height2
+    in
+    calcHeightAux t height1
     -> calcHeightAux b height2
-    -> calcHeightAux (mkLambda n t s b) (max height1 height2)
+    -> calcHeightAux e height
 
 | let_
     (n : Name)
@@ -66,34 +87,29 @@ inductive calcHeightAux : Expr -> nat -> Prop
     (s : Bstyle)
     (v : Expr)
     (b : Expr)
-    (height1 height2 height3 : nat)
-    : calcHeightAux t height1
+    (height1 height2 height3 : nat) :
+    let e := mkLet n t s v b,
+        height := max (max height1 height2) height3
+    in
+    calcHeightAux t height1
     -> calcHeightAux v height2
     -> calcHeightAux b height3
-    -> calcHeightAux (mkLet n t s v b) (max height1 (max height2 height3))
+    -> calcHeightAux e height
 
+-- The actual calculation for height finds the height of 
+-- the highest term in the definition's body, and then adds 1.
 def calcHeight (e : Expr) (height : nat) : Prop := calcHeightAux e (nat.pred height)
 
-inductive checkVitals : Name -> list Level -> Expr -> Prop
-| base 
-    (n : Name)
-    (ups : list Level)
-    (t : Expr)
-    (inferred : Expr)
-    (sort_of : Level)
-    : listNoDupes ups
+inductive checkVitals (n : Name) (ups : list Level) (t : Expr) : Prop
+| base (inferred : Expr) (sort_of : Level) :
+    listNoDupes ups
     -> infer t Check inferred
     -> ensureSort inferred sort_of
-    -> checkVitals n ups t 
+    -> checkVitals
 
--- Unfortunately check and admit despite being nice 
--- starting places are the things that are going to fall
--- into place until I get the inductive/field thing
--- sorted out, so checkOk and admitDeclar don't
--- perfectly match up with the Rust steps right now.
+
+
 /-
-Two notes about definitions:
-1.
 checking/adding unsafe definitions is more or less the same as the 
 procedure for safe definitions, the difference is that the definition 
 is added to the environment after `checkVitals` and before
@@ -101,112 +117,159 @@ inferring the value's type. Since (as things are now) we're assuming
 the verifier is using the environment in a linear manner, and we're 
 therefore not indexing step relations by the environment, we leave
 enforcement of that ordering up to the verifier.
-
-2.
-I'm not sure what the rules are in lean 4 export files will be 
-w.r.t when a definition is supposed to have Opaque/Abbrev 
-reducibility hints, so right now we're just using the lean 3 
-convention that all definitions have `Reg n` reducibility 
-hints indicating their height.
 -/
 
-inductive checkOk : Declar -> Prop
-| ax 
+
+
+/-
+for ALL of these, there's an assertion that the environment never
+contains duplicate name keys. Explicitly logging a proof of this every time
+we add an item to the environment would be really wasteful, so it's left 
+to the verifier.
+
+The `env` will be a pointer to the last AdmitDeclar
+step, and `env'` can be interpreted as the step number for the
+addition of the declaration to the environment, which is what
+the next addition will reference as its initial `env`.
+-/
+
+inductive declareAxiom (env : Env) : ∀ (d : Declar) (env' : Env), Prop
+| base 
+    (n : Name)
+    (t : Expr)
+    (ups : list Level)
+    (is_unsafe : bool) :
+    let ax := Axiom n ups t is_unsafe,
+        -- env' is the leading number of the AddDeclar step in the output.
+        env' := ax.asKvPair :: env
+    in
+    -- ASSERT : n ∉ env.keys
+    checkVitals n ups t
+    -> declareAxiom ax env'
+
+inductive declareQuot (env : Env) : ∀ (d : Declar) (env' : Env), Prop
+| base 
     (n : Name)
     (ups : list Level)
     (t : Expr)
-    (is_unsafe : bool)
-    : checkVitals n ups t 
-    -> checkOk (Axiom n ups t is_unsafe)
+    (env : Env) :
+    let q := Quot n ups t,
+        -- env' is the leading number of the AddDeclar step in the output.
+        env' := q.asKvPair :: env
+    in 
+    -- ASSERT : n ∉ env.keys
+    declareQuot q env'
 
--- see above comment about unsafe Definitions
-| defn
-  (n : Name)
-  (ups : list Level)
-  (t : Expr)
-  (v : Expr)
-  (height : nat)
-  (is_unsafe : bool)
-  (inferred : Expr)
-  : let d := Definition n ups t v (Hint.Reg height) is_unsafe
-  in calcHeight v height
-  -> checkVitals n ups t
-  -> infer v Check inferred
-  -> defEq t inferred
-  -> checkOk d
+inductive declareSafeDef (env : Env) : ∀ (d : Declar) (env' : Env), Prop
+| base
+    (env' : Env) 
+    (n : Name)
+    (ups : list Level)
+    (t : Expr)
+    (v : Expr)
+    (hint : Hint) 
+    (inferred : Expr) :
+    let
+        is_unsafe := tt,
+        defn := Definition n ups t v hint is_unsafe,
+    -- env' will be the leading 'step' number for the `AdmitDeclar` step.
+        env' := defn.asKvPair :: env
+    in
+    -- ASSERT : n ∉ env.keys
+    checkVitals n ups t
+    -> infer v Check inferred
+    -> defEq t inferred
+    -> declareSafeDef defn env'
 
-| quot
-  (env : Env)
-  (n : Name)
-  (ups : list Level)
-  (t : Expr)
-  : checkOk (Quot n ups t)
-
-
-| ind
-  (env : Env)
-  (n : Name)
-  (ups : list Level)
-  (t : Expr)
-  (num_params : nat)
-  (all_ind_names : list Name)
-  (all_ctor_names : list Name)
-  (is_unsafe : bool) 
-  : let d := Inductive n ups t num_params all_ind_names all_ctor_names is_unsafe
-  in checkIndType t
-  -> checkOk d
-
-| ctor
-  (env : Env)
-  (n : Name)
-  (ups : list Level)
-  (t : Expr)
-  (parent_name : Name)
-  (num_fields : nat)
-  (minor_idx : nat)
-  (num_params : nat)
-  (is_unsafe : bool)  
-  : let d := Constructor n ups t parent_name num_fields minor_idx num_params is_unsafe
-  in checkIndType t
-  -> checkOk d
-
-| recursor
-  (env : Env)
-  (n : Name)
-  (ups : list Level)
-  (t : Expr)
-  (all_names : list Name)
-  (num_params : nat)
-  (num_indices : nat)
-  (num_motives : nat)
-  (num_minors : nat)
-  (major_idx : nat)
-  (rec_rules : list RecRule)
-  (is_k : bool)
-  (is_unsafe : bool)  
-  : let d := Recursor 
-      n 
-      ups 
-      t 
-      all_names 
-      num_params 
-      num_indices 
-      num_motives 
-      num_minors 
-      major_idx 
-      rec_rules 
-      is_k 
-      is_unsafe
-  in checkOk d
+inductive declareIndTypes 
+    (env : Env)
+    (indblock : Indblock)
+    (ds : list Declar) :
+    ∀ (indblock' : CheckedIndblock)
+      (env' : Env),
+      Prop
+| base 
+    (local_params : list Expr)
+    (local_indices : list Expr)
+    (ind_consts : list Expr)
+    (codom_level : Level)
+    (is_zero : bool)
+    (is_nonzero : bool) :
+    let 
+        indblock' : CheckedIndblock := {
+            codom_level := codom_level,
+            is_zero := is_zero,
+            is_nonzero := is_nonzero,
+            params := local_params,
+            indices := local_indices,
+            ind_consts := ind_consts,
+            ..indblock
+        },
+    -- env' will be the leading 'step' number for the `AdmitDeclar` step.
+        env' := ds.map asKvPair ++ env
+    in
+    -- ASSERT : ∀ n, n ∈ indblock.ind_names → n ∉ env.keys
+    checkIndTypes indblock local_params local_indices codom_level ind_consts
+    -> isZero codom_level is_zero
+    -> isNonzero codom_level is_nonzero
+    -> mkIndTypes indblock indblock.ind_names indblock.ind_types indblock.ctor_names ds
+    -> declareIndTypes indblock' env'
 
 
-inductive admitDeclar : Env -> Declar -> Prop
-| mk 
-    (env : Env) 
-    (n : Name) 
-    (d : Declar) 
-    : getDeclarName d n 
-    -> checkOk d 
-    -> admitDeclar ((n, d) :: env) d
 
-axiom mem_iff_admitted (n : Name) (d : Declar) (env : Env) (h : getDeclarName d n) : admitDeclar env d ↔ (n, d) ∈ env
+/-
+Once all of the constructors in the block are made/checked
+we add them to the environment.
+-/
+inductive declareCtors 
+    (env : Env)
+    (indblock : CheckedIndblock)
+    (ctors : list Declar) :
+    ∀ (env' : Env),
+      Prop
+| base :
+    -- env' will be the leading 'step' number for the `AdmitDeclar` step.
+  let env' := (ctors.map asKvPair) ++ env
+  in
+  -- ASSERT : ∀ n, n ∈ indblock.ctor_names → n ∉ env.keys
+  mkCtors 
+    indblock 
+    indblock.ind_names 
+    indblock.ind_types 
+    indblock.ind_consts 
+    indblock.ctor_names 
+    indblock.ctor_types
+    ctors
+  -> declareCtors env'
+
+inductive declareRecursors
+    (env : Env)
+    (indblock : CheckedIndblock)
+    (recursors : list Declar) :
+    ∀ (env' : Env),
+      Prop
+| base 
+    (majors : list Expr)
+    (motives : list Expr)
+    (minors : list Expr)
+    (indices : list Expr)
+    (elim_level : Level)
+    (k_target : bool)
+    (rec_rules : list RecRule) :
+    -- env' will be the leading 'step' number for the `AdmitDeclar` step.
+    let env' := recursors.map asKvPair ++ env
+    in
+    -- ASSERT : ∀ n, n ∈ recursors.names → n ∉ env.keys
+    mkElimLevel indblock elim_level
+    -> initKTarget indblock k_target
+    -> mkMajors indblock indblock.params indblock.indices indblock.ind_consts majors
+    -> mkMotives elim_level majors indblock.indices motives
+    -> mkMinors indblock motives minors
+    -> mkRecRules indblock motives indblock.ind_names indblock.ind_types indblock.ind_consts indblock.ctor_names indblock.ctor_types minors rec_rules
+    -> mkRecursors indblock motives k_target elim_level indblock.ind_names motives majors indblock.indices minors rec_rules recursors
+    -> declareRecursors env'
+
+    
+
+
+

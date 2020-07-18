@@ -3,99 +3,60 @@ variable [decidable_eq A]
 
 open nat list
 
-inductive trySucc : option nat -> option nat -> Prop
-| baseNone : trySucc none none
-| stepNat (n : ℕ) : trySucc (some n) (some $ succ n)
+/-
+Stand-in for uses of `get` (AKA `nth`) in which the list
+is guaranteed to be of at least length (n + 1), meaning
+it will never fail or return `None`, so we can skip the option type.
+Since we're not proving theorems we just define this as a `sorry`
+and use it to define relationships between elements in let bindings.
+-/
+def getInfal : list A -> nat -> A := sorry
 
-
-inductive listMem : A -> list A -> bool -> Prop
-| baseFf (needle : A) : listMem needle [] ff
-| baseTt (needle : A) (tl : list A) : listMem needle (needle :: tl) tt
+inductive listPos (needle : A) : ∀ (haystack : list A) (pos : option nat), Prop
+| baseNone : 
+    let haystack : list A := [],
+        pos : option nat := none
+    in listPos haystack pos
+| baseSome (haystack_tl : list A) :
+    let haystack := (needle :: haystack_tl),
+        pos := some 0
+    in listPos haystack pos
 | step 
-    (needle x : A) 
-    (tl : list A) 
-    (bl : bool) 
-    : listMem needle tl bl
-    -> listMem needle (x :: tl) ((needle = x) || bl)
+    (x : A)
+    (haystack_tl : list A) 
+    (pos : option nat) :
+    let haystack := (x :: haystack_tl),
+        pos' := succ <$> pos
+    in 
+    -- ASSERT : needle ≠ x
+    listPos haystack_tl pos
+    -> listPos haystack pos'
 
-
-inductive listPos : A -> list A -> option nat -> Prop
-| baseNone (needle : A) : listPos needle [] none
-| baseSome (needle : A) (tl : list A) : listPos needle (needle :: tl) (some 0)
-| step 
-    (needle x : A) 
-    (tl : list A) 
-    (n n' : option nat) 
-    : listPos needle tl n
-    -> trySucc n n'
-    -> listPos needle (x :: tl) n'
-
-inductive listSubset : list A -> list A -> bool -> Prop
-| base (super : list A) : listSubset [] super tt
-| step 
-    (hd : A) 
-    (sub super : list A) 
-    (b1 b2 : bool) 
-    : listMem hd super b2
-    -> listSubset sub super b1 
-    -> listSubset (hd :: sub) super (b1 && b2)
-
-inductive listSkip : list A -> nat -> list A -> Prop
-| baseNil (n : nat) : listSkip [] n []
-| baseZero (l : list A) : listSkip l 0 l
+inductive listSubset : ∀ (sub super : list A) (result : bool), Prop
+| base (super : list A) : 
+    let sub : list A := [],
+        result := tt 
+    in listSubset sub super result
 | step 
     (hd : A) 
-    (tl l' : list A) 
-    (n' : nat) 
-    : listSkip (tl) n' l'
-    -> listSkip (hd :: tl) (succ n') l'
+    (maybe_pos : option nat)
+    (sub : list A)
+    (super : list A) 
+    (result : bool) :
+    let sub' := hd :: sub,
+        result' := maybe_pos.is_some && result
+    in
+    listPos hd super maybe_pos
+    -> listSubset sub super result
+    -> listSubset sub' super result'
 
-inductive listTake : list A -> nat -> list A -> Prop
-| baseNil (n : nat) : listTake [] n []
-| baseZero (l : list A) : listTake l 0 []
-| step 
-    (hd : A) 
-    (tl l' : list A)
-    (n' : nat) 
-    : listTake tl n' l'
-    -> listTake (hd :: tl) (succ n') (hd :: l')
-
-inductive listNoDupes : list A -> Prop
-| baseNil : listNoDupes []
-| step 
-    (hd : A) 
-    (tl : list A) 
-    (b1 b2 : bool) 
-    : listMem hd tl ff
+-- assesrtion-like; no false case
+inductive listNoDupes : ∀ (l : list A), Prop
+| baseNil : let l : list A := [] in listNoDupes l
+| step (hd : A) (tl : list A)  :
+    let l := (hd :: tl)
+    in 
+    listPos hd tl none
     -> listNoDupes tl
-    -> listNoDupes (hd :: tl)
-
-
-inductive listGet : list A -> nat -> option A -> Prop
-| baseNil (n : nat) : listGet [] n none
-| baseZero (hd : A) (tl : list A) : listGet (hd :: tl) 0 (some hd)
-| step 
-    (hd : A) 
-    (tl : list A) 
-    (n' : nat)
-    (out : option A) 
-    : listGet tl n' out
-    -> listGet (hd :: tl) (succ n') out
-
-inductive listLen : list A -> nat -> Prop
-| baseNil : listLen [] 0
-| step 
-    (hd : A) 
-    (tl : list A) 
-    (n : nat) 
-    : listLen tl n 
-    -> listLen (hd :: tl) (succ n)
-
-inductive listConcat : list A -> list A -> list A -> Prop
-| base (l2 : list A) : listConcat [] l2 l2
-| step 
-    (hd : A) 
-    (tl l2 l2' : list A) 
-    : listConcat tl l2 l2'
-    -> listConcat (hd :: tl) l2 (hd :: l2')
+    -> listNoDupes l
 

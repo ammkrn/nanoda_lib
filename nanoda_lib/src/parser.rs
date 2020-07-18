@@ -7,14 +7,15 @@ use crate::level::{ LevelPtr, LevelsPtr, Level };
 use crate::expr::{ ExprPtr, Expr };
 use crate::env::{ DeclarSpec, DeclarSpec::*, Notation };
 use crate::inductive::IndBlock;
-use crate::trace::IsTracer;
+use crate::trace::{ IsTracer, NoopTracer };
 use crate::utils::{ 
     Env, 
     EnvZst,
     HasMkPtr,
     Ptr,
     alloc_str,
-    List::* 
+    List::* ,
+    IsCtx,
 };
 
 
@@ -37,7 +38,7 @@ impl Parser {
     }
 
     pub fn parse<'e>(&mut self, tracer : impl 'e + IsTracer) -> usize {
-        let mut env = Env::new(tracer);
+        let mut env = Env::new(NoopTracer);
         let mut specs = Vec::<DeclarSpec>::new();
 
         loop {
@@ -64,8 +65,7 @@ impl Parser {
         }
 
         assert!(self.finished);
-        env.check_loop(specs);
-        env.declars.len()
+        env.check_loop(specs, tracer)
     }
 
 
@@ -144,7 +144,6 @@ impl<'e, T : 'e + IsTracer> Env<'e, T> {
         self.notations.insert(name, made);
     }
 
-    // #[trace(parser_new_name)]
     fn make_name(&mut self, lean_pos : usize, kind : char, ws : &mut SplitWhitespace) -> Ptr<Name> {
         let prefix_name = self.get_name(ws);
         let new_name = match kind {
@@ -161,7 +160,6 @@ impl<'e, T : 'e + IsTracer> Env<'e, T> {
         new_name
     }
 
-    // #[trace(parser_new_level)]
     fn make_level(&mut self, lean_pos : usize, kind : char, ws : &mut SplitWhitespace) -> Ptr<Level> {
          let new_level = match kind {
              'S' => self.get_level(ws).new_succ(self),
@@ -179,7 +177,6 @@ impl<'e, T : 'e + IsTracer> Env<'e, T> {
         new_level
     }    
 
-    // #[trace(parser_new_expr)]
     fn make_expr(&mut self, lean_pos : usize, kind : char, ws : &mut SplitWhitespace) -> Ptr<Expr> {
         let new_expr = match kind {
             'V' => <ExprPtr>::new_var(parse_u16(ws), self),
@@ -293,7 +290,9 @@ impl<'e, T : 'e + IsTracer> Env<'e, T> {
 
         let num_indices = type_.telescope_size(self).0 - num_params;
 
+        let ind_serial = self.next_ind_serial();
         let indblock = IndBlock::new(
+            ind_serial,
             num_params, 
             vec![num_indices],
             uparams,
@@ -305,16 +304,41 @@ impl<'e, T : 'e + IsTracer> Env<'e, T> {
             false,
             self
         );
+        
 
         specs.push(InductiveSpec(indblock))
     }            
 
 
-    pub fn check_loop(&mut self, specs : Vec<DeclarSpec<'e>>) {
-        for spec in specs {
+    pub fn check_loop(
+        mut self, 
+        specs : Vec<DeclarSpec<'e>>, 
+        user_tracer : impl 'e + IsTracer
+    ) -> usize {
+        // Go over the whole thing once without tracing anything, putting
+        // any components that are `Env` items not listed in the Lean
+        // export file into the environment. Since we're not actually
+        // checking anything in this loop, we skip like 99% of the work
+        // so the time penalty is extremely small.
+        for spec in specs.clone() {
             let mut live = self.as_live();
             spec.compile_and_check(&mut live);
         }
+
+        let mut env_actual = Env::new(user_tracer);
+        env_actual.store = self.store;
+
+        env_actual.is_actual = true;
+        env_actual.trace_env();
+        <Self as IsCtx>::Tracer::trace_univ_sep(&mut env_actual);
+
+        for spec in specs {
+            let mut live = env_actual.as_live();
+            spec.compile_and_check(&mut live);
+            <Self as IsCtx>::Tracer::trace_block_sep(&mut live);
+        }
+
+        env_actual.num_declars()
     }
 }
 

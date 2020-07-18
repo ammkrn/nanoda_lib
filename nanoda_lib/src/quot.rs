@@ -1,10 +1,11 @@
-use crate::utils::{ Live, List };
+use crate::utils::{ Live, List,};
 use crate::name::{ Name, Name::* };
 use crate::level::{ Level::*, LevelsPtr, Level };
 use crate::expr::{ ExprPtr, BinderStyle, BinderStyle::* };
 use crate::env::Declar::*;
 use crate::{ app, param, arrow, fold_pis, name, sort };
 use crate::trace::IsTracer;
+use crate::trace::steps::*;
 
 pub fn add_quot<'l, 'e : 'l>(live : &mut Live<'l, 'e, impl 'e + IsTracer>) {
     let prop = Zero.alloc(live).new_sort(live);
@@ -97,9 +98,41 @@ pub fn add_quot<'l, 'e : 'l>(live : &mut Live<'l, 'e, impl 'e + IsTracer>) {
     live.env.quot_lift = Some(quot_lift_name);
     live.env.quot_ind = Some(quot_ind_name);
 
-    live.admit_declar(quot);
-    live.admit_declar(quot_mk);
-    live.admit_declar(quot_lift);
-    live.admit_declar(quot_ind);
+    let quot_step = AdmitDeclar::Quot {
+        env : live.last_admit(),
+        n : quot.name(live),
+        ups : quot.uparams(live),
+        t : quot.type_(live),
+        d : quot
+    }.step_only(live);
+    live.admit_declar(quot, quot_step);
+
+    let quot_mk_step = AdmitDeclar::Quot {
+        env : live.last_admit(),
+        n : quot_mk.name(live),
+        ups : quot_mk.uparams(live),
+        t : quot_mk.type_(live),
+        d : quot_mk
+    }.step_only(live);
+    live.admit_declar(quot_mk, quot_mk_step);
+
+    let quot_lift_step = AdmitDeclar::Quot {
+        env : live.last_admit(),
+        n : quot_lift.name(live),
+        ups : quot_lift.uparams(live),
+        t : quot_lift.type_(live),
+        d : quot_lift
+    }.step_only(live);
+    live.admit_declar(quot_lift, quot_lift_step);
+
+    let quot_ind_step = AdmitDeclar::Quot {
+        env : live.last_admit(),
+        n : quot_ind.name(live),
+        ups : quot_ind.uparams(live),
+        t : quot_ind.type_(live),
+        d : quot_ind
+    }.step_only(live);
+    live.admit_declar(quot_ind, quot_ind_step);
+
 }
 

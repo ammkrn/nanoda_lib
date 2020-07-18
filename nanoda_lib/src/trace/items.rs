@@ -1,30 +1,38 @@
 use std::fmt::{ Display, Formatter, Result as FmtResult };
-use std::fs::File;
-use crate::utils::{ Ptr, List, List::*, ListPtr, IsCtx, IsLiveCtx };
-use crate::name::{ NamePtr, NamesPtr, Name, StringPtr, Name::* };
-use crate::level::{ LevelPtr, LevelsPtr, Level, Level::* };
-use crate::expr::{ ExprPtr, ExprsPtr, Expr, Expr::*, BinderStyle, LocalSerial };
+use crate::utils::{ Ptr, ListPtr, IsCtx };
+use crate::name::{ Name, StringPtr, };
+use crate::level::Level;
+use crate::expr::{ Expr, BinderStyle, LocalSerial };
+use crate::inductive::{ IndBlock, IndBlockPtr, CheckedIndblock, CheckedIndBlockPtr };
 use crate::tc::eq::{ EqResult, DeltaResult };
 use crate::tc::infer::InferFlag;
 use crate::trace_item;
 use crate::trace::IsTracer;
 use crate::trace::steps::{ Step, StepIdx };
 use crate::env::{ 
-    RecRulePtr, 
-    RecRulesPtr, 
+    DeclarView,
     RecRule, 
     Declar, 
-    Declar::*, 
-    DeclarPtr, 
-    DeclarsPtr, 
     ReducibilityHint
 };
 
+
 /*
 Base implementations of `Display` so we can use the `write!` macro.
-Option and Tuple need newtypes.
+bool, Option and Tuple need newtypes.
 */
 
+#[derive(Debug)]
+pub struct NewtypeBool(pub bool);
+
+impl Display for NewtypeBool {
+    fn fmt(&self, f : &mut Formatter) -> FmtResult {
+        match self {
+            NewtypeBool(false) => write!(f, "f"),
+            NewtypeBool(true) => write!(f, "t"),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct NewtypeOption<A>(pub Option<A>);
@@ -40,12 +48,23 @@ impl<A : Display> Display for NewtypeOption<A> {
 }
 
 #[derive(Debug)]
-pub struct NewtypeTuple<A, B>(pub (A, B));
+pub struct NewtypePair<A, B>(pub (A, B));
 
-impl <A : Display, B : Display> Display for NewtypeTuple<A, B> {
+impl <A : Display, B : Display> Display for NewtypePair<A, B> {
     fn fmt(&self, f : &mut Formatter) -> FmtResult {
         match self {
-            NewtypeTuple((a, b)) => write!(f, "{}.{}", a, b)
+            NewtypePair((a, b)) => write!(f, "({}.{})", a, b)
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct NewtypeTriple<A, B, C>(pub (A, B, C));
+
+impl <A : Display, B : Display, C : Display> Display for NewtypeTriple<A, B, C> {
+    fn fmt(&self, f : &mut Formatter) -> FmtResult {
+        match self {
+            NewtypeTriple((a, b, c)) => write!(f, "({}.{}.{})", a, b, c)
         }
     }
 }
@@ -54,6 +73,9 @@ pub trait HasPrefix : Copy {
     const PREFIX : char;
 }
 
+// provides a generic wrapper over the more specific tracing functions,
+// IE `trace_expr` or `trace_declar`. Having this makes it easier to write
+// things like `alloc()`.
 pub trait HasTraceItem<'a> : Sized {
     fn trace_item<CTX : IsCtx<'a>>(self, ctx : &mut CTX);
 }
@@ -169,7 +191,67 @@ impl Display for InferFlag {
     }
 }
 
+impl<'a> Display for DeclarView<'a> {
+    fn fmt(&self, f : &mut Formatter) -> FmtResult {
+        if self.pointee.in_env() {
+            write!(f, "e{}v", self.pointee.ptr_idx())
+        } else {
+            write!(f, "l{}v", self.pointee.ptr_idx())
+        }
+    }
+}
 
+impl<'a> HasTraceItem<'a> for DeclarView<'a> {
+    fn trace_item<CTX : IsCtx<'a>>(self, ctx : &mut CTX) {
+        if (<CTX as IsCtx>::IS_PFINDER || <CTX as IsCtx>::Tracer::NOOP) {
+            return
+        } else {
+            <CTX as IsCtx>::Tracer::trace_declar_view(self, ctx)
+        }
+    }
+}
+
+impl<'a> HasTraceItem<'a> for &IndBlock<'a> {
+    fn trace_item<CTX : IsCtx<'a>>(self, ctx : &mut CTX) {
+        if (<CTX as IsCtx>::IS_PFINDER || <CTX as IsCtx>::Tracer::NOOP) {
+            return
+        } else {
+            <CTX as IsCtx>::Tracer::trace_indblock(self, ctx)
+        }
+    }
+}
+
+impl<'a> HasTraceItem<'a> for &CheckedIndblock<'a> {
+    fn trace_item<CTX : IsCtx<'a>>(self, ctx : &mut CTX) {
+        if (<CTX as IsCtx>::IS_PFINDER || <CTX as IsCtx>::Tracer::NOOP) {
+            return
+        } else {
+            <CTX as IsCtx>::Tracer::trace_checked_indblock(self, ctx)
+        }
+    }
+}
+
+impl Display for IndBlockPtr {
+    fn fmt(&self, f : &mut Formatter) -> FmtResult {
+        write!(f, "ib{}", self.ind_serial)
+    }
+}
+
+impl Display for CheckedIndBlockPtr {
+    fn fmt(&self, f : &mut Formatter) -> FmtResult {
+        write!(f, "cb{}", self.ind_serial)
+
+    }
+}
+
+
+/*
+makes implementations of HasTraceItem so that 
+<elem>.trace_item(ctx)
+will dispatch to the right function call, IE 
+for names, <name>.trace_item(ctx) will call 
+<name>.trace_name(ctx)
+*/
 trace_item!{ 'a, Name, trace_name, trace_name_list, 'n' }
 trace_item!{ 'a, Level, trace_level, trace_level_list, 'u' }
 trace_item!{ 'a, Expr, trace_expr, trace_expr_list, 'e' }

@@ -3,36 +3,43 @@ use std::io::{ Error as IoError, Result as IoResult };
 use std::io::{ stdout, Stdout };
 use std::io::{ BufWriter, Write };
 use crate::mk_trace_step;
-use crate::utils::{ Ptr, List, List::*, ListPtr, IsCtx,  };
-use crate::name::{ NamePtr, NamesPtr, Name, StringPtr, Name::* };
-use crate::level::{ LevelPtr, LevelsPtr, Level, Level::* };
-use crate::expr::{ ExprPtr, ExprsPtr, Expr, Expr::*, BinderStyle };
-use crate::tc::eq::{ EqResult, DeltaResult };
-use crate::trace::items::HasPrefix;
+use crate::utils::{ Ptr, List::*, IsCtx,  };
+use crate::name::{ NamePtr, NamesPtr, StringPtr, Name::* };
+use crate::level::{ LevelPtr, LevelsPtr, Level::* };
+use crate::expr::{ ExprPtr, ExprsPtr, Expr::*, };
+use crate::inductive::{ IndBlock, CheckedIndblock };
+use crate::trace::items::{ NewtypeOption, HasPrefix };
 use crate::trace::steps::*;
 use crate::env::{ 
+    DeclarView,
     RecRulePtr, 
     RecRulesPtr, 
     RecRule, 
-    Declar, 
     Declar::*, 
     DeclarPtr, 
     DeclarsPtr, 
-    ReducibilityHint 
 };
 
 pub mod items;
 pub mod steps;
 
 /*
-IsTracer::write should probably write to some kind of BufWriter,
-where the user-defined implementation of `write` dictates when
-to flush the buffer.
+The basic premise of the pointer/item thing is that
+you print the full item (IE when it's appearing for the first time)
+using `<x>.trace_item(ctx)` which is is implemented so it calls
+to the specific trace function, IE some_name.trace_item(ctx)
+is a synonym for some_name.trace_name(ctx).
+
+When you're only printing the pointer representation (IE backreferencing
+a previously declared element) you just use the implementation of 
+Display on whatever pointer type, since we needed to implement Display
+in order for the write! macro to work nicely.
 */
+
 #[derive(Debug)]
 pub struct TraceMgr<T : IsTracer> {
     pub tracer : T,
-    next_step_idx : usize,
+    pub next_step_idx : usize,
     errors : Vec<IoError>
 }
 
@@ -82,10 +89,12 @@ impl<T : IsTracer> TraceMgr<T> {
     }
 }
 
+// FIXME : acquiring the actual step index should be done in the same place
+// that NOOP does it now.
 #[macro_export]
 macro_rules! mk_trace_step {
-    ( $fun_name:ident, $short:lifetime, $generic:ident, $step:ty ) => {
-        fn $fun_name<$short, $generic : HasPrefix>(step : $step, ctx : &mut impl IsCtx<$short>) -> StepIdx {
+    ( $fun_name:ident, $short:lifetime, $generic:ident, $bound:ident, $step:ty ) => {
+        fn $fun_name<$short, $generic : $bound, C : IsCtx<$short>>(step : $step, ctx : &mut C) -> StepIdx {
             let (step_idx, result) = step.default_trace_repr(ctx);
             ctx.mut_mgr().finish_write(result);
             step_idx
@@ -93,7 +102,7 @@ macro_rules! mk_trace_step {
     };
 
     ( $fun_name:ident, $short:lifetime, $step:ty ) => {
-        fn $fun_name<$short>(step : $step, ctx : &mut impl IsCtx<$short>) -> StepIdx {
+        fn $fun_name<$short, C : IsCtx<$short>>(step : $step, ctx : &mut C) -> StepIdx {
             let (step_idx, result) = step.default_trace_repr(ctx);
             ctx.mut_mgr().finish_write(result);
             step_idx
@@ -116,22 +125,38 @@ You probably want this to be `true` since typechecking takes a non-trivial amoun
 of time, and it's highly likely that any write error is going to result in
 an output file that won't be accepted by a verifier.
 
-The scheme for allowing user-defined implementations of trace representations/formats
-is similar to that of the `syn` crate's for allowing user-defined traversals of syntax trees;
-the `IsTracer` trait has a unique for every item and step that says how its supposed to be formatted
-in the output, and we provide a default which corresponds to the provided grammar. When users
-implement `IsTracer`, they can choose to override one or all of these behaviors with their own
-formatting. The API currently exposed for use in writing implementations is 
-`Ptr::in_env()` which returns a bool indicating whether a given element is in the environment
-or local to a typechecking context, `IsTracer::ptr_index(ptr)` which returns the element's unique
-index as a usize, and `<item>`.nanoda_dbg(ctx)` which will return a human-readable but not pretty-printed
-string representation of any of the items of interest.
-You can access the buffer of IO errors if you choose not to terminate on error
-via `ctx.mut_mgr().errors`
+The scheme for allowing user-defined implementations of trace 
+representations/formats is similar to that of the `syn` crate's for 
+enabline new implementations for traversals of syntax trees; the `IsTracer` trait 
+has a unique for every item and step that says how its supposed to be formatted
+in the output, and we provide a default which corresponds to the provided grammar. 
+When users implement `IsTracer`, they can choose to override one or all of 
+these behaviors with their own formatting. The API currently exposed for 
+use in writing implementations is `Ptr::in_env()` which returns a bool 
+indicating whether a given element is in the environment or local to a typechecking 
+context, `IsTracer::ptr_index(ptr)` which returns the element's unique
+index as a usize, and `<item>`.nanoda_dbg(ctx)` which will return a 
+human-readable but not pretty-printed string representation of any of 
+the items of interest. You can access the buffer of IO errors if you 
+choose not to terminate on error via `ctx.mut_mgr().errors`
 */
 pub trait IsTracer : std::io::Write {
     const NOOP : bool;
     const TERM_ON_IO_ERR : bool;
+
+    fn trace_univ_sep<'a, C : IsCtx<'a>>(ctx : &mut C) {
+        if !<C as IsCtx>::Tracer::NOOP {
+            let result = write!(ctx.tracer(), "!\n");
+            ctx.mut_mgr().finish_write(result);
+        }
+    }
+
+    fn trace_block_sep<'a, C : IsCtx<'a>>(ctx : &mut C) {
+        if !<C as IsCtx>::Tracer::NOOP {
+            let result = write!(ctx.tracer(), "%\n");
+            ctx.mut_mgr().finish_write(result);
+        }
+    }
 
     // Having to clone here is temporary until I figure out a better
     // solution. The problem is that `ctx` owns both the tracer
@@ -139,13 +164,13 @@ pub trait IsTracer : std::io::Write {
     // functions as getters for both the arena and the tracer,
     // the compiler can't tell that the borrows don't interfere when
     // we call `write!`
-    fn trace_string<'a>(s : StringPtr<'a>, ctx : &mut impl IsCtx<'a>) {
+    fn trace_string<'a, C : IsCtx<'a>>(s : StringPtr<'a>, ctx : &mut C) {
         let s_contents = s.read(ctx).clone();
         let result = write!(ctx.tracer(), "{}.{}\n", s, s_contents);
         ctx.mut_mgr().finish_write(result);
     }
 
-    fn trace_name<'a>(n : NamePtr<'a>, ctx : &mut impl IsCtx<'a>) {
+    fn trace_name<'a, C : IsCtx<'a>>(n : NamePtr<'a>, ctx : &mut C) {
         let result = match n.read(ctx) {
             Anon => write!(ctx.tracer(), "{}a\n", n),
             Str(pfx, sfx) => write!(ctx.tracer(), "{}s.{}.{}\n", n, pfx, sfx),
@@ -154,7 +179,7 @@ pub trait IsTracer : std::io::Write {
         ctx.mut_mgr().finish_write(result);
     }
 
-    fn trace_level<'a>(l : LevelPtr<'a>, ctx : &mut impl IsCtx<'a>) {
+    fn trace_level<'a, C : IsCtx<'a>>(l : LevelPtr<'a>, ctx : &mut C) {
         let result = match l.read(ctx) {
             Zero => write!(ctx.tracer(), "{}z\n", l),
             Succ(pred) => write!(ctx.tracer(), "{}s.{}\n", l, pred),
@@ -165,7 +190,7 @@ pub trait IsTracer : std::io::Write {
         ctx.mut_mgr().finish_write(result);
     }
     
-    fn trace_expr<'a>(e : ExprPtr<'a>, ctx : &mut impl IsCtx<'a>) {
+    fn trace_expr<'a, C : IsCtx<'a>>(e : ExprPtr<'a>, ctx : &mut C) {
         let result = match e.read(ctx) {
             Var { dbj } => write!(ctx.tracer(), "{}v{}\n", e, dbj),
             Sort { level } => write!(ctx.tracer(), "{}s.{}\n", e, level),
@@ -180,7 +205,7 @@ pub trait IsTracer : std::io::Write {
         ctx.mut_mgr().finish_write(result);
     }
 
-    fn trace_rec_rule<'a>(rr : RecRulePtr<'a>, ctx : &mut impl IsCtx<'a>) {
+    fn trace_rec_rule<'a, C : IsCtx<'a>>(rr : RecRulePtr<'a>, ctx : &mut C) {
         let result = match rr.read(ctx) {
             RecRule { ctor_name, num_fields, val } => {
                 write!(ctx.tracer(), "{}.{}.{}.{}\n", rr, ctor_name, num_fields, val)
@@ -190,7 +215,32 @@ pub trait IsTracer : std::io::Write {
         ctx.mut_mgr().finish_write(result);
     }
 
-    fn trace_declar<'a>(dptr : DeclarPtr<'a>, ctx : &mut impl IsCtx<'a>) {
+    fn trace_declar_view<'a, C : IsCtx<'a>>(dv : DeclarView<'a>, ctx : &mut C) {
+        let result = if dv.pointee.in_env() {
+            write!(
+                ctx.tracer(),
+                "e{}v.{}.{}.{}.{}\n",
+                dv.pointee.ptr_idx(),
+                dv.name,
+                dv.uparams,
+                dv.type_,
+                NewtypeOption(dv.val)
+            )
+        } else {
+            write!(
+                ctx.tracer(),
+                "l{}dv.{}.{}.{}.{}\n",
+                dv.pointee.ptr_idx(),
+                dv.name,
+                dv.uparams,
+                dv.type_,
+                NewtypeOption(dv.val)
+            )
+        };
+        ctx.mut_mgr().finish_write(result)
+    }
+
+    fn trace_declar<'a, C : IsCtx<'a>>(dptr : DeclarPtr<'a>, ctx : &mut C) {
         let d = dptr.read(ctx);
         let result = match d {
             Axiom { is_unsafe, .. } => {
@@ -240,21 +290,19 @@ pub trait IsTracer : std::io::Write {
             Constructor { 
                 parent_name, 
                 num_fields, 
-                minor_idx, 
                 num_params, 
                 is_unsafe,
                 ..
             } => {
                 write!(
                     ctx.tracer(),
-                    "{}c.{}.{}.{}.{}.{}.{}.{}.{}\n",
+                    "{}c.{}.{}.{}.{}.{}.{}.{}\n",
                     dptr,
                     d.name(),
                     d.uparams(),
                     d.type_(),
                     parent_name,
                     num_fields,
-                    minor_idx,
                     num_params,
                     is_unsafe,
                 )
@@ -307,12 +355,14 @@ pub trait IsTracer : std::io::Write {
         };
 
         ctx.mut_mgr().finish_write(result);
+        let view = dptr.as_view(ctx);
+        <C as IsCtx>::Tracer::trace_declar_view(view, ctx);
     }
 
     
     // Implemented as separate functions so that users
     // can elect to implement separate trace formats.
-    fn trace_name_list<'a>(l : NamesPtr<'a>, ctx : &mut impl IsCtx<'a>) {
+    fn trace_name_list<'a, C : IsCtx<'a>>(l : NamesPtr<'a>, ctx : &mut C) {
         let result = match l.read(ctx) {
             Nil => write!(ctx.tracer(), "{}_\n", l),
             Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}\n", l, hd, tl),
@@ -320,7 +370,7 @@ pub trait IsTracer : std::io::Write {
         ctx.mut_mgr().finish_write(result);
     }
 
-    fn trace_level_list<'a>(l : LevelsPtr<'a>, ctx : &mut impl IsCtx<'a>) {
+    fn trace_level_list<'a, C : IsCtx<'a>>(l : LevelsPtr<'a>, ctx : &mut C) {
         let result = match l.read(ctx) {
             Nil => write!(ctx.tracer(), "{}_\n", l),
             Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}\n", l, hd, tl),
@@ -328,7 +378,7 @@ pub trait IsTracer : std::io::Write {
         ctx.mut_mgr().finish_write(result);
     }    
 
-    fn trace_expr_list<'a>(l : ExprsPtr<'a>, ctx : &mut impl IsCtx<'a>) {
+    fn trace_expr_list<'a, C : IsCtx<'a>>(l : ExprsPtr<'a>, ctx : &mut C) {
         let result = match l.read(ctx) {
             Nil => write!(ctx.tracer(), "{}_\n", l),
             Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}\n", l, hd, tl),
@@ -337,7 +387,7 @@ pub trait IsTracer : std::io::Write {
     }    
      
  
-    fn trace_rec_rule_list<'a>(l : RecRulesPtr<'a>, ctx : &mut impl IsCtx<'a>) {
+    fn trace_rec_rule_list<'a, C : IsCtx<'a>>(l : RecRulesPtr<'a>, ctx : &mut C) {
         let result = match l.read(ctx) {
             Nil => write!(ctx.tracer(), "{}_\n", l),
             Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}\n", l, hd, tl),
@@ -345,7 +395,7 @@ pub trait IsTracer : std::io::Write {
         ctx.mut_mgr().finish_write(result);
     }    
 
-    fn trace_declar_list<'a>(l : DeclarsPtr<'a>, ctx : &mut impl IsCtx<'a>) {
+    fn trace_declar_list<'a, C : IsCtx<'a>>(l : DeclarsPtr<'a>, ctx : &mut C) {
         let result = match l.read(ctx) {
             Nil => write!(ctx.tracer(), "{}_\n", l),
             Cons(hd, tl) => write!(ctx.tracer(), "{}.{}.{}\n", l, hd, tl),
@@ -353,16 +403,47 @@ pub trait IsTracer : std::io::Write {
         ctx.mut_mgr().finish_write(result);
     }       
 
-    mk_trace_step! { trace_try_succ, 'a, TrySucc }
-    mk_trace_step! { trace_mem, 'a, A, Mem<'a, A> }
-    mk_trace_step! { trace_pos, 'a, A, Pos<'a, A> }
-    mk_trace_step! { trace_is_subset, 'a, A, IsSubset<'a, A> }
-    mk_trace_step! { trace_skip, 'a, A, Skip<'a, A> }
-    mk_trace_step! { trace_take, 'a, A, Take<'a, A> }
-    mk_trace_step! { trace_no_dupes, 'a, A, NoDupes<'a, A> }
-    mk_trace_step! { trace_get, 'a, A, Get<'a, A> }
-    mk_trace_step! { trace_len, 'a, A, Len<'a, A> }
-    mk_trace_step! { trace_concat, 'a, A, Concat<'a, A> }
+    fn trace_indblock<'a, C : IsCtx<'a>>(b : &IndBlock<'a>, ctx : &mut C) {
+        let result = write!(
+            ctx.tracer(),
+            "ib{}.{}.{}.{}.{}.{}.{}.{}\n",
+            b.ind_serial,
+            b.is_unsafe,
+            b.num_params,
+            b.uparams,
+            b.ind_names,
+            b.ind_types,
+            b.ctor_names,
+            b.ctor_types,
+        );
+        ctx.mut_mgr().finish_write(result);
+    }
+
+     fn trace_checked_indblock<'a, C : IsCtx<'a>>(b : &CheckedIndblock<'a>, ctx : &mut C) {
+        let result = write!(
+            ctx.tracer(),
+            "cb{}.{}.{}.{}.{}.{}.{}.{}.{}.{}.{}.{}.{}.{}\n",
+            b.ind_serial,
+            b.is_unsafe,
+            b.num_params,
+            b.uparams,
+            b.ind_names,
+            b.ind_types,
+            b.ctor_names,
+            b.ctor_types,
+            b.block_codom,
+            b.is_zero.0,
+            b.is_nonzero.0,
+            b.local_params,
+            b.local_indices,
+            b.ind_consts
+        );
+        ctx.mut_mgr().finish_write(result);
+    }   
+
+    mk_trace_step! { trace_pos, 'a, A, HasPrefix, Pos<'a, A> }
+    mk_trace_step! { trace_is_subset, 'a, A, HasPrefix, IsSubset<'a, A> }
+    mk_trace_step! { trace_no_dupes, 'a, A, HasPrefix, NoDupes<'a, A> }
 
     mk_trace_step! { trace_get_prefix, 'a, GetPrefix<'a> }
 
@@ -374,6 +455,7 @@ pub trait IsTracer : std::io::Write {
     mk_trace_step! { trace_simplify, 'a, Simplify<'a> }
     mk_trace_step! { trace_params_defined, 'a, ParamsDefined<'a> }
     mk_trace_step! { trace_subst_l, 'a, SubstL<'a> }
+    mk_trace_step! { trace_ensure_imax_leq, 'a, EnsureImaxLeq<'a> }
     mk_trace_step! { trace_leq_core, 'a, LeqCore<'a> }
     mk_trace_step! { trace_leq, 'a, Leq<'a> }
     mk_trace_step! { trace_eq_antisymm, 'a, EqAntisymm<'a> }
@@ -381,8 +463,7 @@ pub trait IsTracer : std::io::Write {
     mk_trace_step! { trace_is_nonzero, 'a, IsNonzero<'a> }
     mk_trace_step! { trace_maybe_zero, 'a, MaybeZero<'a> }
     mk_trace_step! { trace_maybe_nonzero, 'a, MaybeNonzero<'a> }
-
-    mk_trace_step! { trace_params_defined_many, 'a, ParamsDefinedMany<'a> }
+        mk_trace_step! { trace_params_defined_many, 'a, ParamsDefinedMany<'a> }
     mk_trace_step! { trace_subst_l_many, 'a, SubstLMany<'a> }
     mk_trace_step! { trace_eq_antisymm_many, 'a, EqAntisymmMany<'a> }
     mk_trace_step! { trace_fold_imaxs, 'a, FoldImaxs<'a> }
@@ -415,11 +496,9 @@ pub trait IsTracer : std::io::Write {
     mk_trace_step! { trace_mk_nullary_ctor, 'a, MkNullaryCtor<'a> }
     mk_trace_step! { trace_to_ctor_when_k, 'a, ToCtorWhenK<'a> }
     mk_trace_step! { trace_get_rec_rule, 'a, GetRecRule<'a> }
-    mk_trace_step! { trace_get_rec_rule_aux, 'a, GetRecRuleAux<'a> }
     mk_trace_step! { trace_whnf_core, 'a, WhnfCore<'a> }
     mk_trace_step! { trace_whnf, 'a, Whnf<'a> }
     mk_trace_step! { trace_unfold_def, 'a, UnfoldDef<'a> }
-    mk_trace_step! { trace_is_delta, 'a, IsDelta<'a> }
 
     mk_trace_step! { trace_def_eq, 'a, DefEq<'a> }
     mk_trace_step! { trace_def_eq_sort, 'a, DefEqSort<'a> }
@@ -429,7 +508,6 @@ pub trait IsTracer : std::io::Write {
     mk_trace_step! { trace_is_proposition, 'a, IsProposition<'a> }
     mk_trace_step! { trace_is_proof, 'a, IsProof<'a> }
     mk_trace_step! { trace_proof_irrel_eq, 'a, ProofIrrelEq<'a> }
-    mk_trace_step! { trace_args_eq, 'a, ArgsEq<'a> }
     mk_trace_step! { trace_args_eq_aux, 'a, ArgsEqAux<'a> }
     mk_trace_step! { trace_lazy_delta_step, 'a, LazyDeltaStep<'a> }
     mk_trace_step! { trace_def_eq_const, 'a, DefEqConst<'a> }
@@ -454,11 +532,45 @@ pub trait IsTracer : std::io::Write {
     mk_trace_step! { trace_check_vitals, 'a, CheckVitals<'a> }
 
     mk_trace_step! { trace_mk_local_params, 'a, MkLocalParams<'a> }
-    mk_trace_step! { trace_mk_local_indices1, 'a, MkLocalIndices1<'a> }
-    mk_trace_step! { trace_mk_local_indices_aux, 'a, MkLocalIndicesAux<'a> }
+    mk_trace_step! { trace_handle_telescope1, 'a, HandleTelescope1<'a> }
+    mk_trace_step! { trace_handle_telescopes, 'a, HandleTelescopes<'a> }
+    mk_trace_step! { trace_check_ind_types, 'a, CheckIndTypes<'a> }
+    mk_trace_step! { trace_mk_ind_types, 'a, MkIndTypes<'a> }
+    mk_trace_step! { trace_valid_param_apps, 'a, ValidParamApps<'a> }
+    mk_trace_step! { trace_is_valid_ind_app, 'a, IsValidIndApp<'a> }
+    mk_trace_step! { trace_which_valid_ind_app, 'a, WhichValidIndApp<'a> }
+    mk_trace_step! { trace_is_rec_argument, 'a, IsRecArgument<'a> }
+    mk_trace_step! { trace_check_positivity1, 'a, CheckPositivity1<'a> }
+    mk_trace_step! { trace_check_ctor1, 'a, CheckCtor1<'a> }
+    mk_trace_step! { trace_mk_ctor_group1, 'a, MkCtorGroup1<'a> }
+    mk_trace_step! { trace_mk_ctors, 'a, MkCtors<'a> }
+    mk_trace_step! { trace_declare_ctors, 'a, DeclareCtors }
+    mk_trace_step! { trace_large_elim_test_aux, 'a, LargeElimTestAux<'a> }
+    mk_trace_step! { trace_large_elim_test, 'a, LargeElimTest<'a> }
+    mk_trace_step! { trace_mk_elim_level, 'a, MkElimLevel<'a> }
+    mk_trace_step! { trace_init_k_target_aux, 'a, InitKTargetAux<'a> }
+    mk_trace_step! { trace_init_k_target, 'a, InitKTarget<'a> }
+    mk_trace_step! { trace_mk_majors_aux, 'a, MkMajorsAux<'a> }
+    mk_trace_step! { trace_mk_motive, 'a, MkMotive<'a> }
+    mk_trace_step! { trace_mk_motives, 'a, MkMotives<'a> }
+    mk_trace_step! { trace_sep_rec_ctor_args, 'a, SepRecCtorArgs<'a> }
+    mk_trace_step! { trace_get_i_indices, 'a, GetIIndices<'a> }
+    mk_trace_step! { trace_handle_rec_args_aux, 'a, HandleRecArgsAux<'a> }
+    mk_trace_step! { trace_handle_rec_args_minor, 'a, HandleRecArgsMinor<'a> }
+    mk_trace_step! { trace_mk_minors_group, 'a, MkMinorsGroup<'a> }
+    mk_trace_step! { trace_mk_minors_aux, 'a, MkMinorsAux<'a> }
+    mk_trace_step! { trace_mk_minors, 'a, MkMinors<'a> }
+    mk_trace_step! { trace_get_rec_levels, 'a, GetRecLevels<'a> }
+    mk_trace_step! { trace_handle_rec_args_rule, 'a, HandleRecArgsRule<'a> }
+    mk_trace_step! { trace_mk_rec_rule1, 'a, MkRecRule1<'a> }
+    mk_trace_step! { trace_mk_rec_rules_group, 'a, MkRecRulesGroup<'a> }
+    mk_trace_step! { trace_mk_rec_rules, 'a, MkRecRules<'a> }
+    mk_trace_step! { trace_mk_recursor_aux, 'a, MkRecursorAux<'a> }
+    mk_trace_step! { trace_mk_recursors, 'a, MkRecursors<'a> }
 
+    mk_trace_step! { trace_get_declar_view, 'a, GetDeclarView<'a> }
     mk_trace_step! { trace_admit_declar, 'a, AdmitDeclar<'a> }
-
+    
 
     fn ptr_index<'a, A>(ptr : Ptr<'a, A>) -> usize {
         match ptr {
@@ -473,7 +585,7 @@ pub trait IsTracer : std::io::Write {
 pub struct NoopTracer;
 
 impl std::io::Write for NoopTracer {
-    fn write(&mut self, buf : &[u8]) -> IoResult<usize> {
+    fn write(&mut self, _ : &[u8]) -> IoResult<usize> {
         Ok(0)
     }
     fn flush(&mut self) -> IoResult<()> {

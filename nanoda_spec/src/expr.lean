@@ -89,7 +89,6 @@ def var_bound : Expr -> nat
 | (letE _ _ _ _ _ vb _) := vb
 | (localE _ _ _ _) := 0
 
-
 def has_locals : Expr -> bool
 | (var dbj) := false
 | (sort _) := false
@@ -99,9 +98,6 @@ def has_locals : Expr -> bool
 | (lambda _ _ _ _ _ ls) := ls
 | (letE _ _ _ _ _ _ ls) := ls
 | (localE _ _ _ _) := true
-
-
-
 
 def mkVar (dbj : nat) : Expr := var dbj
 
@@ -114,43 +110,22 @@ def mkApp (f a: Expr) : Expr :=
     locals : bool := has_locals f || has_locals a
     in app f a bound locals
 
-def mkPi 
-    (n : Name) 
-    (t : Expr) 
-    (s : Bstyle)
-    (b : Expr) 
-    : Expr := 
+def mkPi (n : Name) (t : Expr) (s : Bstyle) (b : Expr) : Expr :=
     let bound := max (t.var_bound) (pred b.var_bound),
     locals := t.has_locals || b.has_locals
     in pi n t s b bound locals
 
-def mkLambda 
-    (n : Name) 
-    (t : Expr) 
-    (s : Bstyle)
-    (b : Expr) 
-    : Expr := 
+def mkLambda (n : Name) (t : Expr) (s : Bstyle) (b : Expr) : Expr:=
     let bound := max (t.var_bound) (pred b.var_bound),
     locals := t.has_locals || b.has_locals
     in lambda n t s b bound locals
 
-def mkLet 
-    (n : Name)
-    (t : Expr)
-    (s : Bstyle)
-    (v : Expr)
-    (b : Expr) 
-    : Expr := 
+def mkLet (n : Name) (t : Expr) (s : Bstyle) (v : Expr) (b : Expr) : Expr :=
     let bound := max (max (var_bound t) (var_bound v)) (pred b.var_bound),
     locals := has_locals t || has_locals v || has_locals b
     in letE n t s v b bound locals
 
-def mkLocal 
-    (n : Name)
-    (t : Expr)
-    (s : Bstyle)
-    (serial : nat)
-    : Expr := 
+def mkLocal (n : Name) (t : Expr) (s : Bstyle) (serial : nat) : Expr :=
     localE n t s serial
 
 -- Tracking/managing this is up to the implementation.
@@ -189,37 +164,52 @@ inductive isLambda : Expr -> bool -> Prop
 | localE (n : Name) (t : Expr) (s : Bstyle) (serial : nat) : isLambda (mkLocal n t s serial) ff
 
 
-inductive instAux : Expr -> list Expr -> nat -> Expr -> Prop
+inductive instAux : 
+    ∀ (e : Expr) 
+      (subs : list Expr) 
+      (offset : nat) 
+      (e' : Expr), 
+      Prop
+     
 | noBound 
     (e : Expr)
     (subs : list Expr)
-    (offset : nat)
-    : var_bound e ≤ offset 
+    (offset : nat) :
+    -- ASSERT : var_bound e ≤ offset
+    var_bound e ≤ offset 
     -> instAux e subs offset e
 
 | varHit 
     (dbj : nat)
     (subs : list Expr)
-    (offset : nat)
-    (e' : Expr)
-    : listGet subs (dbj - offset) (some e')
-    -> instAux (mkVar dbj) subs offset e'
+    (offset : nat) :
+    let e := mkVar dbj,
+        e' := getInfal subs (dbj - offset)
+    in
+    instAux e subs offset e'
 
 | varMiss 
     (dbj : nat)
     (subs : list Expr)
-    (offset : nat)
-    : listGet subs (dbj - offset) none
-    -> instAux (mkVar dbj) subs offset (mkVar dbj)
+    (offset : nat) :
+    let e := mkVar dbj
+    in
+    -- ASSERT : subs.nth (dbj - offset) = none
+    instAux e subs offset e
 
 | app 
-    (f a : Expr) 
+    (f : Expr)
+    (a : Expr) 
     (subs : list Expr)
     (offset : nat) 
-    (f' a' : Expr)
-    : instAux f subs offset f'
+    (f' : Expr)
+    (a' : Expr) :
+    let e := mkApp f a,
+        e' := mkApp f' a'
+    in
+    instAux f subs offset f'
     -> instAux a subs offset a'
-    -> instAux (mkApp f a) subs offset (mkApp f' a')
+    -> instAux e subs offset e'
                        
 | pi 
     (n : Name)
@@ -228,13 +218,14 @@ inductive instAux : Expr -> list Expr -> nat -> Expr -> Prop
     (body : Expr)
     (subs : list Expr)
     (offset : nat)
-    (t' body' : Expr)
-    : instAux t subs offset t'
+    (t' : Expr)
+    (body' : Expr) :
+    let e := mkPi n t s body,
+        e' := mkPi n t' s body'
+    in
+    instAux t subs offset t'
     -> instAux body subs (1 + offset) body'
-    -> instAux (mkPi n t s body) 
-    subs
-    offset 
-    (mkPi n t' s body')
+    -> instAux e subs offset e'
 
 | lambda 
     (n : Name)
@@ -243,10 +234,14 @@ inductive instAux : Expr -> list Expr -> nat -> Expr -> Prop
     (body : Expr)
     (subs : list Expr)
     (offset : nat)
-    (t' body' : Expr)
-    : instAux t subs offset t'
+    (t' : Expr)
+    (body' : Expr) :
+    let e := mkLambda n t s body,
+        e' := mkLambda n t' s body'
+    in
+    instAux t subs offset t'
     -> instAux body subs (1 + offset) body'
-    -> instAux (mkLambda n t s body) subs offset (mkLambda n t' s body')
+    -> instAux e subs offset e'
 
 | letE 
     (n : Name)
@@ -256,35 +251,32 @@ inductive instAux : Expr -> list Expr -> nat -> Expr -> Prop
     (body : Expr)
     (subs : list Expr)
     (offset : nat)
-    (t' val' body' : Expr)
-    : instAux t subs offset t'
-      -> instAux val subs offset val'
-      -> instAux body subs (1 + offset) body'
-      -> instAux (mkLet n t s val body) subs offset (mkLet n t' s val' body')
+    (t' : Expr)
+    (val' : Expr)
+    (body' : Expr) :
+    let e := mkLet n t s val body,
+        e' := mkLet n t' s val' body'
+    in
+    instAux t subs offset t'
+    -> instAux val subs offset val'
+    -> instAux body subs (1 + offset) body'
+    -> instAux e subs offset e'
 
-inductive inst : Expr -> list Expr -> Expr -> Prop
+inductive inst : ∀ (e : Expr) (subs : list Expr) (e' : Expr), Prop 
 | noBound (e : Expr) (subs : list Expr) (e' : Expr) : var_bound e = 0 -> inst e subs e
 | byAux (e : Expr) (subs : list Expr) (e' : Expr) : instAux e subs 0 e' -> inst e subs e'
 
 def inst1 (e sub e' : Expr) : Prop := inst e [sub] e'
 
 
-inductive abstrAux : Expr -> list Expr -> nat -> Expr -> Prop
+inductive abstrAux : ∀ (e : Expr) (locals : list Expr) (offset : nat) (e' : Expr), Prop
 | noLocals 
     (e : Expr)
     (locals : list Expr)
-    (offset : nat)
-    : has_locals e = false
+    (offset : nat) :
+    has_locals e = false
     -> abstrAux e locals offset e
            
-| cacheHit 
-    (e : Expr)
-    (locals : list Expr)
-    (offset : nat)
-    (e' : Expr)
-    : abstrAux e locals offset e' 
-    -> abstrAux e locals offset e'
-
 | localHit 
     (n : Name)
     (t : Expr)
@@ -292,10 +284,12 @@ inductive abstrAux : Expr -> list Expr -> nat -> Expr -> Prop
     (serial : nat)
     (locals : list Expr)
     (offset : nat)
-    (pos : nat)
-    : let ind_arg1 := mkLocal n t s serial
-    in listPos ind_arg1 locals (some pos)
-    -> abstrAux ind_arg1 locals offset (mkVar $ offset + pos)
+    (pos : nat) :
+    let e := mkLocal n t s serial,
+        e' := mkVar (offset + pos)
+    in 
+    listPos e locals (some pos)
+    -> abstrAux e locals offset e'
 
 | localMiss 
     (n : Name)
@@ -303,19 +297,25 @@ inductive abstrAux : Expr -> list Expr -> nat -> Expr -> Prop
     (s : Bstyle)
     (serial : nat)
     (locals : list Expr)
-    (offset : nat)
-    : let k := mkLocal n t s serial
-    in listPos k locals none
-    -> abstrAux k locals offset k
+    (offset : nat) :
+    let e := mkLocal n t s serial
+    in 
+    listPos e locals none
+    -> abstrAux e locals offset e
 
 | app 
-    (f a : Expr) 
+    (f : Expr) 
+    (a : Expr) 
     (locals : list Expr)
     (offset : nat) 
-    (f' a' : Expr)
-    : abstrAux f locals offset f'
+    (f' : Expr)
+    (a' : Expr) :
+    let e := mkApp f a,
+        e' := mkApp f' a'
+    in
+    abstrAux f locals offset f'
     -> abstrAux a locals offset a'
-    -> abstrAux (mkApp f a) locals offset (mkApp f' a')
+    -> abstrAux e locals offset e'
 
 | pi 
     (n : Name) 
@@ -324,10 +324,14 @@ inductive abstrAux : Expr -> list Expr -> nat -> Expr -> Prop
     (body : Expr)
     (locals : list Expr)
     (offset : nat) 
-    (t' body' : Expr)
-    : abstrAux t locals offset t'
+    (t' : Expr)
+    (body' : Expr) :
+    let e := mkPi n t s body,
+        e' := mkPi n t' s body'
+    in
+    abstrAux t locals offset t'
     -> abstrAux body locals (1 + offset) body'
-    -> abstrAux (mkPi n t s body) locals offset (mkPi n t' s body')
+    -> abstrAux e locals offset e'
 
 | lambda 
     (n : Name) 
@@ -336,10 +340,14 @@ inductive abstrAux : Expr -> list Expr -> nat -> Expr -> Prop
     (body : Expr)
     (locals : list Expr)
     (offset : nat) 
-    (t' body' : Expr)
-    : abstrAux t locals offset t'
+    (t' : Expr)
+    (body' : Expr) :
+    let e := mkLambda n t s body,
+        e' := mkLambda n t' s body'
+    in
+    abstrAux t locals offset t'
     -> abstrAux body locals (1 + offset) body'
-    -> abstrAux (mkLambda n t s body) locals offset (mkLambda n t' s body')
+    -> abstrAux e locals offset e'
 
 | letE 
     (n : Name) 
@@ -349,74 +357,109 @@ inductive abstrAux : Expr -> list Expr -> nat -> Expr -> Prop
     (body : Expr)
     (locals : list Expr)
     (offset : nat) 
-    (t' val' body' : Expr)
-    : abstrAux t locals offset t'
+    (t' : Expr)
+    (val' : Expr)
+    (body' : Expr) :
+    let e := mkLet n t s val body,
+        e' := mkLet n t' s val' body'
+    in 
+    abstrAux t locals offset t'
     -> abstrAux val locals offset val'
     -> abstrAux body locals (1 + offset) body'
-    -> abstrAux (mkLet n t s val body) locals offset (mkLet n t' s val' body')                  
+    -> abstrAux e locals offset e'
 
   
   
   
-inductive abstr : Expr -> list Expr -> Expr -> Prop
-| noLocals (e : Expr) (subs : list Expr) : has_locals e = false -> abstr e subs e
+inductive abstr : ∀ (e : Expr) (locals : list Expr) (e' : Expr), Prop
+| noLocals (e : Expr) (locals : list Expr) : has_locals e = false -> abstr e locals e
 | byAux 
     (e : Expr) 
-    (subs : list Expr) 
+    (locals : list Expr) 
     (e' : Expr) 
-    : abstrAux e subs 0 e'
-    -> abstr e subs e'
+    : abstrAux e locals 0 e'
+    -> abstr e locals e'
 
 
 -- "beta" substitution for levels in an expression (Sort/Const exprs)
-inductive subst : Expr -> list Level -> list Level -> Expr -> Prop
+inductive subst : ∀ (e : Expr) (ks : list Level) (vs : list Level) (e' : Expr), Prop
+
 | var 
     (dbj : nat) 
-    (ks vs : list Level) 
-    : subst (mkVar dbj) ks vs (mkVar dbj)
+    (ks : list Level)
+    (vs : list Level) :
+    let e := mkVar dbj
+    in
+    subst e ks vs e
 
 | sort 
     (l : Level) 
-    (ks vs : list Level) 
-    (l' : Level)
-    : l.subst ks vs l'
-    -> subst (mkSort l) ks vs (mkSort l')
+    (ks : list Level) 
+    (vs : list Level) 
+    (l' : Level) :
+    let e := mkSort l,
+        e' := mkSort l'
+    in
+    l.subst ks vs l'
+    -> subst e ks vs e'
 
 | const 
     (n : Name) 
-    (levels ks vs levels' : list Level) 
-    : Level.substMany ks vs levels levels'                                                 
-    -> subst (mkConst n levels) ks vs (mkConst n levels')
+    (levels : list Level)
+    (ks : list Level)
+    (vs : list Level)
+    (levels' : list Level) :
+    let e := mkConst n levels,
+        e' := mkConst n levels'
+    in
+    Level.substMany ks vs levels levels'                                                 
+    -> subst e ks vs e'
 
 | app 
-    (f a : Expr) 
-    (ks vs : list Level)
-    (f' a' : Expr)
-    : subst f ks vs f' 
+    (f : Expr) 
+    (a : Expr) 
+    (ks : list Level)
+    (vs : list Level)
+    (f' : Expr)
+    (a' : Expr) :
+    let e := mkApp f a,
+        e' := mkApp f' a'
+    in
+    subst f ks vs f' 
     -> subst a ks vs a' 
-    -> subst (mkApp f a) ks vs (mkApp f' a')
+    -> subst e ks vs e'
 
 | pi 
     (n : Name) 
     (t : Expr)
     (s : Bstyle) 
     (body : Expr)
-    (ks vs : list Level)
-    (t' body' : Expr)
-    : subst t ks vs t' 
+    (ks : list Level)
+    (vs : list Level)
+    (t' : Expr)
+    (body' : Expr) :
+    let e := mkPi n t s body,
+        e' := mkPi n t' s body'
+    in
+    subst t ks vs t' 
     -> subst body ks vs body'
-    -> subst (mkPi n t s body) ks vs (mkPi n t' s body')
+    -> subst e ks vs e'
 
 | lambda 
     (n : Name) 
     (t : Expr)
     (s : Bstyle) 
     (body : Expr)
-    (ks vs : list Level)
-    (t' body' : Expr)
-    : subst t ks vs t' 
+    (ks : list Level)
+    (vs : list Level)
+    (t' : Expr)
+    (body' : Expr) :
+    let e := mkLambda n t s body,
+        e' := mkLambda n t' s body'
+    in
+    subst t ks vs t' 
     -> subst body ks vs body'
-    -> subst (mkLambda n t s body) ks vs (mkLambda n t' s body')
+    -> subst e ks vs e'
 
 | letE 
     (n : Name) 
@@ -425,67 +468,104 @@ inductive subst : Expr -> list Level -> list Level -> Expr -> Prop
     (val : Expr)
     (body : Expr)
     (ks vs : list Level)
-    (t' val' body' : Expr)
-    : subst t ks vs t' 
+    (t' : Expr)
+    (val' : Expr)
+    (body' : Expr) :
+    let e := (mkLet n t s val body),
+        e' := (mkLet n t' s val' body') 
+    in
+    subst t ks vs t' 
     -> subst val ks vs val'
     -> subst body ks vs body'
-    -> subst (mkLet n t s val body) ks vs (mkLet n t' s val' body')           
+    -> subst e ks vs e'           
 
 | localE 
     (n : Name) 
     (t : Expr)
     (s : Bstyle)
     (serial : nat) 
-    (ks vs : list Level)
+    (ks : list Level)
+    (vs : list Level)
     (t' : Expr)
-    (serial' : nat)
-    : subst t ks vs t' 
-    -> subst (mkLocal n t s serial) ks vs (mkLocal n t' s serial')
+    (serial' : nat) :
+    let e := mkLocal n t s serial,
+        e' := mkLocal n t' s serial'
+    in
+    subst t ks vs t' 
+    -> subst e ks vs e'
 
 
 
-inductive hasIndOcc : Expr -> list Name -> bool -> Prop
-| var (dbj : nat) (ind_names : list Name) : hasIndOcc (var dbj) ind_names ff
+inductive hasIndOcc : ∀ (e : Expr) (names : list Name) (has_ind_occ : bool), Prop
+| var 
+    (dbj : nat) 
+    (ind_names : list Name) : 
+    let e := mkVar dbj,
+        result := ff
+    in
+    hasIndOcc e ind_names result
     
-| sort (l : Level) (ind_names : list Name) : hasIndOcc (sort l) ind_names ff
+| sort 
+    (l : Level) 
+    (ind_names : list Name) : 
+    let e := mkSort l,
+        result := ff
+    in
+    hasIndOcc e ind_names result
 
 | const 
     (n : Name)
     (levels : list Level)
     (ind_names : list Name)
-    (b : bool)
-    : listMem n ind_names b
-    -> hasIndOcc (mkConst n levels) ind_names b
+    (maybe_pos : option nat) :
+    let e := mkConst n levels,
+        result := maybe_pos.is_some
+    in
+    listPos n ind_names maybe_pos
+    -> hasIndOcc e ind_names result
 
 | app 
-    (f a : Expr)
+    (f : Expr)
+    (a : Expr)
     (ind_names : list Name)
-    (b1 b2 : bool) 
-    : hasIndOcc f ind_names b1
+    (b1 : bool) 
+    (b2 : bool) :
+    let e := mkApp f a,
+        result := b1 || b2
+    in
+    hasIndOcc f ind_names b1
     -> hasIndOcc a ind_names b2
-    -> hasIndOcc (mkApp f a) ind_names (b1 || b2)
+    -> hasIndOcc e ind_names result
 
 | pi 
     (n : Name)
     (t : Expr)
     (s : Bstyle)
     (body : Expr)
-    (b1 b2 : bool) 
-    (ind_names : list Name) 
-    : hasIndOcc t ind_names b1
+    (b1 : bool) 
+    (b2 : bool) 
+    (ind_names : list Name) :
+    let e := mkPi n t s body,
+        result := b1 || b2
+    in
+    hasIndOcc t ind_names b1
     -> hasIndOcc body ind_names b2
-    -> hasIndOcc (mkPi n t s body) ind_names (b1 || b2)
+    -> hasIndOcc e ind_names result
 
 | lambda 
     (n : Name)
     (t : Expr)
     (s : Bstyle)
     (body : Expr)
-    (b1 b2 : bool) 
-    (ind_names : list Name) 
-    : hasIndOcc t ind_names b1
+    (b1 : bool) 
+    (b2 : bool) 
+    (ind_names : list Name) :
+    let e := mkLambda n t s body,
+        result := b1 || b2
+    in
+    hasIndOcc t ind_names b1
     -> hasIndOcc body ind_names b2
-    -> hasIndOcc (mkLambda n t s body) ind_names (b1 || b2)
+    -> hasIndOcc e ind_names result
                             
 | letE   
     (n : Name)
@@ -493,12 +573,17 @@ inductive hasIndOcc : Expr -> list Name -> bool -> Prop
     (s : Bstyle)
     (val : Expr)
     (body : Expr)
-    (b1 b2 b3 : bool) 
-    (ind_names : list Name) 
-    : hasIndOcc t ind_names b1
+    (b1 : bool) 
+    (b2 : bool)
+    (b3 : bool)
+    (ind_names : list Name) :
+    let e := mkLet n t s val body,
+        result := b1 || b2 || b3
+    in
+    hasIndOcc t ind_names b1
     -> hasIndOcc val ind_names b2
     -> hasIndOcc body ind_names b3
-    -> hasIndOcc (mkLet n t s val body) ind_names (b1 || b2 || b3)
+    -> hasIndOcc e ind_names result
                             
 | localE 
     (n : Name)
@@ -506,159 +591,206 @@ inductive hasIndOcc : Expr -> list Name -> bool -> Prop
     (s : Bstyle)
     (serial : nat)
     (b : bool) 
-    (ind_names : list Name) 
-    : hasIndOcc t ind_names b
-    -> hasIndOcc (mkLocal n t s serial) ind_names b
+    (ind_names : list Name) :
+    let e := mkLocal n t s serial
+    in
+    hasIndOcc t ind_names b
+    -> hasIndOcc e ind_names b
 
 
 
-inductive applyPi : Expr -> Expr -> Expr -> Prop
+inductive applyPi : ∀ (binder body out : Expr), Prop
 | mk 
     (n : Name) 
     (t : Expr)
     (s : Bstyle)
     (serial : nat)
     (body : Expr)
-    (body' : Expr)
-    : let local_dom := mkLocal n t s serial
+    (body' : Expr) :
+    let local_dom := mkLocal n t s serial,
+        locals := [local_dom],
+        out := mkPi n t s body'
     in
-    abstr body [local_dom] body'
-    -> applyPi local_dom body (mkPi n t s body')
+    abstr body locals body'
+    -> applyPi local_dom body out
 
-inductive applyLambda : Expr -> Expr -> Expr -> Prop
+-- identical to applyPi but for lambdas.
+inductive applyLambda : ∀ (binder body out : Expr), Prop
 | mk 
     (n : Name) 
     (t : Expr)
     (s : Bstyle)
     (serial : nat)
     (body : Expr)
-    (body' : Expr)
-    : let local_dom := mkLocal n t s serial
+    (body' : Expr) :
+    let local_dom := mkLocal n t s serial,
+        locals := [local_dom],
+        out := mkLambda n t s body'
     in
-    abstr body [local_dom] body'
-    -> applyLambda local_dom body (mkLambda n t s body')        
+    abstr body locals body'
+    -> applyLambda local_dom body out
 
 
-inductive foldPis : list Expr -> Expr -> Expr -> Prop
-| base (body : Expr) : foldPis [] body body
+inductive foldPis : ∀ (binders : list Expr) (e e' : Expr), Prop
+| base (body : Expr) : 
+    let binders : list Expr := [] 
+    in foldPis binders body body
+
 | step 
-    (doms_hd : Expr)
-    (doms_tl : list Expr)
+    (binders_hd : Expr)
+    (binders_tl : list Expr)
     (body : Expr)
     (sink : Expr)
-    (out : Expr)
-    : foldPis doms_tl body sink
-    -> applyPi doms_hd sink out
-    -> foldPis (doms_hd :: doms_tl) body out
-      
+    (e' : Expr) :
+    let binders := binders_hd :: binders_tl
+    in
+    foldPis binders_tl body sink
+    -> applyPi binders_hd sink e'
+    -> foldPis binders body e'
 
-inductive foldLambdas : list Expr -> Expr -> Expr -> Prop
-| base (body : Expr) : foldLambdas [] body body
+ inductive foldLambdas : ∀ (binders : list Expr) (e e' : Expr), Prop
+| base (body : Expr) : 
+    let binders : list Expr := [] 
+    in foldLambdas binders body body
+
 | step 
-    (doms_hd : Expr)
-    (doms_tl : list Expr)
+    (binders_hd : Expr)
+    (binders_tl : list Expr)
     (body : Expr)
     (sink : Expr)
-    (out : Expr)
-    : foldLambdas doms_tl body sink
-    -> applyLambda doms_hd sink out
-    -> foldLambdas (doms_hd :: doms_tl) body out
+    (e' : Expr) :
+    let binders := binders_hd :: binders_tl
+    in
+    foldLambdas binders_tl body sink
+    -> applyLambda binders_hd sink e'
+    -> foldLambdas binders body e'
+         
 
-
-inductive foldlApps : Expr -> list Expr -> Expr -> Prop
-| base (base : Expr) : foldlApps base [] base
+inductive foldlApps : ∀ (f : Expr) (args : list Expr) (app : Expr), Prop
+| base (base : Expr) : 
+    let args : list Expr := []
+    in
+    foldlApps base args base
 | step 
     (base : Expr)
     (hd : Expr)
     (tl : list Expr) 
-    (folded : Expr)
-    : foldlApps (mkApp base hd) tl folded
-    -> foldlApps base (hd :: tl) folded
+    (folded : Expr) :
+    let app := mkApp base hd,
+        args := hd :: tl
+    in
+    foldlApps app tl folded
+    -> foldlApps base args folded
 
+inductive unfoldAppsAux : 
+    ∀ (e : Expr)
+      (args : list Expr)
+      (result : (Expr × list Expr)),
+      Prop
+| base (f : Expr) (args : list Expr) : 
+  let result := (f, args)
+  in
+  isApp f ff 
+  -> unfoldAppsAux f args result
 
-
-inductive unfoldAppsAux : Expr -> list Expr -> Expr -> list Expr -> Prop
-| base (f : Expr) (args : list Expr) : isApp f ff -> unfoldAppsAux f args f args
 | step 
     (f : Expr)
     (a : Expr)
-    (sink : list Expr)
-    (base_f : Expr)
-    (all_args : list Expr)
-    : unfoldAppsAux f (a :: sink) base_f all_args
-    -> unfoldAppsAux (mkApp f a) (sink) base_f all_args
+    (args : list Expr)
+    (result : (Expr × list Expr)) :
+    let args' := a :: args,
+        e := mkApp f a
+    in
+    unfoldAppsAux f args' result
+    -> unfoldAppsAux e args result
 
-def unfoldApps (e base_f : Expr) (all_args : list Expr) := unfoldAppsAux e [] base_f all_args
+def unfoldApps (e : Expr) (result : Expr × list Expr) := 
+  unfoldAppsAux e [] result
 
 
-inductive telescope_size : Expr -> nat -> Prop
-| base (e : Expr) : isPi e ff -> telescope_size e 0
+inductive telescopeSize : ∀ (e : Expr) (sz : nat), Prop
+| base (e : Expr) : let sz := 0 in isPi e ff -> telescopeSize e sz
 | step 
-    (t e : Expr)
     (n : Name)
-    (s : Bstyle)
-    (sz : nat) 
-    : telescope_size e sz
-    -> telescope_size (mkPi n t s e) (1 + sz)
-
-
-inductive foldPisOnce : list Expr -> list Expr -> Expr -> Expr -> Prop
-| base (out : Expr) : foldPisOnce [] [] out out
-| step 
     (t : Expr)
-    (ts : list Expr)
-    (n : Name)
-    (unused_t : Expr)
     (s : Bstyle)
-    (serial : nat)
-    (local_binders : list Expr)
+    (b : Expr)
+    (sz : nat) :
+    let e := mkPi n t s b
+    in
+    telescopeSize b (sz - 1)
+    -> telescopeSize e sz
+
+
+/-
+Used to fold inferred lambdas into pi types.
+`b_types` has the inferred binder types that actually end up being
+the binder types for the pi/telescope, but we need `local_binders`
+since that's what's holding the binder name and binder style
+that we need to recover.
+-/
+inductive foldPisOnce : ∀ (b_types local_binders : list Expr) (abstrd out : Expr), Prop
+| base (out : Expr) : 
+    let b_types : list Expr := [],
+        local_binders : list Expr := []
+    in
+    foldPisOnce b_types local_binders out out
+| step 
+    (n : Name)
+    (t : Expr)
+    (s : Bstyle)
     (body : Expr)
-    (folded : Expr)
-    : foldPisOnce ts local_binders (mkPi n t s body) folded
-    -> foldPisOnce (t :: ts) ((mkLocal n unused_t s serial) :: local_binders) body folded
+    (serial : nat)
+    (ts : list Expr)
+    (unused_t : Expr)
+    (local_binders : list Expr)
+    (out : Expr) :
+    let local_expr := mkLocal n unused_t s serial,
+        local_binders' := local_expr :: local_binders,
+        ts' := t :: ts,
+        folded_pi := mkPi n t s body
+    in
+    foldPisOnce ts local_binders folded_pi out
+    -> foldPisOnce ts' local_binders' body out
 
 
-lemma tel0 : telescope_size (mkSort z) 0 :=
+lemma tel0 : telescopeSize (mkSort Zero) 0 :=
 begin
-   apply telescope_size.base (mkSort z),
+   apply telescopeSize.base (mkSort Zero),
    apply isPi.sort,
 end
 
-lemma tel1 : telescope_size (mkPi (Anon) (mkSort (s z)) (Bstyle.Default) (mkSort z)) 1 :=
+lemma tel1 : telescopeSize (mkPi (Anon) (mkSort (Succ Zero)) (Bstyle.Default) (mkSort Zero)) 1 :=
 begin
   intros,
-  apply telescope_size.step (mkSort (s z)) (mkSort z) (Anon) (Bstyle.Default) 0 tel0,
+  apply telescopeSize.step Anon (mkSort (Succ Zero)) (Bstyle.Default) (mkSort Zero) 1 tel0,
 end
 
-
-
-
-def s0 := (mkSort z)
-def s1 := mkSort (s z)
-def s2 := mkSort (s (s z))
+def s0 := (mkSort Zero)
+def s1 := mkSort (Succ Zero)
+def s2 := mkSort (Succ (Succ Zero))
 def f_small := (mkApp s0 s1)
 def f_large := (mkApp f_small s2)
 
-lemma unfold1 : unfoldAppsAux s0 [s1, s2] s0 [s1, s2] :=
+lemma unfold1 : unfoldAppsAux s0 [s1, s2] (s0, [s1, s2]) :=
 begin
   apply unfoldAppsAux.base,
   apply isApp.sort,
 end
 
-lemma unfold2 : unfoldAppsAux (mkApp s0 s1) [s2] s0 [s1, s2] :=
+lemma unfold2 : unfoldAppsAux (mkApp s0 s1) [s2] (s0, [s1, s2]) :=
 begin
   intros,
-  apply unfoldAppsAux.step s0 s1 [s2] s0 [s1, s2] unfold1,
+  apply unfoldAppsAux.step s0 s1 [s2] (s0, [s1, s2]) unfold1,
 end
 
-lemma unfold3 : unfoldAppsAux (mkApp (mkApp s0 s1) s2) [] s0 [s1, s2] :=
+lemma unfold3 : unfoldAppsAux (mkApp (mkApp s0 s1) s2) [] (s0, [s1, s2]) :=
 begin
   intros,
-  apply unfoldAppsAux.step (mkApp s0 s1) s2 [] s0 [s1, s2] unfold2,
+  apply unfoldAppsAux.step (mkApp s0 s1) s2 [] (s0, [s1, s2]) unfold2,
 end
 
-lemma unfold4 : unfoldApps (mkApp (mkApp s0 s1) s2) (s0) [s1, s2] := unfold3
+lemma unfold4 : unfoldAppsAux (mkApp (mkApp s0 s1) s2) [] (s0, [s1, s2]) := unfold3
 
 
 end Expr
-

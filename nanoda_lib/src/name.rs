@@ -73,21 +73,22 @@ impl<'a> NamePtr<'a> {
         match self.read(ctx) {
             Anon => {
                 GetPrefix::BaseAnon {
-                    ind_arg1 : self,
+                    n : self,
+                    pfx : Anon.alloc(ctx)
                 }.step(ctx)
             }
             Str(pfx, sfx) => {
                 GetPrefix::StepStr {
                     pfx,
                     sfx,
-                    ind_arg1 : self,
+                    n : self,
                 }.step(ctx)
             }
             Num(pfx, sfx) => {
                 GetPrefix::StepNum {
                     pfx,
                     sfx,
-                    ind_arg1 : self,
+                    n : self,
                 }.step(ctx)
             }
         }

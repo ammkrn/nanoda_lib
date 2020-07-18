@@ -1,20 +1,63 @@
 
 Some notes :
 
-calls to `env.getDeclar` will be printed as refernces
-to the step at which they were added to the environment
+If you want something changed, you can change the spec and file a PR and I'll make the corresponding changes in the Rust codebase.
+If nothing else, I'm assuming there's going to be some refinement 
+of what does and doesn't need to appear in the export file.
 
-1. A lot of constructor arguments that could be "factored out" into
-parameters instead of leaving them as indices aren't, in order to keep
-the argument order close(r) to the rust implementation. I originally
-used parameters where possible, but found it really difficult to 
-keep the spec and the implementation in sync that way.
+The stuff I was told can be handled natively by mm1/mm0 has been 
+removed; the only list functions still handled by utils and printed
+explicitly are noDupes, isSubset, and Pos since those deal with
+object equality. You can remove those and PR it if you want those
+taken out too.
 
-2. There are many propositions which have constructors that take recursive elements as arguments; for example  `Expr.instAux.app`, which takes an `App` expression as its first argument. In the rust implementation, we just get the `App` term as the function argument and go from there. In the spec, the explicit arguments we take are the type constructor's elements, and then we obtain the `Expr::App` term we want to talk about by applying the `mkApp` constructor. We're doing this for two reasons; first, there are places in the prop where we need to make statements about the `App` item's components (IE for some `App { fun, arg, ..}`, that `inst fun _ fun'`), and this way lets us avoid having to define and then log info about projection functions that get fields. Second, it prevents us from having to log some sort of discriminator every time we do a pattern match, since our output ends up being a machine-oriented version of the pseudocode below, where the produced proposition points directly to the log entries for (mkApp f a) and (mkApp f' a') as item numbers.
+Some steps have comments indicating some assertion where the list of hypotheses
+is, IE `ASSERT : length a = length b`.
+A proof/trace of these assertions will not be provided in the output file,
+and its up to verifiers to enforce these properties, though they are enforced
+in the source code of the type checker.
+These only appear in places where the property should be easy for verifiers
+to check, but would be really difficult and/or inefficient for the rust program
+to export a proof of, like equality of two natural numbers.
 
-```
-(inst f -> f' /\` inst a -> a') -> inst (mkApp f a) (mkApp f' a')
-```
+I've tried my best to ensure that the number and order of items/fields 
+match between the Lean spec and the actual output. For some inductive
+in the Lean spec, all items should appear in the output file (from left
+to right) as :
 
+params
+constructor args
+any items in a `let .. in ..` block
+hypotheses
 
+In some cases (especially for smaller items) the `let .. in ..` patterns 
+are a bit cumbersome, but I think it's far superior to the alternative
+of the spec and the implementation just totally diverging.
 
+In cases where an item is invariant, it won't be in the block of let bindings
+and won't appear explicitly as an item in the printed step. For example,
+in `Level.Leq`, the call to `leqCore` is always called
+with height numbers of zero, so the zeroes are just placed in-line,
+and aren't printed as literals in the export file.
+
+** The actual source of truth you should consult for how things are going to be
+printed is the `/nanoda_lib/src/trace/step.rs` since that's where function that
+determines the formatting is actually derived. For some enum representing
+an step in the spec, the fields will be printed (as they appear in the rust file)
+top to bottom |-> left to right, with no field omitted.
+There's no automation to enforce the two being exactly the same, so I'm sure there's
+at least one place where I left out or swapped fields. I HIGHLY recommend you have
+both the spec file and step.rs open side-by-side.
+
+With respect to handling of the environment :
+
+Whenever `env.getDeclar` appears as a hypothesis in the spec, what will 
+actually appear in the output is a pointer to the `AdmitDeclar` step at 
+which that declaration was added to the environment.
+IE :
+`env.getDeclar n (Definition n ups t v hint is_unsafe)`
+will appear as
+`<step_num> . AD . D . ..stuff..`
+
+For steps that add declarations to the environment, which in some way step from 
+some `env` to a new `env'`, the original `env` will be a pointer to the most recent `AdmitDeclar` step, indicating the most recent iteration of the environment.

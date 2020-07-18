@@ -1,23 +1,34 @@
 exportFile ::= traceLine\n*
 
+-- The bang will show up once per file, after the initial set
+-- of items that are supposed to be in-scope for the whole file
+-- has finished, which we'll call 'universal' items, since 'environment'
+-- is sort of overloaded with Gamma.
+
+-- A line with just '%' will be printed after every new declaration
+-- is checked and admitted, the significance of that to a verifier
+-- being that this is also when the local context which extendeds
+-- the initial set of universal items is dropped, and we go back to only
+-- considering elements that were declared before the `!`.
+
+-- The only thing that needs to "carry over" between local contexts
+-- are any `AdmitDeclar` steps since that's how we build up the environment.
+-- Step numbers are monotonically increasing
+-- even across local contexts, so any step number in a later local block
+-- is guaranteed to be higher than any step number in previous blocks,
+-- but local item numbers reset to 0, which shouldn't be an issue
+-- since there are no cases in which items need to be considered
+-- across local contexts.
+
 traceLine ::= 
     | item
     | step
+    | '!'
+    | '%'
 
 nat ::= 0-9*
 alphaNum ::= a-zA-Z0-9
 
-/* 
-The only list literal/inline list kind is lists of nats. 
-They're used to keep track of some state in construction
-elements in the inductive module without having to either
-permit lists of lists, or having to add const lists of nats
-as an item tracked by arenas, which would be a huge pain
-in the ass.
-*/
-
-natList ::= '[]' | '[' nat,* ']'
-    
 // misc terminals.
 binderStyle ::= 'd' | 'i' | 's' | 'c'
 reducibilityHint ::= 'o' | 'a' | nat
@@ -26,6 +37,7 @@ bool ::= 't' | 'f'
 eqResult ::= 'EQ'
 deltaResult ::= eqResult | exprRef '.' exprRef
 
+
 item ::= 
     | stringItem 
     | name 
@@ -33,11 +45,14 @@ item ::=
     | expr 
     | recRule 
     | declar 
+    | declarView
     | nameList 
     | levelList 
     | exprList 
     | recRuleList 
     | declarList
+    | indBlock
+    | checkedIndBlockRef
 
 itemRef ::= 
     | stringRef 
@@ -46,6 +61,18 @@ itemRef ::=
     | exprRef 
     | recRuleRef 
     | declarRef
+    | declarViewRef
+    | indBlockRef
+    | checkedIndBlockRef
+
+-- options are only either itemRefs or nats.
+optionNat ::= 
+    | 'S' nat
+    | 'N'
+
+optionItemRef ::=
+    | 'S' itemRef
+    | 'N'
 
 
 stringRef ::= itemLoc nat 's'
@@ -103,6 +130,9 @@ declarList ::=
     | listLoc nat 'd_'
     | listLoc nat 'd.' declarRef '.' listLoc nat 'd'
 
+
+-- 'theorem' and 'opaque' ('dt' and 'do') are not yet used by lean3 export files; 
+-- they're kernel items in lean4 that may or may not be present in lean4 exports
 declar ::= 
     | itemLoc nat 'da' '.' nameRef '.' itemListRef '.' exprRef '.' bool
     | itemLoc nat 'dd' '.' nameRef '.' itemListRef '.' exprRef '.' exprRef '.' reducibilityHint '.' bool
@@ -110,22 +140,23 @@ declar ::=
     | itemLoc nat 'di' '.' nameRef '.' itemListRef '.' exprRef '.' nat '.' itemListRef '.' itemListRef
     | itemLoc nat 'dc' '.' nameRef '.' itemListRef '.' exprRef '.' nameRef '.' { 3 * nat '.' } bool
     | itemLoc nat 'dr' '.' nameRef '.' itemListRef '.' exprRef '.' itemListRef '.' { 5 * nat '.' } itemListRef '.' bool '.' bool
-
-/*
-'theorem' and 'opaque' are not yet used by lean3 export files; they're kernel items
-in lean4 that may or may not be present in lean4 exports
-*/
     | itemLoc nat 'dt' '.' nameRef '.' itemListRef '.' exprRef '.' exprRef
-    | itemLoc nat 'do' '.' nameRef '.' itemListRef '.' exprRef '.' exprRef
+    | itemLoc nat 'do' '.' nameRef '.' itemListRef '.' exprRef '.' exprRef '.' bool
 
+
+-- name, upsarams, type, option val
+declarView ::= itemLoc nat 'v' '.' nameRef '.' itemListRef '.' exprRef '.' optionItemRef
+declarViewRef ::= itemLoc nat 'v'
+
+-- is_unsafe, num_params, uparams, ind_names, ind_types, ctor_names, ctor_types
+indBlock ::= 'ib' nat '.' bool '.' nat '.' { 5 * itemListRef '.' }
+indBlockRef ::= 'ib' nat
+
+-- indblock ++ codom_level, use_dep_elim, is_zero, is_nonzero, params, indices, ind_consts
+checkedIndBlock ::= 'cb' nat '.' bool '.' nat '.' { 5 * itemListRef '.' } levelRef '.' bool '.' bool '.' { 3 * itemListRef '.' }
+checkedIndBlockRef ::=  'cb' nat
 
 /*
-The general format for steps is 
-
-stepDiscrim ::= A-Z*
-stepCtor ::= A-Z
-step ::= nat '.' stepDiscrim '.' stepCtor '.' child*
-
 There's a machine-generated file at ./step_grammar.txt that has a more detailed
 breakdown that dictates exactly how to parse each step so you have more options
 on how you want to write the parser, IE whether you want to use a general rule,
@@ -138,19 +169,32 @@ and maybe some other things, I didn't agonize over it, and can't guarantee I hav
 I can say for sure that each step's children will appear (from left to right) 
 in the order in which they appear from top to bottom as fields in their corresponding 
 enum variant (they're all in trace::steps), so I would use that as a reference for now.
+
+The only case in which a pointer to a child step/hypothesis 
+is an optionNat is for AdmitDeclar steps, since the first
+declaration will not have anything to point to.
 */
 
-
--- item reference or a nat pointer to a previous step.
--- the `'S' itemRef` and `'N'` ones represent Option<T>. These only ever appear in the
--- chile position, and are either an option itemRef, or option nat.
-childItem ::= 
-    | itemRef
-    | nat
-    | 'S' itemRef
-    | 'S' nat
-    | 'N'
+stepDiscrim ::= A-Z*
+stepCtor ::= A-Z
+step ::= nat '.' stepDiscrim '.' stepCtor '.' child*
+stepRef ::= nat
 
 child ::=  '.' childItem
+
+childItem ::= 
+    | nat
+    | itemRef
+    | optionItemRef
+    | optionNat
+    | '(' childItem . childItem ')'
+    | '(' childItem . childItem . childItem ')'
+    | bool
+    | eqResult
+    | binderStyle
+    | reducibilityHint
+    | inferFlag
+    | deltaResult
+
 
 

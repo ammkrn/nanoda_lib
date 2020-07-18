@@ -1,35 +1,19 @@
-use nanoda_macros::{ has_try_some };
+use nanoda_macros::has_try_some;
 use crate::{ exprs, ret_none_if };
-use crate::name::{ NamePtr, NamesPtr };
-use crate::level::{ LevelPtr, Level, LevelsPtr };
-use crate::expr::{ Expr, Expr::*, ExprPtr, ExprsPtr, BinderStyle::* };
-use crate::env::{ Declar::*, DeclarPtr, ReducibilityHint::* };
+use crate::expr::{ Expr, Expr::*, ExprPtr, ExprsPtr };
+use crate::env::{ Declar::*, DeclarPtr };
 use crate::tc::infer::InferFlag::*;
-use crate::trace::IsTracer;
 use crate::trace::steps::*;
 use crate::utils::{ 
     IsTc, 
-    IsCtx, 
-    IsLiveCtx, 
     List, 
     List::*, 
-    Ptr, 
-    ListPtr, 
-    Store, 
-    Env, 
-    Live, 
-    EnvZst, 
-    LiveZst, 
-    HasMkPtr, 
-    Set, 
-    HasNanodaDbg 
+    //HasNanodaDbg 
 };
 
 use crate::tc::eq::EqResult::*;
 
 impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
-
-
     #[has_try_some(method = "self.unfold_def(tc)")]
     pub fn unfold_def(
         self, 
@@ -37,40 +21,31 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
     ) -> Option<(ExprPtr<'l>, Step<UnfoldDefZst>)> {
         let ((fun, args), h1) = self.unfold_apps(tc);
         let (c_name, c_levels) = fun.try_const_info(tc)?;
-        let (def, h2) = tc.get_declar(c_name)?;
-        match def.read(tc) {
-            Definition { uparams, type_, val, hint, is_unsafe, .. } => {
-                let (c_levels_len, h3) = c_levels.len(tc);
-                let (uparams_len, h4) = uparams.len(tc);
-                if c_levels_len == uparams_len {
-                    let (val_prime, h5) = val.subst(uparams, c_levels, tc);
-                    let (e_prime, h6) = val_prime.foldl_apps(args, tc);
-                    Some(UnfoldDef::Base {
-                        e : self,
-                        c_name,
-                        c_levels,
-                        args,
-                        d_uparams : uparams,
-                        d_type : type_,
-                        d_val : val,
-                        d_hint : hint,
-                        d_is_unsafe : is_unsafe,
-                        uparams_len,
-                        d_val_prime : val_prime,
-                        e_prime,
-                        h1,
-                        h2,
-                        h3,
-                        h4,
-                        h5,
-                        h6
-                    }.step(tc))
-                } else {
-                    None
-                }
-            },
-            _ => None
-        }        
+        let (d_view, h_admitted) = tc.get_declar_view(c_name)?;
+        let h2 = (c_name, h_admitted, d_view);
+        let d_val = d_view.val?;
+        ret_none_if! { c_levels.len(tc) != d_view.uparams.len(tc) };
+
+        let (d_val_prime, h3) = d_val.subst(d_view.uparams, c_levels, tc);
+        let (unfolded, h4) = d_val_prime.foldl_apps(args, tc);
+
+        Some(UnfoldDef::Base {
+            e : self,
+            c_name,
+            c_levels,
+            args,
+            d_uparams : d_view.uparams,
+            d_type : d_view.type_,
+            d_val,
+            d_val_prime,
+            unfolded,
+            base : fun,
+            d_view,
+            h1,
+            h2,
+            h3,
+            h4
+        }.step(tc))
     }    
 
     pub fn whnf_sort(
@@ -83,9 +58,9 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 WhnfSort::Base {
                     l : level,
                     l_prime,
+                    s : self,
+                    s_prime : l_prime.new_sort(tc),
                     h1,
-                    ind_arg1 : self,
-                    ind_arg2 : l_prime.new_sort(tc)
                 }.step(tc)
             },
             _ => unreachable!("Checked pattern match; whnf_sort")
@@ -100,23 +75,26 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
     ) -> (ExprPtr<'l>, Step<WhnfLambdaZst>) {
         match (self.read(tc), rem_args.read(tc)) {
             (Lambda { b_name, b_type, b_style, body, .. }, Cons(hd, tl)) => {
+                let lambda_args_prime = Cons(hd, lambda_args).alloc(tc);
                 let (b_prime, h1) = body.whnf_lambda(
                     tl, 
-                    Cons(hd, lambda_args).alloc(tc),
+                    lambda_args_prime,
                     tc
                 );
+
                 WhnfLambda::Step {
-                    b_name,
-                    b_type,
-                    b_style,
-                    body,
+                    n : b_name,
+                    t : b_type,
+                    s : b_style,
+                    b : body,
                     arg_hd : hd,
                     args_tl : tl,
                     lambda_args,
                     b_prime,
+                    lambda : self,
+                    lambda_args_prime,
+                    all_args : rem_args,
                     h1,
-                    ind_arg1 : self,
-                    ind_arg2 : rem_args,
                 }.step(tc)
             }
             (_, Cons(..)) => {
@@ -146,9 +124,9 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     lambda_args,
                     e_B,
                     e_C,
+                    all_args : rem_args,
                     h1,
                     h2,
-                    ind_arg2 : rem_args,
                 }.step(tc)
             }
         }
@@ -162,24 +140,24 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         tc : &mut impl IsTc<'t, 'l, 'e>
     ) -> (ExprPtr<'l>, Step<WhnfLetZst>) {
         match self.read(tc) {
-            Let { b_name, b_type, b_style, val, body : body_A, .. } => {
-                let (body_B, h1) = body_A.inst1(val, tc);
-                let (body_C, h2) = body_B.foldl_apps(args, tc);
-                let (body_D, h3) = body_C.whnf_core(tc);
+            Let { b_name, b_type, b_style, val, body : bodyA, .. } => {
+                let (bodyB, h1) = bodyA.inst1(val, tc);
+                let (bodyC, h2) = bodyB.foldl_apps(args, tc);
+                let (e_prime, h3) = bodyC.whnf_core(tc);
                 WhnfLet::Base {
-                    b_name,
-                    b_type,
-                    b_style,
-                    val,
-                    body_A,
+                    n : b_name,
+                    t : b_type,
+                    s : b_style,
+                    v : val,
+                    bodyA,
                     args,
-                    body_B,
-                    body_C,
-                    body_D,
+                    bodyB,
+                    bodyC,
+                    e_prime,
+                    e : self,
                     h1,
                     h2,
                     h3,
-                    ind_arg1 : self
                 }.step(tc)
             },
             _ => unreachable!("Checked pattern match; whnf_let")
@@ -207,24 +185,18 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         let (c_name, c_levels) = self.try_const_info(tc)?;
         let (qmk_n, qlift_n, _) = tc.quot_names()?;
         let (qmk_pos, f_pos) = if c_name == qlift_n { (5, 3) } else { return None };
-        let (qmk_A_r_a_unred, h1) = match args.get(qmk_pos, tc) {
-            (None, _) => return None,
-            (Some(qmk_unred), h1) => (qmk_unred, h1)
-        };
+        let qmk_A_r_a_unred = args.get(qmk_pos, tc)?;
 
-        let (qmk_A_r_a, h2) = qmk_A_r_a_unred.whnf(tc);
+        let (qmk_A_r_a, h1) = qmk_A_r_a_unred.whnf(tc);
 
-        let ((qmk_const, qmk_args), h3) = qmk_A_r_a.unfold_apps(tc);
+        let ((qmk_const, qmk_args), h2) = qmk_A_r_a.unfold_apps(tc);
         let (qmk_const_name, qmk_const_levels) = qmk_const.try_const_info(tc)?;
         if qmk_const_name != qmk_n {
             return None
         }
 
         // (f : A -> B)
-        let (f, h4) = match args.get(f_pos, tc) {
-            (None, _) => return None,
-            (Some(f), h4) => (f, h4)
-        };
+        let f = args.get(f_pos, tc)?;
 
         let (qmk_A_r, a) = match qmk_A_r_a.read(tc) {
             App { fun : qmk_A_r, arg : a, .. } => (qmk_A_r, a),
@@ -233,29 +205,29 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
 
         let B = f.new_app(a, tc);
 
-        let (skipped, h5) = args.skip(qmk_pos + 1, tc);
-        let (out_unred, h6) = B.foldl_apps(skipped, tc);
-        let (out, h7) = out_unred.whnf_core(tc);
+        let skipped = args.skip(qmk_pos + 1, tc);
+        let (out_unred, h3) = B.foldl_apps(skipped, tc);
+        let (out, h4) = out_unred.whnf_core(tc);
         Some(ReduceQuotLift::Base {
             c_levels,
             args,
-            qmk_A_r_a_unred,
             qmk_A_r,
             a,
             qmk_levels : qmk_const_levels,
             qmk_args,
-            f,
-            skipped,
             out_unred,
             out,
+            skipped,
+            qmk_const,
+            qlift_const : self,
+            qmk_A_r_a_unred,
+            qmk_A_r_a,
+            f,
+            B,
             h1,
             h2,
             h3,
             h4,
-            h5,
-            h6,
-            h7,
-            ind_arg1 : self,
         }.step(tc))
     }        
 
@@ -275,24 +247,17 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         let (qmk_pos, B_of_pos) = if c_name == qind_n { (4, 3) } else { return None };
 
         
-        let (qmk_A_r_a_unred, h1) = match args.get(qmk_pos, tc) {
-            (None, _) => return None,
-            (Some(qmk_unred), h1) => (qmk_unred, h1)
-        };
+        let qmk_A_r_a_unred = args.get(qmk_pos, tc)?;
         
-        let (qmk_A_r_a, h2) = qmk_A_r_a_unred.whnf(tc);
+        let (qmk_A_r_a, h1) = qmk_A_r_a_unred.whnf(tc);
 
-        let ((qmk_const, qmk_args), h3) = qmk_A_r_a.unfold_apps(tc);
+        let ((qmk_const, qmk_args), h2) = qmk_A_r_a.unfold_apps(tc);
         let (qmk_const_name, qmk_const_levels) = qmk_const.try_const_info(tc)?;
         if qmk_const_name != qmk_n {
             return None
         }
 
-
-        let (B_of, h4) = match args.get(B_of_pos, tc) {
-            (None, _) => return None,
-            (Some(B_of), h4) => (B_of, h4)
-        };
+        let B_of = args.get(B_of_pos, tc)?;
 
         let (qmk_A_r, a) = match qmk_A_r_a.read(tc) {
             App { fun : qmk_A_r, arg : a, .. } => (qmk_A_r, a),
@@ -301,30 +266,30 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         
         let B_app = B_of.new_app(a, tc);
 
-        let (skipped, h5) = args.skip(qmk_pos + 1, tc);
-        let (out_unred, h6) = B_app.foldl_apps(skipped, tc);
-        let (out, h7) = out_unred.whnf_core(tc);
+        let skipped = args.skip(qmk_pos + 1, tc);
+        let (out_unred, h3) = B_app.foldl_apps(skipped, tc);
+        let (out, h4) = out_unred.whnf_core(tc);
 
         Some(ReduceQuotInd::Base {
             c_levels,
             args,
-            qmk_A_r_a_unred,
             qmk_A_r,
             a,
             qmk_levels : qmk_const_levels,
             qmk_args,
-            B_of,
-            skipped,
             out_unred,
             out,
+            skipped,
+            qmk_const,
+            qind_const : self,
+            B_of,
+            qmk_A_r_a_unred,
+            qmk_A_r_a,
+            B_app,
             h1,
             h2,
             h3,
             h4,
-            h5,
-            h6,
-            h7,
-            ind_arg1 : self,
         }.step(tc))
 
     }        
@@ -335,7 +300,8 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
     ) -> Option<(ExprPtr<'l>, Step<MkNullaryCtorZst>)> {
         let ((fun, args), h1) = self.unfold_apps(tc);
         let (c_name, c_levels) = fun.try_const_info(tc)?;
-        let (dptr, h2) = tc.get_declar(c_name)?;
+        let (dptr, h_admitted) = tc.get_declar(c_name)?;
+        let h2 = (c_name, h_admitted, dptr);
 
         let (
             zth_ctor_name, 
@@ -345,7 +311,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             d_all_ind_names,
             d_all_ctor_names,
             d_is_unsafe,
-            h3
         ) = match dptr.read(tc) {
             Inductive { 
                 uparams : d_uparams, 
@@ -356,8 +321,8 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 is_unsafe,
                 .. 
             } => match all_ctor_names.get(0, tc) {
-                (None, _) => return None,
-                (Some(n), h3) => (
+                None => return None,
+                Some(n) => (
                     n, 
                     d_uparams,
                     d_type,
@@ -365,15 +330,14 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     all_ind_names,
                     all_ctor_names,
                     is_unsafe,
-                    h3
                 )
             }
             _ => return None
         };
 
-        let made_const = <ExprPtr>::new_const(zth_ctor_name, c_levels, tc);
-        let (fold_args, h4) = args.take(d_num_params as usize, tc);
-        let (out, h5) = made_const.foldl_apps(fold_args, tc);
+        let fold_const = <ExprPtr>::new_const(zth_ctor_name, c_levels, tc);
+        let fold_args = args.take(d_num_params as usize, tc);
+        let (out, h3) = fold_const.foldl_apps(fold_args, tc);
         Some(MkNullaryCtor::Base {
             e : self,
             c_name,
@@ -385,14 +349,15 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             d_all_ind_names,
             d_all_ctor_names,
             d_is_unsafe,
+            out,
+            base : fun,
             zth_ctor_name,
             fold_args,
-            out,
+            ind : dptr,
+            fold_const,
             h1,
             h2,
             h3,
-            h4,
-            h5
         }.step(tc))
     }    
 
@@ -461,6 +426,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             c_args,
             ctor_app,
             ctor_app_type,
+            const_ : e_t_fun,
             h1,
             h2,
             h3,
@@ -479,53 +445,51 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
     ) -> Option<(ExprPtr<'l>, Step<ReduceIndRecZst>)> {
         let (c_name, c_levels) = self.try_const_info(tc)?;
 
-        let (recursor, h1) = tc.get_declar(c_name)?;
+        let (recursor, h_admitted) = tc.get_declar(c_name)?;
+        let h1 = (c_name, h_admitted, recursor);
         match recursor.read(tc) {
             Recursor {..} => (),
             _ => return None
         }
 
 
-        ret_none_if! { recursor.rec_major_idx(tc)? as usize >= args.len(tc).0 };
-        ret_none_if! { c_levels.len(tc).0 != recursor.uparams(tc).len(tc).0 };
+        ret_none_if! { recursor.rec_major_idx(tc)? as usize >= args.len(tc) };
+        ret_none_if! { c_levels.len(tc) != recursor.uparams(tc).len(tc) };
 
-        let (major_unredA, h2) = match args.get(recursor.rec_major_idx(tc)? as usize, tc) {
-            (None, _) => return None,
-            (Some(m), h2) => (m, h2)
+        let major_unredA = args.get(recursor.rec_major_idx(tc)? as usize, tc)?;
 
-        };
+       let (major_unredB, h2) = major_unredA.to_ctor_when_k(recursor, tc);
 
-       let (major_unredB, h3) = major_unredA.to_ctor_when_k(recursor, tc);
+       let (major, h3) = major_unredB.whnf(tc);
 
-       let (major, h4) = major_unredB.whnf(tc);
+       let ((major_fun, major_args), h4) = major.unfold_apps(tc);
+       let (major_name, major_levels) = major_fun.try_const_info(tc)?;
 
-       let ((major_fun, major_args), h5) = major.unfold_apps(tc);
-       let (rec_rule, h6) = recursor.rec_rules(tc)?.get_rec_rule(major, tc)?;
+       let (got_rec_rule, h5) = recursor.rec_rules(tc)?.get_rec_rule(major_name, tc)?;
 
-       let (major_args_len, h7) = major_args.len(tc);
-       let sub_num_params = major_args_len.checked_sub(rec_rule.read(tc).num_fields as usize)?;
+       let major_args_len = major_args.len(tc);
+       let sub_num_params = major_args_len.checked_sub(got_rec_rule.read(tc).num_fields as usize)?;
 
 
         let take_size = recursor.rec_num_params(tc)?
                       + recursor.rec_num_motives(tc)?
                       + recursor.rec_num_minors(tc)?;       
-       // NOT USED AFTER
-       let (skip1, h8) = major_args.skip(sub_num_params, tc);
+       let skip1 = major_args.skip(sub_num_params, tc);
        // end_apps
-       let (take1, h9) = skip1.take(rec_rule.read(tc).num_fields as usize, tc);
+       let take1 = skip1.take(got_rec_rule.read(tc).num_fields as usize, tc);
+       let skip2 = args.skip((recursor.rec_major_idx(tc)? + 1) as usize , tc);
+       let take2 = args.take(take_size as usize, tc);
 
-       let (skip2, h10) = args.skip((recursor.rec_major_idx(tc)? + 1) as usize , tc);
-       let (take2, h11) = args.take(take_size as usize, tc);
-
-       let (r12, h12) = rec_rule.read(tc).val.subst(recursor.uparams(tc), c_levels, tc);
-       let (r13, h13) = r12.foldl_apps(take2, tc);
-       let (r14, h14) = r13.foldl_apps(take1, tc);
-       let (r15, h15) = r14.foldl_apps(skip2, tc);
-       let (out, h16) = r15.whnf_core(tc);
+       let (r6, h6) = got_rec_rule.read(tc).val.subst(recursor.uparams(tc), c_levels, tc);
+       let (r7, h7) = r6.foldl_apps(take2, tc);
+       let (r8, h8) = r7.foldl_apps(take1, tc);
+       let (r9, h9) = r8.foldl_apps(skip2, tc);
+       let (r10, h10) = r9.whnf_core(tc);
 
        Some(ReduceIndRec::Base {
            c_name,
            c_levels,
+           args,
            uparams : recursor.uparams(tc),
            type_ : recursor.type_(tc),
            all_names : recursor.rec_all_names(tc).unwrap(),
@@ -537,25 +501,29 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
            rec_rules : recursor.rec_rules(tc).unwrap(),
            is_k : recursor.rec_is_k(tc).unwrap(),
            is_unsafe : recursor.is_unsafe(tc),           
-           rr_name : rec_rule.read(tc).ctor_name,
-           rr_n_fields : rec_rule.read(tc).num_fields,
-           rr_val : rec_rule.read(tc).val,
-           major_unredA,
            major_unredB,
-           major,
-           major_fun,
+           major_name,
+           major_levels,
            major_args,
-           rec_rule,
+           major,
+           rr_name : got_rec_rule.read(tc).ctor_name,
+           rr_n_fields : got_rec_rule.read(tc).num_fields,
+           rr_val : got_rec_rule.read(tc).val,
            major_args_len,
+           r6,
+           r7,
+           r8,
+           r9,
+           r10,
+           base_const : self,
+           major_unredA,
+           major_fun,
+           got_rec_rule,
            skip1,
-           take1,
            skip2,
+           take1,
            take2,
-           r12,
-           r13,
-           r14,
-           r15,
-           out,
+           recursor,
            h1,
            h2,
            h3,
@@ -566,12 +534,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
            h8,
            h9,
            h10,
-           h11,
-           h12,
-           h13,
-           h14,
-           h15,
-           h16,
        }.step(tc))
     }        
 
@@ -653,12 +615,12 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         } else {
             let (whnf_cored, h1) = self.whnf_core(tc);
             let result = if let Some((unfolded, h2)) = whnf_cored.try_unfold_def(tc) {
-                let (eD, h3) = unfolded.whnf(tc);
+                let (e_prime, h3) = unfolded.whnf(tc);
                 Whnf::Unfolding{
-                    eA : self,
-                    eB : whnf_cored,
-                    eC : unfolded,
-                    eD,
+                    e : self,
+                    cored : whnf_cored,
+                    unfolded,
+                    e_prime,
                     h1,
                     h2,
                     h3,

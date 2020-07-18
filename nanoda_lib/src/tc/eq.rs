@@ -1,23 +1,13 @@
 use nanoda_macros::{ has_try_eq, has_try_some };
-use crate::ret_none_if;
-use crate::{ name, param, arrow, sort, app };
-use crate::name::{ NamePtr, NamesPtr, Name, Name::* };
-use crate::level::{ LevelPtr, LevelsPtr, Level, Level::* };
-use crate::expr::{ Expr, ExprsPtr, ExprPtr, Expr::*, BinderStyle, BinderStyle::* };
+use crate::level::Level;
+use crate::expr::{ Expr, ExprsPtr, ExprPtr, Expr::* };
 use crate::tc::infer::InferFlag::*;
-use crate::env::{ Declar, DeclarPtr, Declar::* };
-use crate::trace::IsTracer;
+use crate::env::{ DeclarPtr, ReducibilityHint };
 use crate::trace::steps::*;
 use crate::utils::{ 
-    Ptr,
     List::*,
-    ListPtr,
-    Env,
-    IsCtx,
     IsTc,
-    Tc,
-    Pfinder,
-    HasNanodaDbg 
+    //HasNanodaDbg 
 };
 
 use EqResult::*;
@@ -37,38 +27,19 @@ pub enum DeltaResult<'a> {
 
 impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
 
-    // I think in the `None` case you don't want to bother returning anything,
-    // since the assertion is only that in the positive case, there's 
-    // some definition to unfold to.
+    // This shouldn't be traced at all, but it calls
+    // functions that should be, so it has "try".
     #[has_try_some(method = "self.is_delta(tc)")]
-    pub fn is_delta(
-        self,
-        tc : &mut impl IsTc<'t, 'l, 'e>
-    ) -> Option<(DeclarPtr<'l>, Step<IsDeltaZst>)> {
-        let ((fun, args), h1) = self.unfold_apps(tc);
-        let (c_name, c_levels) = fun.try_const_info(tc)?;
-        let (d, h2) = tc.get_declar(c_name)?;
-        match d.read(tc) {
-            Definition { name, uparams, type_, val, hint, is_unsafe } => {
-                Some(IsDelta::Base {
-                    e : self,
-                    c_name,
-                    c_levels,
-                    args,
-                    name,
-                    uparams,
-                    type_,
-                    val,
-                    hint,
-                    is_unsafe,
-                    h1,
-                    h2,
-                    ind_arg2 : d,
-                }.step(tc))
-            },
-            _ => None
+    pub fn is_delta(self, tc : &mut impl IsTc<'t, 'l, 'e>) -> Option<(DeclarPtr<'l>, ReducibilityHint)> {
+        let ((fun, _), _) = self.unfold_apps(tc);
+        let (c_name, _) = fun.try_const_info(tc)?;
+        let (d, _) = tc.get_declar(c_name)?;
+        match d.get_hint(tc) {
+            None => None,
+            Some(hint) => Some((d, hint))
         }
-    }        
+    }
+
     // Doesn't need `try`; ensured by proof_irrel_eq
     fn is_sort_zero(
         self,
@@ -79,6 +50,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             Sort { level } if Level::Zero == level.read(tc) => {
                 Some(IsSortZero::Base {
                     e : self,
+                    z : whnfd,
                     h1,
                 }.step_only(tc))
             },
@@ -370,10 +342,10 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     true => DefEqSort::Base {
                             l1,
                             l2,
+                            e1 : self,
+                            e2 : other,
                             result : EqShort,
                             h1,
-                            ind_arg1 : self,
-                            ind_arg2 : other,
                         }.step(tc),
                 }
             },
@@ -381,9 +353,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         }
     }
 
-
-
-    
     #[allow(unconditional_recursion)]
     fn def_eq_pi(
         self,
@@ -413,17 +382,19 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                             rs,
                             lb,
                             rb,
-                            doms,
                             lt_prime,
                             rt_prime,
+                            doms,
+                            serial : local.local_serial_infal(tc),
                             local,
+                            doms_prime,
+                            e1 : self,
+                            e2 : other,
                             result,
                             h1,
                             h2,
                             h3,
                             h4,
-                            ind_arg1 : self,
-                            ind_arg2 : other
                         }.step(tc)
                     }
                 }
@@ -446,7 +417,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             }
         }
     }
-
 
     #[allow(unconditional_recursion)]
     fn def_eq_lambda(
@@ -477,17 +447,19 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                             rs,
                             lb,
                             rb,
-                            doms,
                             lt_prime,
                             rt_prime,
+                            doms,
+                            serial : local.local_serial_infal(tc),
                             local,
+                            doms_prime,
+                            e1 : self,
+                            e2 : other,
                             result,
                             h1,
                             h2,
                             h3,
                             h4,
-                            ind_arg1 : self,
-                            ind_arg2 : other
                         }.step(tc)
                     }
                 }
@@ -510,9 +482,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             }
         }
     }
-
-
-
 
     pub fn lazy_delta_recurse(
         self : Self,
@@ -565,9 +534,9 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         other : Self,
         tc : &mut CTX
     ) -> (DeltaResult<'l>, Step<LazyDeltaStepZst>) {
-        let maybe_l_delta = self.try_is_delta(tc);
-        let maybe_r_delta = other.try_is_delta(tc);
-        match (maybe_l_delta, maybe_r_delta) {
+        let maybe_l_hint = self.try_is_delta(tc);
+        let maybe_r_hint = other.try_is_delta(tc);
+        match (maybe_l_hint, maybe_r_hint) {
             (None, None) => {
                 let result = Exhausted(self, other);
                 LazyDeltaStep::NoneNone {
@@ -576,210 +545,104 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     result,
                 }.step(tc)
             },
-           // (Some((l_def, h1)), _) if l_def.name(tc) == name!("id_delta", tc) => {
-           //     let (unfolded1, h_y) = self.try_unfold_def(tc).expect("iddl");
-           //     let (whnfd1, h_x) = unfolded1.whnf_core(tc);
-           //     if whnfd1 == other {
-           //         LazyDeltaStep::Refl {
-           //             
-           //             l : self,
-           //             r : other,
-           //             result : Short(EqShort)
-           //         }.step(tc)
-           //     } else if let Some((unfolded2, _)) = whnfd1.try_unfold_def(tc) {
-           //         let (whnfd2, _) = unfolded2.whnf_core(tc);
-           //         whnfd2.lazy_delta_recurse(other, tc)
-           //     } else {
-           //         whnfd1.lazy_delta_recurse(other, tc)
-           //     }
-
-           // },
-           // 
-           // (_, Some((r_def, h2))) if r_def.name(tc) == name!("id_delta", tc) => {
-           //     
-           //     let (unfolded1, h_y) = other.try_unfold_def(tc).expect("iddr");
-           //     let (whnfd1, h_x) = unfolded1.whnf_core(tc);
-           //     if self == whnfd1 {
-           //         LazyDeltaStep::Refl {
-           //             l : self,
-           //             r : other,
-           //             result : Short(EqShort)
-           //         }.step(tc)
-           //     } else if let Some((unfolded2, _)) = whnfd1.try_unfold_def(tc) {
-           //         let (whnfd2, _) = unfolded2.whnf_core(tc);
-           //         self.lazy_delta_recurse(whnfd2, tc)
-           //     } else {
-           //         self.lazy_delta_recurse(whnfd1, tc)
-           //     }
-
-           // },
-            (Some((l_def, h1)), None) => {
-                let (l_defval_unred, h2) = self.try_unfold_def(tc).expect("lazy_delta1");
-                let (l_defval, h3) = l_defval_unred.whnf_core(tc);
-                let (result, h4) = l_defval.lazy_delta_recurse(other, tc);
-                LazyDeltaStep::SomeNone {
+            (Some((_, _l_hint)), None) => {
+                let (l_defval_unred, h1) = self.try_unfold_def(tc).expect("lazy_delta1");
+                let (l_defval, h2) = l_defval_unred.whnf_core(tc);
+                let (result, h3) = l_defval.lazy_delta_recurse(other, tc);
+                LazyDeltaStep::UnfoldingLeft {
                     l : self,
                     r : other,
-                    l_def,
                     l_defval_unred,
                     l_defval,
                     result,
                     h1,
                     h2,
                     h3,
-                    h4
                 }.step(tc)
             },
-            (None, Some((r_def, h1))) => {
-                let (r_defval_unred, h2) = other.try_unfold_def(tc).expect("lazy_delta2");
-                let (r_defval, h3) = r_defval_unred.whnf_core(tc);
-                let (result, h4) = self.lazy_delta_recurse(r_defval, tc);
-                LazyDeltaStep::NoneSome {
+            (None, Some((_, _r_hint))) => {
+                let (r_defval_unred, h1) = other.try_unfold_def(tc).expect("lazy_delta2");
+                let (r_defval, h2) = r_defval_unred.whnf_core(tc);
+                let (result, h3) = self.lazy_delta_recurse(r_defval, tc);
+                LazyDeltaStep::UnfoldingRight {
                     l : self,
                     r : other,
-                    r_def,
                     r_defval_unred,
                     r_defval,
                     result,
                     h1,
                     h2,
                     h3,
-                    h4
                 }.step(tc)
             },
-            (Some((l_def, h1)), Some((r_def, h2)))
-            if l_def.get_hint(tc) < r_def.get_hint(tc) => {
-                let l_hint = l_def.get_hint(tc);
-                let r_hint = r_def.get_hint(tc);
-                let (r_defval_unred, h3) = other.try_unfold_def(tc).expect("lazy_delta3");
-                let (r_defval, h4) = r_defval_unred.whnf_core(tc);
-                let (result, h5) = self.lazy_delta_recurse(r_defval, tc);
-                LazyDeltaStep::Lt {
+            (Some((_, l_hint)), Some((_, r_hint))) if l_hint < r_hint => {
+                let (r_defval_unred, h1) = other.try_unfold_def(tc).expect("lazy_delta3");
+                let (r_defval, h2) = r_defval_unred.whnf_core(tc);
+                let (result, h3) = self.lazy_delta_recurse(r_defval, tc);
+                LazyDeltaStep::UnfoldingRight {
                     l : self,
                     r : other,
-                    l_def,
-                    r_def,
-                    l_hint,
-                    r_hint,
                     r_defval_unred,
                     r_defval,
                     result,
                     h1,
                     h2,
                     h3,
-                    h4,
-                    h5
                 }.step(tc)
             }
-            (Some((l_def, h1)), Some((r_def, h2)))
-            if l_def.get_hint(tc) > r_def.get_hint(tc) => {
-                let l_hint = l_def.get_hint(tc);
-                let r_hint = r_def.get_hint(tc);
-                let (l_defval_unred, h3) = self.try_unfold_def(tc).expect("lazy_delta4");
-                let (l_defval, h4) = l_defval_unred.whnf_core(tc);
-                let (result, h5) = l_defval.lazy_delta_recurse(other, tc);
-                LazyDeltaStep::Gt {
+            (Some((_, l_hint)), Some((_, r_hint))) if r_hint < l_hint => {
+                let (l_defval_unred, h1) = self.try_unfold_def(tc).expect("lazy_delta4");
+                let (l_defval, h2) = l_defval_unred.whnf_core(tc);
+                let (result, h3) = l_defval.lazy_delta_recurse(other, tc);
+                LazyDeltaStep::UnfoldingLeft {
                     l : self,
                     r : other,
-                    l_def,
-                    r_def,
-                    l_hint,
-                    r_hint,
                     l_defval_unred,
                     l_defval,
                     result,
                     h1,
                     h2,
                     h3,
-                    h4,
-                    h5
                 }.step(tc)
             },
-            (Some((l_def, h1)), Some((r_def, h2))) => {
-                assert_eq!(l_def.get_hint(tc), r_def.get_hint(tc));
-                //self.delta_ext(other, l_def, r_def, h1, h2, tc)
-                if let Some(result) = self.try_delta_ext(other, l_def, r_def, h1, h2, tc) {
+            (Some((l_declar, l_hint)), Some((r_declar, r_hint))) => {
+                assert_eq!(l_hint, r_hint);
+                if let Some(result) = self.try_delta_ext(other, l_declar, r_declar, tc) {
                     result
                 } else {
-                    self.delta_owise(other, l_def, r_def, h1, h2, tc)
+                    self.delta_owise(other, tc)
                 }
-                /*
-                match tc.check_ext_cache(self, other) {
-                    None => {
-                        let (b, result, step) = self.delta_ext(
-                            other,
-                            l_def,
-                            r_def,
-                            h1,
-                            h2,
-                            false,
-                            tc
-                        );
-
-                        tc.insert_ext_cache(self, other, b);
-                        (result, step)
-                    },
-                    Some(true) if <CTX as IsCtx>::IS_PFINDER => {
-                        (Short(EqShort), Step::new_pfind(tc))
-                    }
-                    Some(true) => {
-                        let (b, result, step) = self.delta_ext(
-                            other,
-                            l_def,
-                            r_def,
-                            h1,
-                            h2,
-                            true,
-                            tc
-                        );
-                        assert!(b);
-                        (result, step)
-                    },
-                    Some(false) => {
-                        self.delta_owise(
-                            other,
-                            l_def,
-                            r_def,
-                            h1,
-                            h2,
-                            tc
-                        )
-                    }
-                }
-                */
             }
         }
     }    
 
-    #[has_try_some(method = "self.delta_ext(other,  l_def, r_def, h1, h2, tc)")]
+    #[has_try_some(method = "self.delta_ext(other, l_declar, r_declar, tc)")]
     fn delta_ext(
         self,
         other : Self,
-        l_def : DeclarPtr<'l>,
-        r_def : DeclarPtr<'l>,
-        h1 : Step<IsDeltaZst>,
-        h2 : Step<IsDeltaZst>,
+        l_declar : DeclarPtr<'l>,
+        r_declar : DeclarPtr<'l>,
         tc : &mut impl IsTc<'t, 'l, 'e>
     ) -> Option<(DeltaResult<'l>, Step<LazyDeltaStepZst>)> {
         if let (App {..}, App {..}) = (self.read(tc), other.read(tc)) {
-            if l_def == r_def {
-                let ((l_fun, l_args), h3) = self.unfold_apps(tc);
-                let ((r_fun, r_args), h4) = other.unfold_apps(tc);
+            if l_declar == r_declar {
+                let ((l_fun, l_args), h1) = self.unfold_apps(tc);
+                let ((r_fun, r_args), h2) = other.unfold_apps(tc);
                 if let (
                     Some((lc_name, lc_levels)), 
                     Some((rc_name, rc_levels))
                  ) = (l_fun.try_const_info(tc), r_fun.try_const_info(tc)) {
-                     if let (EqShort, h5) = try_args_eq(l_args, r_args, tc) {
-                         if let (true, h6) = lc_levels.try_eq_antisymm_many(rc_levels, tc) {
+                     if let (EqShort, h3) = try_args_eq(l_args, r_args, tc) {
+                        if let (true, h4) = lc_levels.try_eq_antisymm_many(rc_levels, tc) {
+                            assert_eq!(lc_name, rc_name);
                             return Some(LazyDeltaStep::Extensional {
                                  l : self,
                                  r : other,
-                                 l_def,
-                                 r_def,
-                                 lc_name,
-                                 rc_name,
+                                 c_name : lc_name,
                                  lc_levels,
                                  rc_levels,
+                                 l_const : l_fun,
+                                 r_const : r_fun,
                                  l_args,
                                  r_args,
                                  result : Short(EqShort),
@@ -787,8 +650,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                                  h2,
                                  h3,
                                  h4,
-                                 h5,
-                                 h6                                        
                             }.step(tc))
                         }
                     }
@@ -797,38 +658,21 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         }       
 
         None
-
-        //self.delta_owise(
-        //    other,
-        //    l_def,
-        //    r_def,
-        //    h1,
-        //    h2,
-        //    tc
-        //)
     }
 
     fn delta_owise(
         self,
         other : Self,
-        l_def : DeclarPtr<'l>,
-        r_def : DeclarPtr<'l>,
-        h1 : Step<IsDeltaZst>,
-        h2 : Step<IsDeltaZst>,
         tc : &mut impl IsTc<'t, 'l, 'e>
     ) -> (DeltaResult<'l>, Step<LazyDeltaStepZst>) {
-       
-        assert_eq!(l_def.get_hint(tc), r_def.get_hint(tc));
-        let (l_defval_unred, h3) = self.try_unfold_def(tc).expect("heights_eq 1");
-        let (r_defval_unred, h4) = other.try_unfold_def(tc).expect("heights_eq 2");
-        let (l_defval, h5) = l_defval_unred.whnf_core(tc);
-        let (r_defval, h6) = r_defval_unred.whnf_core(tc);
-        let (result, h7) = l_defval.lazy_delta_recurse(r_defval, tc);
-        LazyDeltaStep::Owise {
+        let (l_defval_unred, h1) = self.try_unfold_def(tc).expect("heights_eq 1");
+        let (r_defval_unred, h2) = other.try_unfold_def(tc).expect("heights_eq 2");
+        let (l_defval, h3) = l_defval_unred.whnf_core(tc);
+        let (r_defval, h4) = r_defval_unred.whnf_core(tc);
+        let (result, h5) = l_defval.lazy_delta_recurse(r_defval, tc);
+        LazyDeltaStep::UnfoldingBoth {
             l : self,
             r : other,
-            l_def,
-            r_def,
             l_defval_unred,
             r_defval_unred,
             l_defval,
@@ -839,20 +683,9 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             h3,
             h4,
             h5,
-            h6,
-            h7,
         }.step(tc)       
-
     }
 
-
-    
-
-
-
-
-
-    
     fn def_eq_const(
         self,
         other : Self,
@@ -871,18 +704,15 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                             r_name,
                             l_levels,
                             r_levels,
+                            e1 : self,
+                            e2 : other,
                             result : EqShort,
                             h1,
-                            ind_arg1 : self,
-                            ind_arg2 : other
                         }.step(tc)
                     }
                 }
             },
-            (
-                Const { name : l_name, levels : l_levels }, 
-                Const { name : r_name, levels : r_levels }
-            ) => (NeShort, Step::new_pfind(tc)),
+            (Const {..}, Const {..}) => (NeShort, Step::new_pfind(tc)),
             _ => unreachable!("Checked pattern match @ def_eq_const")
         }
     }
@@ -906,15 +736,11 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                     rs,
                     l_serial,
                     r_serial,
+                    e : self,
                     result : EqShort,
-                    ind_arg1 : self,
-                    ind_arg2 : other,
                 }.step(tc)
             },
-            (
-                Local { b_name : ln, b_type : lt, b_style : ls, serial : l_serial }, 
-                Local { b_name : rn, b_type : rt, b_style : rs, serial : r_serial }
-            ) => (NeShort, Step::new_pfind(tc)),
+            (Local {..}, Local {..}) => (NeShort, Step::new_pfind(tc)),
             _ => unreachable!("Checked pattern match @ def_eq_local")
         }
     }        
@@ -981,11 +807,14 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                             rs,
                             lb,
                             rb,
+                            r_type_unred : other_type_unred,
+                            r_type_red : other_type,
+                            l_lambda : self,
+                            r_lambda : new_lambda,
                             result,
                             h1,
                             h2,
                             h3,
-                            ind_arg1 : self,
                         }.step(tc)
                     },
                     _ => (NeShort, Step::new_pfind(tc)),
@@ -1006,28 +835,17 @@ pub fn args_eq<'t, 'l : 't, 'e : 'l>(
     ls : ExprsPtr<'l>, 
     rs : ExprsPtr<'l>, 
     tc : &mut impl IsTc<'t, 'l, 'e>,
-) -> (EqResult, Step<ArgsEqZst>) {
+) -> (EqResult, Step<ArgsEqAuxZst>) {
     if let Some(cached) = tc.check_args_eq_cache(ls, rs) {
         cached
     } else {
-        let (ls_len, h1) = ls.len(tc);
-        let (rs_len, h2) = rs.len(tc);
+        let ls_len = ls.len(tc);
+        let rs_len = rs.len(tc);
         let result = match ls_len == rs_len {
             false => (NeShort, Step::new_pfind(tc)),
             true => match args_eq_aux(ls, rs, tc) {
                 (NeShort, _) => (NeShort, Step::new_pfind(tc)),
-                (EqShort, h3) => {
-                    ArgsEq::Base {
-                        ls,
-                        rs,
-                        ls_len,
-                        rs_len,
-                        result : EqShort,
-                        h1,
-                        h2,
-                        h3,
-                    }.step(tc)
-                }
+                (EqShort, h3) => (EqShort, h3),
             }
         };
 
@@ -1043,19 +861,13 @@ fn args_eq_aux<'t, 'l : 't, 'e : 'l>(
 ) -> (EqResult, Step<ArgsEqAuxZst>) {
     match (ls.read(tc), rs.read(tc)) {
         (..) if ls == rs => {
-            ArgsEqAux::Refl {
-                ind_arg1 : ls,
-                ind_arg2 : rs,
-                result : EqShort
-            }.step(tc)
-        },
-        (Nil, Nil) => {
             ArgsEqAux::Base {
-                ind_arg1 : ls,
-                ind_arg2 : rs,
+                l : ls,
+                r : rs,
                 result : EqShort
             }.step(tc)
         },
+        (Nil, Nil) => unreachable!("Should have been caught by refl"),
         (Cons(x, xs), Cons(y, ys)) => {
             match x.try_def_eq(y, tc) {
                 (NeShort, _) => (NeShort, Step::new_pfind(tc)),
@@ -1063,15 +875,15 @@ fn args_eq_aux<'t, 'l : 't, 'e : 'l>(
                     (NeShort, _) => (NeShort, Step::new_pfind(tc)),
                     (EqShort, h2) => {
                         ArgsEqAux::Step {
-                            x,
-                            y,
-                            xs,
-                            ys,
+                            l_hd : x,
+                            r_hd : y,
+                            l_tl : xs,
+                            r_tl : ys,
+                            l : ls,
+                            r : rs,
                             result : EqShort,
                             h1,
                             h2,
-                            ind_arg1 : ls,
-                            ind_arg2 : rs,
                         }.step(tc)
                     }
                 }

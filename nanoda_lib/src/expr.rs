@@ -1,16 +1,13 @@
-use crate::utils::{ IsCtx, IsLiveCtx, List, List::*, Ptr, ListPtr, Store, Env, Live, EnvZst, LiveZst, HasMkPtr, Set, HasNanodaDbg };
+use crate::utils::{ IsCtx, IsLiveCtx, List::*, Ptr, ListPtr, Store, Env, LiveZst, HasNanodaDbg };
 use crate::name::{ NamePtr, NamesPtr };
-use crate::level::{ LevelPtr, Level, LevelsPtr };
+use crate::level::{ LevelPtr, LevelsPtr };
 use crate::env::{ Declar::*, ReducibilityHint::* };
 use crate::trace::IsTracer;
-use crate::trace::items::{ HasTraceItem };
 use crate::trace::steps::*;
 
 pub type ExprPtr<'a> = Ptr<'a, Expr<'a>>;
 pub type ExprsPtr<'a> = ListPtr<'a, Expr<'a>>;
 
-
-use Level::*;
 use Expr::*;
 use BinderStyle::*;
 
@@ -231,9 +228,9 @@ impl<'a> ExprPtr<'a> {
                     b_type,
                     b_style,
                     body,
-                    inner_size,
+                    e : self,
+                    size : inner_size + 1,
                     h1,
-                    size : inner_size + 1
                 }.step(ctx)
             }
             _ => {
@@ -241,8 +238,8 @@ impl<'a> ExprPtr<'a> {
                 assert!(!b);
                 TelescopeSize::Owise {
                     e : self,
+                    size : 0u16,
                     h1,
-                    size : 0u16
                 }.step(ctx)
             }
         }
@@ -601,28 +598,28 @@ impl<'a> ExprPtr<'a> {
                 Var { dbj } => {
                     HasIndOcc::Var {
                         dbj,
+                        e : self,
+                        result : false,
                         ind_names,
-                        ind_arg1 : self,
-                        ind_arg3 : false,
                     }.step(ctx)
                 },
                 Sort { level } => {
                     HasIndOcc::Sort {
                         l : level,
+                        e : self,
+                        result : false,
                         ind_names,
-                        ind_arg1 : self,
-                        ind_arg3 : false,
                     }.step(ctx)
                 },
                 Const { name, levels } => {
-                    let (b, h1) = name.mem(ind_names, ctx);
+                    let (maybe_pos, h1) = name.pos(ind_names, ctx);
                     HasIndOcc::Const {
                         name,
                         levels,
                         ind_names,
-                        b,
+                        e : self,
+                        result : maybe_pos.is_some(),
                         h1,
-                        ind_arg1 : self,
                     }.step(ctx)
                 },
                 App { fun, arg, .. } => {
@@ -634,10 +631,10 @@ impl<'a> ExprPtr<'a> {
                         ind_names,
                         b1,
                         b2,
+                        e : self,
+                        result : (b1 || b2),
                         h1,
                         h2,
-                        ind_arg1 : self,
-                        ind_arg3 : (b1 || b2)
                     }.step(ctx)
                 },
                 Pi { b_name, b_type, b_style, body, .. } => {
@@ -650,10 +647,10 @@ impl<'a> ExprPtr<'a> {
                         body,
                         b1,
                         b2,
+                        e : self,
+                        result : b1 || b2,
                         h1,
                         h2,
-                        ind_arg1 : self,
-                        ind_arg3 : b1 || b2
                     }.step(ctx)
                 }
                 Lambda { b_name, b_type, b_style, body, .. } => {
@@ -666,10 +663,10 @@ impl<'a> ExprPtr<'a> {
                         body,
                         b1,
                         b2,
+                        e : self,
+                        result : (b1 || b2),
                         h1,
                         h2,
-                        ind_arg1 : self,
-                        ind_arg3 : (b1 || b2)
                     }.step(ctx)
                 }                
                 Let { b_name, b_type, b_style, val, body, .. } => {
@@ -685,11 +682,11 @@ impl<'a> ExprPtr<'a> {
                         b1,
                         b2,
                         b3,
+                        e : self,
+                        result : (b1 || b2),
                         h1,
                         h2,
                         h3,
-                        ind_arg1 : self,
-                        ind_arg3 : (b1 || b2)
                     }.step(ctx)
                 },
                 Local { b_name, b_type, b_style, serial } => {
@@ -699,9 +696,9 @@ impl<'a> ExprPtr<'a> {
                         b_type,
                         b_style,
                         serial,
+                        e : self,
+                        result : b,
                         h1,
-                        ind_arg1 : self,
-                        ind_arg3 : b,
                     }.step(ctx)
                 }                            
             }
@@ -723,7 +720,7 @@ impl<'a> ExprPtr<'a> {
                         dbj,
                         ks,
                         vs,
-                        ind_arg1 : self
+                        e : self
                     }.step(ctx)
                 }
                 Sort { level } => {
@@ -733,9 +730,9 @@ impl<'a> ExprPtr<'a> {
                         ks,
                         vs,
                         l_prime,
+                        e : self,
+                        e_prime : l_prime.new_sort(ctx),
                         h1,
-                        ind_arg1 : self,
-                        ind_arg4 : l_prime.new_sort(ctx)
                     }.step(ctx)
                 },
                 Const { name, levels } => {
@@ -746,9 +743,9 @@ impl<'a> ExprPtr<'a> {
                         ks,
                         vs,
                         levels_prime,
+                        e : self,
+                        e_prime : <Self>::new_const(name, levels_prime, ctx),
                         h1,
-                        ind_arg1 : self,
-                        ind_arg4 : <Self>::new_const(name, levels_prime, ctx)
                     }.step(ctx)
                 },
                 App { fun, arg, .. } => {
@@ -762,10 +759,10 @@ impl<'a> ExprPtr<'a> {
                         vs,
                         fun_prime,
                         arg_prime,
+                        e : self,
+                        e_prime,
                         h1,
                         h2,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime
                     }.step(ctx)
                 },
                 Pi { b_name, b_type, b_style, body, .. } => {
@@ -781,10 +778,10 @@ impl<'a> ExprPtr<'a> {
                         vs,
                         b_type_prime,
                         body_prime,
+                        e : self,
+                        e_prime,
                         h1,
                         h2,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime
                     }.step(ctx)
                 }
                 Lambda { b_name, b_type, b_style, body, .. } => {
@@ -800,10 +797,10 @@ impl<'a> ExprPtr<'a> {
                         vs,
                         b_type_prime,
                         body_prime,
+                        e : self,
+                        e_prime,
                         h1,
                         h2,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime
                     }.step(ctx)
                 }                
                 Let { b_name, b_type, b_style, val, body, .. } => {
@@ -822,11 +819,11 @@ impl<'a> ExprPtr<'a> {
                         b_type_prime,
                         val_prime,
                         body_prime,
+                        e : self,
+                        e_prime,
                         h1,
                         h2,
                         h3,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime
                     }.step(ctx)
                 },
                 Local { b_name, b_type, b_style, serial } => {
@@ -837,13 +834,14 @@ impl<'a> ExprPtr<'a> {
                         b_name,
                         b_type,
                         b_style,
+                        serial,
                         ks,
                         vs,
                         b_type_prime,
                         serial_prime,
+                        e : self,
+                        e_prime,
                         h1,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime
                     }.step(ctx)
                 }                        
             };
@@ -896,7 +894,6 @@ impl<'a> ExprPtr<'a> {
                 e : self,
                 subs, 
                 offset,
-                h1 : self.var_bound(ctx) <= offset,
             }.step(ctx)
         } else if let Some(cached) = ctx.expr_cache().inst_cache.get(&(self, subs, offset)).copied() {
             cached
@@ -904,23 +901,21 @@ impl<'a> ExprPtr<'a> {
             let calcd = match self.read(ctx) {
                 Var { dbj } => {
                     match subs.get((dbj as usize) - (offset as usize), ctx) {
-                        (Some(e_prime), h1) => {
+                        Some(e_prime) => {
                             InstAux::VarHit {
                                 dbj,
                                 subs,
                                 offset,
+                                e : self,
                                 e_prime,
-                                h1,
-                                ind_arg1 : self,
                             }.step(ctx)
                         },
-                        (None, h1) => {
+                        None => {
                             InstAux::VarMiss {
                                 dbj,
                                 subs,
                                 offset,
-                                h1,
-                                ind_arg1 : self
+                                e : self,
                             }.step(ctx)
                         }
                     }
@@ -936,10 +931,10 @@ impl<'a> ExprPtr<'a> {
                         offset,
                         fun_prime,
                         arg_prime,
+                        e : self,
+                        e_prime,
                         h1,
                         h2,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime,
                     }.step(ctx)
                 },
                 Pi { b_name, b_type, b_style, body, .. } => {
@@ -955,10 +950,10 @@ impl<'a> ExprPtr<'a> {
                         offset,
                         b_type_prime,
                         body_prime,
+                        e : self,
+                        e_prime,
                         h1,
                         h2,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime,
                     }.step(ctx)
                 }
                 Lambda { b_name, b_type, b_style, body, .. } => {
@@ -974,10 +969,10 @@ impl<'a> ExprPtr<'a> {
                         offset,
                         b_type_prime,
                         body_prime,
+                        e : self,
+                        e_prime,
                         h1,
                         h2,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime
                     }.step(ctx)                    
                 }
                 Let { b_name, b_type, b_style, val, body, .. } => {
@@ -996,11 +991,11 @@ impl<'a> ExprPtr<'a> {
                         b_type_prime,
                         val_prime,
                         body_prime,
+                        e : self,
+                        e_prime,
                         h1,
                         h2,
                         h3,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime
                     }.step(ctx)                     
                 }
                 owise => unreachable!("Unreachable path in inst_aux : {}", owise.nanoda_dbg(ctx))
@@ -1036,8 +1031,8 @@ impl<'a> ExprPtr<'a> {
             Abstr::ByAux {
                 e : self,
                 locals,
+                e_prime,
                 h1,
-                ind_arg3 : e_prime
             }.step(ctx)
         }
     }
@@ -1070,9 +1065,9 @@ impl<'a> ExprPtr<'a> {
                                 locals,
                                 offset,
                                 pos,
+                                e : self,
+                                e_prime : <Self>::new_var(pos as u16 + offset, ctx),
                                 h1,
-                                ind_arg1 : self,
-                                ind_arg4 : <Self>::new_var(pos as u16 + offset, ctx),
                             }.step(ctx)
                         },
                         (None, h1) => {
@@ -1083,8 +1078,8 @@ impl<'a> ExprPtr<'a> {
                                 serial,
                                 locals,
                                 offset,
+                                e : self,
                                 h1,
-                                ind_arg1 : self,
                             }.step(ctx)
                         }
                     }
@@ -1100,10 +1095,10 @@ impl<'a> ExprPtr<'a> {
                         offset,
                         fun_prime,
                         arg_prime,
+                        e : self,
+                        e_prime,
                         h1,
                         h2,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime,
                     }.step(ctx)
                 },
                 Pi { b_name, b_type, b_style, body, .. } => {
@@ -1117,10 +1112,10 @@ impl<'a> ExprPtr<'a> {
                         body,
                         b_type_prime,
                         body_prime,
+                        e : self,
+                        e_prime : e_prime,
                         h1,
                         h2,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime,
                     }.step(ctx)
                 }
                 Lambda { b_name, b_type, b_style, body, .. } => {
@@ -1134,10 +1129,10 @@ impl<'a> ExprPtr<'a> {
                         body,
                         b_type_prime,
                         body_prime,
+                        e : self,
+                        e_prime,
                         h1,
                         h2,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime,
                     }.step(ctx)
                 }
                 Let { b_name, b_type, b_style, val, body, .. } => {
@@ -1154,11 +1149,11 @@ impl<'a> ExprPtr<'a> {
                         b_type_prime,
                         val_prime,
                         body_prime,
+                        e : self,
+                        e_prime,
                         h1,
                         h2,
                         h3,
-                        ind_arg1 : self,
-                        ind_arg4 : e_prime,
                     }.step(ctx)
                 }
                 owise => unreachable!("unreachable path in abstr_aux : {}", owise.nanoda_dbg(ctx))
@@ -1176,18 +1171,20 @@ impl<'a> ExprPtr<'a> {
     ) -> (Self, Step<ApplyPiZst>) {
         match self.read(ctx) {
             Local { b_name, b_type, b_style, serial } => {
-                let (body_prime, h1) = body.abstr1(self, ctx);
+                let locals = Cons(self, Nil::<Expr>.alloc(ctx)).alloc(ctx);
+                let (body_prime, h1) = body.abstr(locals, ctx);
                 let e_prime = <Self>::new_pi(b_name, b_type, b_style, body_prime, ctx);
                 ApplyPi::Base {
                     b_name,
                     b_type,
                     b_style,
-                    serial : serial,
+                    serial,
                     body,
                     body_prime,
                     local_dom : self,
+                    locals,
+                    out : e_prime,
                     h1,
-                    ind_arg4 : e_prime 
                 }.step(ctx)
             },
             owise => unreachable!("Cannot apply pi with a non-local! {}", owise.nanoda_dbg(ctx))
@@ -1201,7 +1198,8 @@ impl<'a> ExprPtr<'a> {
     ) -> (Self, Step<ApplyLambdaZst>) {
         match self.read(ctx) {
             Local { b_name, b_type, b_style, serial } => {
-                let (body_prime, h1) = body.abstr1(self, ctx);
+                let locals = Cons(self, Nil::<Expr>.alloc(ctx)).alloc(ctx);
+                let (body_prime, h1) = body.abstr(locals, ctx);
                 let e_prime = <Self>::new_lambda(b_name, b_type, b_style, body_prime, ctx);
                 ApplyLambda::Base {
                     b_name,
@@ -1211,8 +1209,9 @@ impl<'a> ExprPtr<'a> {
                     body,
                     body_prime,
                     local_dom : self,
+                    locals,
+                    out : e_prime,
                     h1,
-                    ind_arg4 : e_prime 
                 }.step(ctx)
             },
             owise => unreachable!("Cannot apply lambda with a non-local! {}", owise.nanoda_dbg(ctx))
@@ -1234,12 +1233,11 @@ impl<'a> ExprPtr<'a> {
                 UnfoldAppsAux::App {
                     fun,
                     arg,
-                    sink,
-                    base_f,
-                    all_args,
+                    args : sink,
+                    result : (base_f, all_args),
+                    args_prime : sink_prime,
+                    e : self,
                     h1,
-                    ind_arg1 : self,
-                    out : (base_f, all_args)
                 }.step(ctx)
             },
             _ => {
@@ -1248,8 +1246,8 @@ impl<'a> ExprPtr<'a> {
                 UnfoldAppsAux::Base {
                     f : self,
                     args : sink,
+                    result : (self, sink),
                     h1,
-                    out : (self, sink)
                 }.step(ctx)
             }
 
@@ -1263,7 +1261,6 @@ impl<'a> ExprPtr<'a> {
         if let Some(cached) = ctx.expr_cache().unfold_cache.get(&self) {
             *cached
         } else {
-
             let r = self.unfold_apps_aux(Nil::<Expr>.alloc(ctx), ctx);
             ctx.expr_cache().unfold_cache.insert(self, r);
             r
@@ -1294,7 +1291,7 @@ impl<'a> ExprPtr<'a> {
             Nil => {
                 FoldlApps::Nil {
                     base : self,
-                    ind_arg1 : args,
+                    args,
                 }.step(ctx)
             },
             Cons(hd, tl) => {
@@ -1305,8 +1302,9 @@ impl<'a> ExprPtr<'a> {
                     hd,
                     tl,
                     folded,
+                    app : mk_app,
+                    args,
                     h1,
-                    ind_arg2 : args,
                 }.step(ctx)
             }
         }
@@ -1329,20 +1327,21 @@ impl<'a> ExprPtr<'a> {
                     Var { dbj } => {
                         CalcHeightAux::Var {
                             dbj,
+                            e,
                             height : 0,
-                            ind_arg1 : e,
                         }.step(ctx)
                     },
                     Sort { level } => {
                         CalcHeightAux::Sort {
                             level,
+                            e,
                             height : 0,
-                            ind_arg1 : e,
                         }.step(ctx)
                     },
                     Const { name, levels } => {
                         ctx.get_declar(name)
-                        .and_then(|(d, h1)| {
+                        .and_then(|(d, h_admitted)| {
+                            let h1 = (name, h_admitted, d);
                             match d.read(ctx) {
                                 Definition { uparams, type_, val, hint : Reg(height), is_unsafe, .. } => {
                                     Some(CalcHeightAux::ConstHit {
@@ -1351,11 +1350,12 @@ impl<'a> ExprPtr<'a> {
                                         d_uparams : uparams,
                                         d_type : type_,
                                         d_val : val,
-                                        d_hint : Reg(height),
-                                        d_is_unsafe : is_unsafe,
                                         height,
+                                        d_is_unsafe : is_unsafe,
+                                        e,
+                                        d_hint : Reg(height),
+                                        defn : d,
                                         h1,
-                                        ind_arg1 : e,
                                     }.step(ctx))
                                 },
                                 _ => None
@@ -1364,8 +1364,8 @@ impl<'a> ExprPtr<'a> {
                             CalcHeightAux::ConstMiss {
                                 n : name,
                                 levels,
+                                e,
                                 height : 0,
-                                ind_arg1 : e,
                             }.step(ctx)
                         })
                     },
@@ -1378,10 +1378,10 @@ impl<'a> ExprPtr<'a> {
                             arg,
                             height1,
                             height2,
+                            e,
                             height,
                             h1,
                             h2,
-                            ind_arg1 : e,
                         }.step(ctx)
                     },
                     Pi { b_name, b_type, b_style, body, .. } => {
@@ -1396,10 +1396,10 @@ impl<'a> ExprPtr<'a> {
                             b : body,
                             height1,
                             height2,
+                            e,
                             height,
                             h1,
                             h2,
-                            ind_arg1 : e,
                         }.step(ctx)
                     }
                     Lambda { b_name, b_type, b_style, body, .. } => {
@@ -1413,10 +1413,10 @@ impl<'a> ExprPtr<'a> {
                             b : body,
                             height1,
                             height2,
+                            e,
                             height,
                             h1,
                             h2,
-                            ind_arg1 : e,
                         }.step(ctx)
                     },
                     Let { b_name, b_type, b_style, val, body, .. } => {
@@ -1433,11 +1433,11 @@ impl<'a> ExprPtr<'a> {
                             height1,
                             height2,
                             height3,
+                            e,
                             height,
                             h1,
                             h2,
                             h3,
-                            ind_arg1 : e,
                         }.step(ctx)
                     },
                     Local {..} => panic!("calc_height should never receive a Local!"),
@@ -1463,8 +1463,8 @@ impl<'a> ExprsPtr<'a> {
         match self.read(ctx) {
             Nil => {
                 FoldPis::Nil {
-                    ind_arg1 : self,
                     body,
+                    binders : self,
                 }.step(ctx)
             },
             Cons(hd, tl) => {
@@ -1475,10 +1475,10 @@ impl<'a> ExprsPtr<'a> {
                     tl,
                     body,
                     sink,
-                    out,
+                    e_prime : out,
+                    binders : self,
                     h1,
-                    h2,
-                    ind_arg1 : self,
+                    h2
                 }.step(ctx)
             }
         }
@@ -1492,8 +1492,8 @@ impl<'a> ExprsPtr<'a> {
         match self.read(ctx) {
             Nil => {
                 FoldLambdas::Nil {
-                    ind_arg1 : self,
                     body,
+                    binders : self,
                 }.step(ctx)
             },
             Cons(hd, tl) => {
@@ -1504,10 +1504,10 @@ impl<'a> ExprsPtr<'a> {
                     tl,
                     body,
                     sink,
-                    out,
+                    e_prime : out,
+                    binders : self,
                     h1,
                     h2,
-                    ind_arg1 : self,
                 }.step(ctx)
             }
         }
@@ -1547,11 +1547,11 @@ impl<'a> HasNanodaDbg<'a> for Expr<'a> {
                 let val = val.nanoda_dbg(ctx);
                 format!("Let {} := {} in {}", binder, val, body)
             },
-            Local { b_name, b_type, b_style, serial, .. } => {
+            Local { b_name, b_type, b_style, .. } => {
                 let binder = fmt_binder(b_name, b_type, b_style, ctx);
-                let serial = match serial {
-                    LocalSerial(n) => n
-                };
+                //let serial = match serial {
+                //    LocalSerial(n) => n
+                //};
                 format!("ser(_) of {}", binder)
             }
         }

@@ -1,5 +1,3 @@
-use std::fs::File;
-use std::io::{ Write, BufWriter, Result as IoResult };
 use std::fmt::Debug;
 use std::collections::HashMap;
 use std::hash::{ Hash, BuildHasherDefault };
@@ -8,36 +6,18 @@ use std::marker::PhantomData;
 use rustc_hash::FxHasher;
 use indexmap::{ IndexMap, IndexSet };
 
-use nanoda_macros::has_try_some;
 use crate::name::{ NamePtr, Name, Name::* };
-use crate::level::{ LevelPtr, LevelsPtr, Level, Level::* };
+use crate::level::{ LevelsPtr, Level, Level::* };
 use crate::expr::{ ExprPtr, ExprsPtr, Expr, LocalSerial };
-use crate::env::{ Declar, Declar::*, RecRule, Notation, RecRulePtr, DeclarPtr, RecRulesPtr, DeclarsPtr };
+use crate::env::{ Declar, DeclarView, RecRule, Notation, DeclarPtr, DeclarsPtr };
 use crate::tc::eq::EqResult;
 use crate::tc::infer::InferFlag;
-use crate::{ arena_item, has_list };
+use crate::{ arena_item, has_list, trace_env };
 use crate::trace::items::HasTraceItem;
 use crate::trace::{ IsTracer, TraceMgr };
 use crate::trace::steps::*;
 
 
-fn try_succ<'a>(op_n : Option<usize>, ctx : &mut impl IsCtx<'a>) -> (Option<usize>, Step<TrySuccZst>) {
-    match op_n {
-        None => {
-            TrySucc::BaseNone {
-                ind_arg1 : op_n,
-                ind_arg2 : None
-            }.step(ctx)
-        },
-        Some(n) => {
-            TrySucc::BaseSome {
-                n,
-                ind_arg1 : op_n,
-                ind_arg2 : Some(n + 1)
-            }.step(ctx)
-        }
-    }
-}
 pub struct TryToken;
 
 pub type FxIndexSet<A> = IndexSet<A, BuildHasherDefault<FxHasher>>;
@@ -72,6 +52,14 @@ impl<'a, A> Ptr<'a, A> {
         match self {
             Ptr::E(..) => true,
             _ => false
+        }
+    }
+
+    pub fn ptr_idx(self) -> usize {
+        match self {
+            | Ptr::E(n, ..)
+            | Ptr::L(n, ..)
+            | Ptr::P(n, ..) => n
         }
     }
 }
@@ -133,7 +121,11 @@ where A : Eq + Hash,
         self.marker.mk_ptr(index)
     }
 
-    fn insert_elem(&mut self, elem : A) -> Ptr<'a, A> {
+    fn retrieve(&self, index : usize) -> Ptr<'a, A> {
+        self.marker.mk_ptr(index)
+    }
+
+    pub fn insert_elem(&mut self, elem : A) -> Ptr<'a, A> {
         let (idx, _) = self.elems.insert_full(elem);
         self.marker.mk_ptr(idx)
     }
@@ -223,7 +215,7 @@ pub struct TcCache<'a, Z> {
     infer_cache   : FxHashMap<(ExprPtr<'a>, InferFlag), (ExprPtr<'a>, Step<InferZst>)>,
     eq_cache      : FxHashMap<(ExprPtr<'a>, ExprPtr<'a>), (EqResult, Step<DefEqZst>)>,
     whnf_cache    : FxHashMap<ExprPtr<'a>, (ExprPtr<'a>, Step<WhnfZst>)>,
-    args_eq_cache : FxHashMap<(ExprsPtr<'a>, ExprsPtr<'a>), (EqResult, Step<ArgsEqZst>)>,
+    args_eq_cache : FxHashMap<(ExprsPtr<'a>, ExprsPtr<'a>), (EqResult, Step<ArgsEqAuxZst>)>,
 }
 
 impl<'a, Z> TcCache<'a, Z> {
@@ -236,19 +228,15 @@ impl<'a, Z> TcCache<'a, Z> {
             args_eq_cache : FxHashMap::with_hasher(Default::default()),
         }
     }
-
-    fn clear(&mut self) {
-        self.eq_cache.clear();
-        self.infer_cache.clear();
-        self.whnf_cache.clear();
-    }
 }
 
 pub struct Env<'e, T : IsTracer> {
     pub store : Store<'e, EnvZst>,
     pub declars : FxIndexMap<NamePtr<'e>, (DeclarPtr<'e>, Step<AdmitDeclarZst>)>,
     pub notations : FxHashMap<NamePtr<'e>, Notation<'e>>,
+    pub is_actual : bool,
     pub next_local : u64,
+    pub next_ind_serial : u16,
     pub quot_mk : Option<NamePtr<'e>>,
     pub quot_lift : Option<NamePtr<'e>>,
     pub quot_ind : Option<NamePtr<'e>>,
@@ -261,7 +249,9 @@ impl<'l, 'e : 'l, T : 'e + IsTracer> Env<'e, T> {
             store : Store::new(),
             declars : FxIndexMap::with_hasher(Default::default()),
             notations : FxHashMap::with_hasher(Default::default()),
+            is_actual : false,
             next_local : 0u64,
+            next_ind_serial : 0u16,
             quot_mk : None,
             quot_lift : None,
             quot_ind : None,
@@ -287,6 +277,32 @@ impl<'l, 'e : 'l, T : 'e + IsTracer> Env<'e, T> {
         }
     }
 
+    pub fn next_ind_serial(&mut self) -> u16 {
+        let curr = self.next_ind_serial;
+        self.next_ind_serial += 1;
+        curr
+    }
+
+    pub fn num_declars(&self) -> usize {
+        self.declars.len()
+    }
+
+    pub fn trace_env(&mut self) {
+        {
+            let len = self.store.strings.elems.len();
+            for i in 0..len {
+                let ptr = self.store.strings.retrieve(i);
+                ptr.trace_item(self);
+            }
+
+        }
+
+        trace_env!(self, names, name_lists, true);
+        trace_env!(self, levels, level_lists, true);
+        trace_env!(self, exprs, expr_lists, false);
+        trace_env!(self, rec_rules, rec_rule_lists, false);
+        trace_env!(self, declars, declar_lists, false);
+    }
 }
 
 pub struct Live<'l, 'e : 'l, T : IsTracer> {
@@ -299,9 +315,7 @@ pub struct Live<'l, 'e : 'l, T : IsTracer> {
 impl<'t, 'l : 't, 'e : 'l, T> Live<'l, 'e, T> 
 where T : 'e + IsTracer {
     pub fn as_tc(&'t mut self, dec_uparams : Option<LevelsPtr<'l>>, safe_only : Option<bool>) -> Tc<'t, 'l, 'e, T> {
-
         let dec_uparams = dec_uparams.unwrap_or_else(|| Nil::<Level>.alloc(self));
-
         Tc {
             live : self,
             dec_uparams,
@@ -312,130 +326,56 @@ where T : 'e + IsTracer {
         }
     }
 
-    pub fn admit_declar(&mut self, d : DeclarPtr<'l>) {
-        assert!(self.env.declars.get(&d.name(self)).is_none());
-        let d_env = d.read(self).insert_env(self.env, &self.store);
+    pub fn last_admit(&mut self) -> Option<Step<AdmitDeclarZst>> {
+        match self.env.declars.values().last() {
+            None => None,
+            Some((_, admitted_at)) => Some(*admitted_at)
+        }
+    }
 
-        let (name, step) = match d_env.read(self.env) {
-            Axiom { name, uparams, type_, is_unsafe } => {
-                AdmitDeclar::Axiom {
-                    name,
-                    uparams,
-                    type_,
-                    is_unsafe
-                }.step(self.env)
-            },
-            Definition { name, uparams, type_, val, hint, is_unsafe } => {
-                AdmitDeclar::Definition {
-                    name,
-                    uparams,
-                    type_,
-                    val,
-                    hint,
-                    is_unsafe,
-                }.step(self.env)
-            },
-            Theorem { name, uparams, type_, val } => {
-                AdmitDeclar::Theorem {
-                    name,
-                    uparams,
-                    type_,
-                    val,
-                }.step(self.env)
-
-            },
-            Opaque { name, uparams, type_, val } => {
-                AdmitDeclar::Opaque {
-                    name,
-                    uparams,
-                    type_,
-                    val,
-                }.step(self.env)
-            },
-            Quot { name, uparams, type_ } => {
-                AdmitDeclar::Quot {
-                    name,
-                    uparams,
-                    type_,
-                }.step(self.env)
-            },
-            Inductive {
-                name,
-                uparams,
-                type_,
-                num_params,
-                all_ind_names,
-                all_ctor_names,
-                is_unsafe
-            } => {
-                AdmitDeclar::Inductive {
-                    name,
-                    uparams,
-                    type_,
-                    num_params,
-                    all_ind_names,
-                    all_ctor_names,
-                    is_unsafe
-                }.step(self.env)
-            },
-            Constructor {
-                name,
-                uparams,
-                type_,
-                parent_name,
-                num_fields,
-                minor_idx,
-                num_params,
-                is_unsafe
-            } => {
-                AdmitDeclar::Constructor {
-                    name,
-                    uparams,
-                    type_,
-                    parent_name,
-                    num_fields,
-                    minor_idx,
-                    num_params,
-                    is_unsafe
-                }.step(self.env)
-            },
-            Recursor {
-                name,
-                uparams,
-                type_,
-                all_names,
-                num_params,
-                num_indices,
-                num_motives,
-                num_minors,
-                major_idx,
-                rec_rules,
-                is_k,
-                is_unsafe
-            } => {
-                AdmitDeclar::Recursor {
-                    name,
-                    uparams,
-                    type_,
-                    all_names,
-                    num_params,
-                    num_indices,
-                    num_motives,
-                    num_minors,
-                    major_idx,
-                    rec_rules,
-                    is_k,
-                    is_unsafe
-                }.step(self.env)
-            }
+    // In the specification, we allow declaration steps to append a list 
+    // of declarations as long as the list meets certain requirements.
+    pub fn admit_declars(
+        &mut self, 
+        ds : DeclarsPtr<'l>,
+        h1 : Step<AdmitDeclarZst>
+    ) {
+        let mut ds = if self.env.is_actual {
+            assert!(ds.in_env());
+            ds.extend_lifetime(self.env)
+        } else {
+            ds.insert_env(self.env, &self.store)
         };
 
-        self.env.declars.insert(name, (d_env, step));
+        while let Cons(hd, tl) = ds.read(self.env) {
+            assert!(hd.in_env());
+            let name = hd.name(self.env);
+            self.env.declars.insert(name, (hd, h1));
+            ds = tl;
+        }
+    }
+
+    pub fn admit_declar(
+        &mut self, 
+        d : DeclarPtr<'l>,
+        h1 : Step<AdmitDeclarZst>
+    ) {
+        assert!(self.env.declars.get(&d.name(self)).is_none());
+        if self.env.is_actual {
+            assert!(d.in_env());
+            let d = d.extend_lifetime(self.env);
+            let name = d.name(self.env);
+            self.env.declars.insert(name, (d, h1));
+        } else {
+            let d = d.insert_env(self.env, &self.store);
+            let name = d.name(self.env);
+            self.env.declars.insert(name, (d, h1));
+        }
     }
 }
 
 pub struct Tc<'t, 'l : 't, 'e : 'l, T : IsTracer> {
-    live : &'t mut Live<'l, 'e, T>,
+    pub live : &'t mut Live<'l, 'e, T>,
     dec_uparams : LevelsPtr<'l>,
     safe_only : bool,
     tc_cache : TcCache<'l, TcZst>,
@@ -458,12 +398,12 @@ pub trait IsTc<'t, 'l : 't, 'e : 'l> : IsLiveCtx<'l> {
     fn check_infer_cache(&self, k : ExprPtr<'l>, flag : InferFlag) -> Option<(ExprPtr<'l>, Step<InferZst>)>;
     fn check_eq_cache(&self, l : ExprPtr<'l>, r : ExprPtr<'l>) -> Option<(EqResult, Step<DefEqZst>)>;
     fn check_whnf_cache(&self, k : &ExprPtr<'l>) -> Option<(ExprPtr<'l>, Step<WhnfZst>)>;
-    fn check_args_eq_cache(&self, l : ExprsPtr<'l>, r : ExprsPtr<'l>) -> Option<(EqResult, Step<ArgsEqZst>)>;
+    fn check_args_eq_cache(&self, l : ExprsPtr<'l>, r : ExprsPtr<'l>) -> Option<(EqResult, Step<ArgsEqAuxZst>)>;
 
     fn insert_infer_cache(&mut self, k : ExprPtr<'l>, flag : InferFlag, v : (ExprPtr<'l>, Step<InferZst>));
     fn insert_eq_cache(&mut self, l : ExprPtr<'l>, r : ExprPtr<'l>, v : (EqResult, Step<DefEqZst>));
     fn insert_whnf_cache(&mut self, k : ExprPtr<'l>, v : (ExprPtr<'l>, Step<WhnfZst>));
-    fn insert_args_eq_cache(&mut self, l : ExprsPtr<'l>, r : ExprsPtr<'l>, v : (EqResult, Step<ArgsEqZst>));
+    fn insert_args_eq_cache(&mut self, l : ExprsPtr<'l>, r : ExprsPtr<'l>, v : (EqResult, Step<ArgsEqAuxZst>));
 }
 
 impl<'t, 'l : 't, 'e : 'l, T> IsTc<'t, 'l, 'e> for Tc<'t, 'l, 'e, T> 
@@ -506,7 +446,7 @@ where T : 'l + IsTracer {
         self.tc_cache.whnf_cache.get(k).copied()
     }
 
-    fn check_args_eq_cache(&self, l : ExprsPtr<'l>, r : ExprsPtr<'l>) -> Option<(EqResult, Step<ArgsEqZst>)> {
+    fn check_args_eq_cache(&self, l : ExprsPtr<'l>, r : ExprsPtr<'l>) -> Option<(EqResult, Step<ArgsEqAuxZst>)> {
         self.tc_cache.args_eq_cache.get(&(l, r)).copied()
     }
 
@@ -523,7 +463,7 @@ where T : 'l + IsTracer {
         self.tc_cache.whnf_cache.insert(k, v);
     }
     
-    fn insert_args_eq_cache(&mut self, l : ExprsPtr<'l>, r : ExprsPtr<'l>, v : (EqResult, Step<ArgsEqZst>)) {
+    fn insert_args_eq_cache(&mut self, l : ExprsPtr<'l>, r : ExprsPtr<'l>, v : (EqResult, Step<ArgsEqAuxZst>)) {
         self.tc_cache.args_eq_cache.insert((l, r), v);
     }
 
@@ -575,7 +515,7 @@ where T : 'l + IsTracer {
     }
     
     
-    fn check_args_eq_cache(&self, l : ExprsPtr<'l>, r : ExprsPtr<'l>) -> Option<(EqResult, Step<ArgsEqZst>)> {
+    fn check_args_eq_cache(&self, l : ExprsPtr<'l>, r : ExprsPtr<'l>) -> Option<(EqResult, Step<ArgsEqAuxZst>)> {
         self.tc.tc_cache.args_eq_cache.get(&(l, r))
         .or_else(|| self.tc.pfinder_tc_cache.args_eq_cache.get(&(l, r)))
         .copied()
@@ -593,7 +533,7 @@ where T : 'l + IsTracer {
         self.tc.pfinder_tc_cache.whnf_cache.insert(k, v);
     }
 
-    fn insert_args_eq_cache(&mut self, l : ExprsPtr<'l>, r : ExprsPtr<'l>, v : (EqResult, Step<ArgsEqZst>)) {
+    fn insert_args_eq_cache(&mut self, l : ExprsPtr<'l>, r : ExprsPtr<'l>, v : (EqResult, Step<ArgsEqAuxZst>)) {
         self.tc.pfinder_tc_cache.args_eq_cache.insert((l, r), v);
     }
     
@@ -610,6 +550,7 @@ pub trait IsCtx<'a> {
     fn pfinder_store(&self) -> Option<&Store<'a, PfinderZst>>;
     fn mut_store(&mut self) -> &mut Store<'a, Self::Writable>;
     fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'a>, Step<AdmitDeclarZst>)>;
+    fn get_declar_view(&self, n : NamePtr) -> Option<(DeclarView<'a>, Step<AdmitDeclarZst>)>;
     fn mut_mgr(&mut self) -> &mut TraceMgr<Self::Tracer>;
     fn tracer(&mut self) -> &mut Self::Tracer {
         &mut self.mut_mgr().tracer
@@ -640,6 +581,11 @@ where T : 'e + IsTracer {
 
     fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'e>, Step<AdmitDeclarZst>)> {
         self.declars.get(&n).copied()
+    }
+
+    fn get_declar_view(&self, n : NamePtr) -> Option<(DeclarView<'e>, Step<AdmitDeclarZst>)> {
+        self.get_declar(n)
+        .map(|(d, h)| (d.as_view(self), h))
     }
     
     fn mut_mgr(&mut self) -> &mut TraceMgr<Self::Tracer> {
@@ -674,6 +620,10 @@ where T : 'l + IsTracer {
         self.env.declars.get(&n).copied()
     }
 
+    fn get_declar_view(&self, n : NamePtr) -> Option<(DeclarView<'l>, Step<AdmitDeclarZst>)> {
+        self.get_declar(n)
+        .map(|(d, h)| (d.as_view(self), h))
+    }
     
     fn mut_mgr(&mut self) -> &mut TraceMgr<Self::Tracer> {
         &mut self.env.trace_mgr
@@ -708,6 +658,11 @@ where T : 'l + IsTracer {
         self.live.env.declars.get(&n).copied()
     }
     
+    fn get_declar_view(&self, n : NamePtr) -> Option<(DeclarView<'l>, Step<AdmitDeclarZst>)> {
+        self.get_declar(n)
+        .map(|(d, h)| (d.as_view(self), h))
+    }
+
     fn mut_mgr(&mut self) -> &mut TraceMgr<Self::Tracer> {
         self.live.mut_mgr()
     }
@@ -739,7 +694,12 @@ where T : 'l + IsTracer {
     fn get_declar(&self, n : NamePtr) -> Option<(DeclarPtr<'l>, Step<AdmitDeclarZst>)> {
         self.tc.live.env.declars.get(&n).copied()
     }
-    
+
+    fn get_declar_view(&self, n : NamePtr) -> Option<(DeclarView<'l>, Step<AdmitDeclarZst>)> {
+        self.get_declar(n)
+        .map(|(d, h)| (d.as_view(self), h))
+    }
+
     fn mut_mgr(&mut self) -> &mut TraceMgr<Self::Tracer> {
         self.tc.live.mut_mgr()
     }
@@ -874,6 +834,18 @@ macro_rules! arena_item {
                     Ptr::P(..) => unreachable!("P items hould never be put in the environment!")
                 }
             }
+
+            pub fn extend_lifetime<$env>(self, env : &mut Env<$env, impl $env + IsTracer>) -> Ptr<$env, $base<$env>> {
+                match self {
+                    Ptr::E(index, _, z) => {
+                        let underlying_data = self.read(env);
+                        let p = env.store.$field.extend_safe(index, z);
+                        assert_eq!(underlying_data, p.read(env));
+                        p
+                    },
+                    _ => unreachable!("Can only `extend_lifetime()` for environment items!")
+                }
+            }
         }
         
         impl<$short> HasNanodaDbg<$short> for Ptr<$short, $base<$short>> {
@@ -943,45 +915,6 @@ macro_rules! has_list {
         }
 
         impl<$short> Ptr<$short, $base<$short>> {
-            pub fn mem(
-                self, 
-                haystack : ListPtr<$short, $base<$short>>, 
-                ctx : &mut impl IsLiveCtx<$short>
-            ) -> (bool, Step<MemZst>) {
-                match haystack.read(ctx) {
-                    Nil => {
-                        Mem::BaseFf {
-                            needle : self,
-                            ind_arg2 : haystack,
-                            ind_arg3 : false
-                        }.step(ctx)
-                    },
-                    Cons(hd, tl) if self == hd => {
-                        Mem::BaseTt {
-                            needle : self,
-                            tl : tl,
-                            ind_arg2 : haystack,
-                            ind_arg3 : true
-                        }.step(ctx)
-                    },
-                    Cons(hd, tl) => {
-                        let result = self == hd;
-                        assert!(!result);
-                        let (is_mem_rec, h1) = self.mem(tl, ctx);
-                        Mem::Step {
-                            needle : self,
-                            x : hd,
-                            tl : tl,
-                            bl : is_mem_rec,
-                            h1,
-                            ind_arg2 : haystack,
-                            ind_arg3 : (result || is_mem_rec)
-                        }.step(ctx)
-                    }
-                }
-            }        
-
-            
             pub fn pos(
                 self, 
                 haystack : ListPtr<$short, $base<$short>>, 
@@ -991,36 +924,38 @@ macro_rules! has_list {
                     Nil => {
                         Pos::BaseNone {
                             needle : self,
-                            ind_arg2 : haystack,
-                            ind_arg3 : None,
+                            haystack,
+                            pos : None,
                         }.step(ctx)
-                    }
+                    },
                     Cons(hd, tl) if hd == self => {
                         Pos::BaseSome {
                             needle : self,
-                            tl,
-                            ind_arg2 : haystack,
-                            ind_arg3 : Some(0)
+                            haystack_tl : tl,
+                            haystack,
+                            pos : Some(0)
                         }.step(ctx)
                     }
-                    Cons(hd, tl) => {
-                        let (n, h1) = self.pos(tl, ctx);
-                        let (n_prime, h2) = try_succ(n, ctx);
+                    Cons(x, tl) => {
+                        let (pos, h1) = self.pos(tl, ctx);
+                        let pos_prime = pos.map(|n| n + 1);
                         Pos::Step {
                             needle : self,
-                            x : hd,
-                            tl,
-                            n,
-                            n_prime,
+                            x,
+                            haystack_tl : tl,
+                            pos,
+                            haystack,
+                            pos_prime,
                             h1,
-                            h2,
-                            ind_arg2 : haystack,
                         }.step(ctx)
                     }
                 }
             }
         }
+        
         impl<$short> ListPtr<$short, $base<$short>> {
+ 
+
             pub fn read(self, ctx : &impl IsCtx<$short>) -> List<$short, $base<$short>> {
                 match self {
                     Ptr::E(index, h, z) => *ctx.env_store().$list_field.get_elem(index, h, z),
@@ -1050,105 +985,68 @@ macro_rules! has_list {
                 }
             }
 
+             
+            pub fn extend_lifetime<$env>(
+                self,
+                env : &mut Env<$env, impl $env + IsTracer>
+            ) -> ListPtr<$env, $base<$env>> {
+                match self {
+                    Ptr::E(index, _, z) => {
+                        let underlying_data = self.read(env);
+                        let p = env.store.$list_field.extend_safe(index, z);
+                        assert_eq!(underlying_data, p.read(env));
+                        p
+                    },
+                    _ => unreachable!("Can only `extend_lifetime()` for environment items!")
+                }
+            }                     
+
             // tests `self is a subset of other`
             pub fn subset(self, super_ : ListPtr<$short, $base>, ctx : &mut impl IsLiveCtx<$short>) -> (bool, Step<IsSubsetZst>) {
                 match self.read(ctx) {
                     Nil => {
                         IsSubset::BaseNil {
                             super_,
-                            ind_arg1 : self,
-                            ind_arg3 : true,
+                            sub : self,
+                            result : true,
                         }.step(ctx)
                     }
                     Cons(hd, tl) => {
-                        let (b1, h1) = hd.mem(super_, ctx);
-                        let (b2, h2) = tl.subset(super_, ctx);
+                        let (maybe_pos, h1) = hd.pos(super_, ctx);
+                        let (result, h2) = tl.subset(super_, ctx);
+                        let result_prime = maybe_pos.is_some() && result;
                         IsSubset::Step {
                             hd,
+                            maybe_pos,
                             sub : tl,
                             super_,
-                            b1,
-                            b2,
+                            result,
+                            sub_prime : self,
+                            result_prime,
                             h1,
                             h2,
-                            ind_arg1 : self,
-                            ind_arg3 : b1 && b2
                         }.step(ctx)
                     }
                 }
             }            
 
-            pub fn skip(
-                self, 
-                n : usize, 
-                ctx : &mut impl IsLiveCtx<$short>
-            ) -> (ListPtr<$short, $base<$short>>, Step<SkipZst>) {
+            pub fn skip(self, n : usize, ctx : &impl IsLiveCtx<$short>) -> ListPtr<$short, $base<$short>> {
                 match self.read(ctx) {
-                    Nil => {
-                        Skip::BaseNil {
-                            n,
-                            ind_arg1 : self,
-                        }.step(ctx)
-                    },
-                    _ if n == 0 => {
-                        Skip::BaseZero {
-                            l : self,
-                            ind_arg2 : n,
-                        }.step(ctx)
-                    },
-                    Cons(hd, tl) => {
-                        let n_prime = (n - 1);
-                        let (l_prime, h1) = tl.skip(n_prime, ctx);
-                        Skip::Step {
-                            hd,
-                            tl,
-                            l_prime,
-                            n_prime,
-                            h1,
-                            ind_arg1 : self,
-                            ind_arg2 : n,
-                        }.step(ctx)
-                    }
+                    _ if n == 0 => self,
+                    Nil => self,
+                    Cons(_, tl) => tl.skip(n - 1, ctx)
                 }
             }
         
-            pub fn take(
-                self, 
-                n : usize, 
-                ctx : &mut impl IsLiveCtx<$short>
-            ) -> (ListPtr<$short, $base<$short>>, Step<TakeZst>) {
+            pub fn take(self, n : usize, ctx : &mut impl IsLiveCtx<$short>) -> ListPtr<$short, $base<$short>> {
                 match self.read(ctx) {
-                    Nil => {
-                        Take::BaseNil {
-                            n,
-                            ind_arg1 : self,
-                        }.step(ctx)
-                    },
-                    Cons(..) if n == 0 => {
-                        Take::BaseZero {
-                            l : self,
-                            ind_arg2 : n,
-                            ind_arg3 : Nil::<$base>.alloc(ctx),
-                        }.step(ctx)
-                    },
-                    Cons(hd, tl) => {
-                        let n_prime = (n - 1);
-                        let (l_prime, h1) = tl.take(n_prime, ctx);
-                        let ind_arg3 = Cons(hd, l_prime).alloc(ctx);
-                        Take::Step {
-                            hd,
-                            tl,
-                            l_prime,
-                            n_prime,
-                            h1,
-                            ind_arg1 : self,
-                            ind_arg2 : n,
-                            ind_arg3
-                        }.step(ctx)
-                    }
+                    _ if n == 0 => Nil::<$base>.alloc(ctx),
+                    Nil => Nil::<$base>.alloc(ctx),
+                    Cons(hd, tl) => Cons(hd, tl.take(n - 1, ctx)).alloc(ctx)
                 }
             }            
 
+            // only used as an assertion.
             pub fn no_dupes(
                 self, 
                 ctx : &mut impl IsLiveCtx<$short>
@@ -1156,117 +1054,47 @@ macro_rules! has_list {
                 match self.read(ctx) {
                     Nil => {
                         NoDupes::BaseNil {
-                            ind_arg1 : self,
-                            ind_arg2 : true,
+                            l : self,
+                            result : true,
                         }.step(ctx)
                     }
                     Cons(hd, tl) => {
-                        let (b1, h1) = hd.mem(tl, ctx);
-                        let (b2, h2) = tl.no_dupes(ctx);
+                        let (maybe_pos, h1) = hd.pos(tl, ctx);
+                        assert!(maybe_pos.is_none());
+                        let (b, h2) = tl.no_dupes(ctx);
                         NoDupes::StepTt {
                             hd,
                             tl,
-                            b1,
-                            b2,
+                            l : self,
                             h1,
                             h2,
-                            ind_arg1 : self,
-                            ind_arg2 : ((!b1) && b2),
+                            result  : (maybe_pos.is_none() && b),
                         }.step(ctx)
                     }
                 }
             }            
 
-
-        
-            pub fn get(
-                self, 
-                n : usize, 
-                ctx : &mut impl IsLiveCtx<$short>
-                // eg. (Option<ExprPtr<'a>, Step<Get<ExprPtrZst>>)
-            ) -> (Option<Ptr<$short, $base<$short>>>, Step<GetZst>) {
+            pub fn get(self, n : usize, ctx : &impl IsLiveCtx<$short>) -> Option<Ptr<$short, $base<$short>>> {
                 match self.read(ctx) {
-                    Nil => {
-                        Get::BaseNil {
-                            n,
-                            ind_arg1 : self,
-                            ind_arg3 : None
-                        }.step(ctx)
-                    },
-                    Cons(hd, tl) if n == 0 => {
-                        Get::BaseZero {
-                            hd,
-                            tl,
-                            ind_arg1 : self,
-                            ind_arg2 : n,
-                            ind_arg3 : Some(hd)
-                        }.step(ctx)
-                    }
-                    Cons(hd, tl) => {
-                        let n_prime = (n - 1);
-                        let (out, h1) = tl.get(n_prime, ctx);
-                        Get::Step {
-                            hd,
-                            tl,
-                            n_prime,
-                            out,
-                            h1,
-                            ind_arg1 : self,
-                            ind_arg2 : n
-                        }.step(ctx)
-                    }
+                    Nil => None,
+                    Cons(hd, _) if n == 0 => Some(hd),
+                    Cons(_, tl) => tl.get(n - 1, ctx)
                 }
-            }          
-            
-            pub fn len(
-                self, 
-                ctx : &mut impl IsCtx<$short>
-            ) -> (usize, Step<LenZst>) {
+            }     
+
+            pub fn len(self, ctx : &impl IsCtx<$short>) -> usize {
                 match self.read(ctx) {
-                    Nil => {
-                        Len::BaseNil {
-                            ind_arg1 : self,
-                            ind_arg2 : 0usize
-                        }.step(ctx)
-                    }
-                    Cons(hd, tl) => {
-                        let (n, h1) = tl.len(ctx);
-                        Len::Step {
-                            hd,
-                            tl,
-                            n,
-                            h1,
-                            ind_arg1 : self,
-                            ind_arg2 : (1 + n)
-                        }.step(ctx)
-                    }
+                    Nil => 0,
+                    Cons(_, tl) => 1 + tl.len(ctx)
                 }
             }
 
-            pub fn concat(
-                self, 
-                other : ListPtr<$short, $base<$short>>,
-                ctx : &mut impl IsCtx<$short>
-            ) -> (ListPtr<$short, $base<$short>>, Step<ConcatZst>) {
+            pub fn concat(self, other : ListPtr<$short, $base<$short>>, ctx : &mut impl IsCtx<$short>) -> ListPtr<$short, $base<$short>> {
                 match self.read(ctx) {
-                    Nil => {
-                        Concat::BaseNil {
-                            l2 : other,
-                            ind_arg1 : self,
-                        }.step(ctx)
-                    }
+                    Nil => other,
                     Cons(hd, tl) => {
-                        let (l2_prime, h1) = tl.concat(other, ctx);
-                        let ind_arg3 = Cons(hd, l2_prime).alloc(ctx);
-                        Concat::Step {
-                            hd,
-                            tl,
-                            l2 : other,
-                            l2_prime,
-                            h1,
-                            ind_arg1 : self,
-                            ind_arg3
-                        }.step(ctx)
+                        let sink = tl.concat(other, ctx);
+                        Cons(hd, sink).alloc(ctx)
                     }
                 }
             }
@@ -1451,14 +1279,31 @@ macro_rules! ret_none_if {
     }
 }
 
-//#[macro_export]
-//macro_rules! trace_result {
-//    ( $e:expr, $ctx:ident ) => {
-//        let result = $e;
-//        result.trace($ctx);
-//        result
-//    }
-//}
+
+// We need to skip the 0th element of name and level
+// to not re-print Anon/Zero, as well as the 0th
+#[macro_export]
+macro_rules! trace_env {
+    ( $env:expr, $field:ident, $list_field:ident, $skip:literal ) => {
+        {
+            let len = $env.store.$field.elems.len();
+            let start_idx = if $skip { 1usize } else { 0usize };
+            for i in start_idx..len {
+                let ptr = $env.store.$field.retrieve(i);
+                ptr.trace_item($env);
+            }
+        }
+
+        {
+            let len = $env.store.$list_field.elems.len();
+            for i in 1..len {
+                let ptr = $env.store.$list_field.retrieve(i);
+                ptr.trace_item($env);
+
+            }
+        }
+    };
+}
 
 pub trait HasNanodaDbg<'a> {
     fn nanoda_dbg(self, ctx : &impl IsCtx<'a>) -> String;
