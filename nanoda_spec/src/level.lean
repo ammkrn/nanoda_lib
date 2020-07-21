@@ -608,9 +608,9 @@ with leqCore : ∀ (l : Level) (r : Level) (l_h : nat) (r_h : nat) (result : boo
     let r' := Max (Imax x j) (Imax x k),
         r := Imax x (Max j k)
     in
-    simplify (Max (Imax x j) (Imax x k)) new_max'
+    simplify r' new_max'
     -> leqCore l new_max' l_h r_h result
-    -> leqCore l (Imax x (Max j k)) l_h r_h result
+    -> leqCore l r l_h r_h result
 
 inductive leq : ∀ (l : Level) (r : Level) (b : bool), Prop
 | mk
