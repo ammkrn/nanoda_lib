@@ -150,32 +150,6 @@ pub enum NoDupes<'a, A : HasPrefix> {
     }
 }
 
-
-#[is_step(tag = "GP", result_type = "NamePtr<'a>", fun = "trace_get_prefix")]
-#[derive(Debug, Clone, Copy)]
-pub enum GetPrefix<'a> {
-    #[A]
-    BaseAnon {
-        n : NamePtr<'a>,
-        #[result]
-        pfx : NamePtr<'a>,
-    },
-    #[S]
-    StepStr {
-        #[result]
-        pfx : NamePtr<'a>,
-        sfx : StringPtr<'a>,
-        n : NamePtr<'a>,
-    },
-    #[N]
-    StepNum {
-        #[result]
-        pfx : NamePtr<'a>,
-        sfx : u64,
-        n : NamePtr<'a>,
-    }
-}
-
 #[is_step(tag = "IP", result_type = "bool", fun = "trace_is_param")]
 #[derive(Debug, Clone, Copy)]
 pub enum IsParam<'a> {

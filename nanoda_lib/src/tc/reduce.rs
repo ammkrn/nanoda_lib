@@ -392,7 +392,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         
         let ((e_t_fun, c_args), h3) = e_type.unfold_apps(tc);
         let (c_name, c_levels) = match e_t_fun.read(tc) {
-            Const { name, levels } if recursor.name(tc).get_prefix(tc).0 == name => {
+            Const { name, levels } if recursor.name(tc).get_prefix(tc) == name => {
                 (name, levels)
             },
             _ => return None

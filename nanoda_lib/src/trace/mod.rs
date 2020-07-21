@@ -445,8 +445,6 @@ pub trait IsTracer : std::io::Write {
     mk_trace_step! { trace_is_subset, 'a, A, HasPrefix, IsSubset<'a, A> }
     mk_trace_step! { trace_no_dupes, 'a, A, HasPrefix, NoDupes<'a, A> }
 
-    mk_trace_step! { trace_get_prefix, 'a, GetPrefix<'a> }
-
     mk_trace_step! { trace_is_zero_lit, 'a, IsZeroLit<'a> }
     mk_trace_step! { trace_is_succ, 'a, IsSucc<'a> }
     mk_trace_step! { trace_is_any_max, 'a, IsAnyMax<'a> }

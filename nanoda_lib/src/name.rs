@@ -69,28 +69,11 @@ impl<'a> NamePtr<'a> {
         Param(self).alloc(ctx)
     }
 
-    pub fn get_prefix(self, ctx : &mut impl IsLiveCtx<'a>) -> (NamePtr<'a>, Step<GetPrefixZst>) {
+    pub fn get_prefix(self, ctx : &impl IsLiveCtx<'a>) -> NamePtr<'a> {
         match self.read(ctx) {
-            Anon => {
-                GetPrefix::BaseAnon {
-                    n : self,
-                    pfx : Anon.alloc(ctx)
-                }.step(ctx)
-            }
-            Str(pfx, sfx) => {
-                GetPrefix::StepStr {
-                    pfx,
-                    sfx,
-                    n : self,
-                }.step(ctx)
-            }
-            Num(pfx, sfx) => {
-                GetPrefix::StepNum {
-                    pfx,
-                    sfx,
-                    n : self,
-                }.step(ctx)
-            }
+            Anon => self,
+            | Str(pfx, _)
+            | Num(pfx, _) => pfx
         }
     }
 }
