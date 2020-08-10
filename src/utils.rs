@@ -9,7 +9,7 @@ use rustc_hash::FxHasher;
 
 use crate::name::{ NamePtr, Name, Name::* };
 use crate::level::{ LevelsPtr, Level, Level::* };
-use crate::expr::{ ExprPtr, Expr, LocalSerial };
+use crate::expr::{ ExprPtr, Expr, LocalSerial, BinderStyle };
 use crate::env::{ Declar, RecRule, Notation };
 use crate::tc::eq::ShortCircuit;
 use crate::tc::infer::InferFlag;
@@ -271,6 +271,7 @@ impl<'t, 'l : 't, 'e : 'l> Live<'l, 'e> {
             dec_uparams,
             safe_only : safe_only.unwrap_or(false),
             cache : TcCache::new(),
+            local_cache : FxHashMap::with_hasher(Default::default())
         }
     }
 
@@ -300,6 +301,8 @@ impl<'t, 'l : 't, 'e : 'l> Live<'l, 'e> {
             _ => unreachable!("Cannot use a Live::Checker to admit a declaration!")
         }
     }    
+
+
 }
 
 pub struct Tc<'t, 'l : 't, 'e : 'l> {
@@ -307,6 +310,7 @@ pub struct Tc<'t, 'l : 't, 'e : 'l> {
     pub dec_uparams : Option<LevelsPtr<'l>>,
     pub safe_only : bool,
     pub cache : TcCache<'l>,
+    local_cache : FxHashMap<ExprPtr<'l>, Vec<ExprPtr<'l>>>,
 }
 
 impl<'t, 'l : 't, 'e : 'l> Tc<'t, 'l, 'e> {
@@ -317,6 +321,23 @@ impl<'t, 'l : 't, 'e : 'l> Tc<'t, 'l, 'e> {
             self.live.get_env().quot_ind?
         ))
     }    
+
+    pub fn get_local(&mut self, n : NamePtr<'l>, t : ExprPtr<'l>, s : BinderStyle) -> ExprPtr<'l> {
+        let out = self.local_cache.get_mut(&t).and_then(|v| v.pop());
+        out.unwrap_or_else(|| <ExprPtr>::new_local(n, t, s, self))
+    }
+
+    pub fn replace_local(&mut self, l : ExprPtr<'l>) {
+        match l.read(self) {
+            Expr::Local { b_type, .. } =>  {
+                match self.local_cache.get_mut(&b_type) {
+                    Some(v) => { v.push(l); },
+                    None => { self.local_cache.insert(b_type, vec![l]); }
+                }
+            },
+            _ => unreachable!("Can't replace a non-local")
+        }
+    }      
 }
 
 pub trait IsCtx<'a> {

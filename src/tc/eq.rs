@@ -133,14 +133,19 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 if t1.def_eq(t2, tc) == NeqShort {
                     return Some(NeqShort)
                 }
-                let local = <ExprPtr>::new_local(n1, t1, s1, tc);
+                let local = tc.get_local(n1, t1, s1);
 
                 self = b1;
                 other = b2;
                 local_doms = Cons(local, local_doms).alloc(tc);
         }
 
-        Some(self.inst(local_doms, tc).def_eq(other.inst(local_doms, tc), tc))
+        let out = self.inst(local_doms, tc).def_eq(other.inst(local_doms, tc), tc);
+        while let Cons(l, ls) = local_doms.read(tc) {
+            local_doms = ls;
+            tc.replace_local(l);
+        }
+        Some(out)
     }
 
     fn def_eq_lambda(self, other : Self, tc : &mut Tc<'t, 'l, 'e>) -> Option<ShortCircuit> {
@@ -161,14 +166,19 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 if t1.def_eq(t2, tc) == NeqShort {
                     return Some(NeqShort)
                 }
-                let local = <ExprPtr>::new_local(n1, t1, s1, tc);
+                let local = tc.get_local(n1, t1, s1);
 
                 self = b1;
                 other = b2;
                 local_doms = Cons(local, local_doms).alloc(tc);
         }
 
-        Some(self.inst(local_doms, tc).def_eq(other.inst(local_doms, tc), tc))
+        let out = self.inst(local_doms, tc).def_eq(other.inst(local_doms, tc), tc);
+        while let Cons(l, ls) = local_doms.read(tc) {
+            local_doms = ls;
+            tc.replace_local(l);
+        }
+        Some(out)
     }    
 
 
@@ -305,8 +315,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             ss
         }
     }
-
-
 }
 
 
