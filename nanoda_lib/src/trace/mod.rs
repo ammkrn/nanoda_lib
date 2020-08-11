@@ -570,7 +570,7 @@ pub trait IsTracer : std::io::Write {
     mk_trace_step! { trace_admit_declar, 'a, AdmitDeclar<'a> }
     
 
-    fn ptr_index<'a, A>(ptr : Ptr<'a, A>) -> usize {
+    fn ptr_index<'a, A>(ptr : Ptr<'a, A>) -> u32 {
         match ptr {
             | Ptr::E(index, ..)
             | Ptr::L(index, ..)

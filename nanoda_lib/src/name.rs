@@ -1,6 +1,5 @@
 use crate::level::{ LevelPtr, Level::* };
 use crate::trace::IsTracer;
-use crate::trace::steps::*;
 use crate::utils::{ 
     alloc_str, 
     Ptr,

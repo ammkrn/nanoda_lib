@@ -153,7 +153,7 @@ impl<'e, T : 'e + IsTracer> Env<'e, T> {
         };
 
         match new_name {
-            Ptr::E(index, ..) => assert_eq!(index, lean_pos),
+            Ptr::E(index, ..) => assert_eq!(index as usize, lean_pos),
             _ => unreachable!()
         }
 
@@ -170,7 +170,7 @@ impl<'e, T : 'e + IsTracer> Env<'e, T> {
          };
 
         match new_level {
-            Ptr::E(index, ..) => assert_eq!(index, lean_pos),
+            Ptr::E(index, ..) => assert_eq!(index as usize, lean_pos),
             _ => unreachable!()
         }
 
@@ -208,7 +208,7 @@ impl<'e, T : 'e + IsTracer> Env<'e, T> {
         };
 
         match new_expr {
-            Ptr::E(index, ..) => assert_eq!(index, lean_pos),
+            Ptr::E(index, ..) => assert_eq!(index as usize, lean_pos),
             _ => unreachable!()
         }
 

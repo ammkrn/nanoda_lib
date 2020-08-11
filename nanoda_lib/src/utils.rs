@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::collections::HashMap;
 use std::hash::{ Hash, BuildHasherDefault };
@@ -40,9 +41,9 @@ pub struct PfinderZst;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Ptr2<PH> {
-    E(usize, PH, EnvZst),
-    L(usize, PH, LiveZst),
-    P(usize, PH, PfinderZst),
+    E(u32, PH, EnvZst),
+    L(u32, PH, LiveZst),
+    P(u32, PH, PfinderZst),
 }
 
 pub type Ptr<'a, A> = Ptr2<PhantomData<&'a A>>;
@@ -55,7 +56,7 @@ impl<'a, A> Ptr<'a, A> {
         }
     }
 
-    pub fn ptr_idx(self) -> usize {
+    pub fn ptr_idx(self) -> u32 {
         match self {
             | Ptr::E(n, ..)
             | Ptr::L(n, ..)
@@ -70,19 +71,28 @@ pub trait HasMkPtr : Copy + Default + Debug {
 
 impl HasMkPtr for EnvZst {
     fn mk_ptr<'a, A>(self, index : usize) -> Ptr<'a, A> {
-        Ptr::E(index, PhantomData, self)
+         match u32::try_from(index) {
+            Ok(n) => Ptr::E(n, PhantomData, self),
+            Err(..) => unreachable!("usize to u32 conv overflow in EnvZst::mk_ptr")
+        }       
     }
 }
 
 impl HasMkPtr for LiveZst {
     fn mk_ptr<'a, A>(self, index : usize) -> Ptr<'a, A> {
-        Ptr::L(index, PhantomData, self)
+         match u32::try_from(index) {
+            Ok(n) => Ptr::L(n, PhantomData, self),
+            Err(..) => unreachable!("usize to u32 conv overflow in LiveZst::mk_ptr")
+        }       
     }
 }
 
 impl HasMkPtr for PfinderZst {
     fn mk_ptr<'a, A>(self, index : usize) -> Ptr<'a, A> {
-        Ptr::P(index, PhantomData, self)
+        match u32::try_from(index) {
+            Ok(n) => Ptr::P(n, PhantomData, self),
+            Err(..) => unreachable!("usize to u32 conv overflow in PfinderZst::mk_ptr")
+        }
     }
 }
 
@@ -112,13 +122,13 @@ where A : Eq + Hash,
         }
     }
 
-    pub fn get_elem(&self, index : usize, _ : PhantomData<&'_ A>, _ : Z) -> &A {
-        self.elems.get_index(index).expect("Checked `None`")
+    pub fn get_elem(&self, index : u32, _ : PhantomData<&'_ A>, _ : Z) -> &A {
+        self.elems.get_index(index as usize).expect("Checked `None`")
     }
 
 
-    pub fn extend_safe(&self, index : usize, _z : Z) -> Ptr<'a, A> {
-        self.marker.mk_ptr(index)
+    pub fn extend_safe(&self, index : u32, _z : Z) -> Ptr<'a, A> {
+        self.marker.mk_ptr(index as usize)
     }
 
     fn retrieve(&self, index : usize) -> Ptr<'a, A> {
