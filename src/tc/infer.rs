@@ -1,6 +1,6 @@
 use crate::name::NamePtr;
 use crate::level::{ LevelPtr, LevelsPtr, Level };
-use crate::expr::{ Expr, ExprPtr, Expr::*, BinderStyle };
+use crate::expr::{ Expr, ExprPtr, Expr::* };
 use crate::utils::{ List::*, Tc, IsCtx, HasNanodaDbg };
                     
                     
@@ -42,7 +42,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                   Sort { level } => level,
                   _owise => unreachable!("infer_sort failed to produce a sort!"),
               }
-
     }    
 
     fn infer_sort_core(
@@ -94,10 +93,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         fun.inst(context, tc)
     }    
 
-
-
-
-    // while-loop ver
     fn infer_pi(self, flag : InferFlag, tc : &mut Tc<'t, 'l, 'e>) -> Self {
         let mut locals = Nil::<Expr>.alloc(tc);
         let mut universes = Nil::<Level>.alloc(tc);
@@ -128,7 +123,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         }
     }        
 
-    
     fn infer_lambda(self, flag : InferFlag, tc : &mut Tc<'t, 'l, 'e>) -> Self {
         let mut b_types = Nil::<Expr>.alloc(tc);
         let mut locals = Nil::<Expr>.alloc(tc);
@@ -225,7 +219,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             App {..} => self.infer_app(flag, tc),
             Pi {..} => self.infer_pi(flag, tc),
             Lambda { .. } => self.infer_lambda(flag, tc), 
-            Let { b_name, b_type, b_style, val, body, .. } => self.infer_let(b_type, val, body, flag, tc),
+            Let { b_type, val, body, .. } => self.infer_let(b_type, val, body, flag, tc),
             Local { b_type, .. } => b_type,
             Var {..} => unimplemented!("Cannot infer the type of a bound variable!"),
         };

@@ -12,7 +12,7 @@ The switch produced a type checker that's significantly (~3x) faster and uses mu
 
 I'm busy with some related work at the moment, but I'd eventually like to write some kind
 of retrospective or paper on the implementation just to show that this as a viable 
-if not preferrable solutio for memory management in ITPs. If anyone would like to help 
+if not preferrable solution for memory management in ITPs. If anyone would like to help 
 or is working on something similar please contact me.
 
 The executable example shows the basics of how to actually use the type checker; you can pass \
