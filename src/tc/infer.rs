@@ -1,6 +1,6 @@
 use crate::name::NamePtr;
 use crate::level::{ LevelPtr, LevelsPtr, Level };
-use crate::expr::{ Expr, ExprPtr, Expr::*, BinderStyle };
+use crate::expr::{ Expr, ExprPtr, Expr::* };
 use crate::utils::{ List::*, Tc, IsCtx, HasNanodaDbg };
                     
                     
@@ -14,30 +14,6 @@ pub enum InferFlag {
 }                    
 
 impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
-    fn infer_const_only_aux(
-        self,
-        _c_name : NamePtr<'l>,
-        c_levels : LevelsPtr<'l>,
-        env_dec_ups : LevelsPtr<'l>,
-        env_dec_type : Self,
-        tc : &mut Tc<'t, 'l, 'e>
-    ) -> Self {
-        env_dec_type.subst(env_dec_ups, c_levels, tc)    
-    }
-    
-    fn infer_const_aux(
-        self,
-        _c_name : NamePtr<'l>,
-        c_levels : LevelsPtr<'l>,
-        env_dec_ups : LevelsPtr<'l>,
-        env_dec_type : ExprPtr<'l>,
-        root_declar_uparams : LevelsPtr<'l>,
-        tc : &mut Tc<'t, 'l, 'e>
-    ) -> Self {
-        assert!(c_levels.all_params_defined_many(root_declar_uparams, tc));
-        env_dec_type.subst(env_dec_ups, c_levels, tc)    
-    }
-    
     fn infer_const(
         self, 
         c_name : NamePtr<'l>, 
@@ -51,11 +27,11 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             None => unreachable!("infer_const nonexistant declar : \n{}\nquot status", c_name.nanoda_dbg(tc)),
         };
 
-        match (flag, tc.dec_uparams) {
-            (InferOnly, _) => self.infer_const_only_aux(c_name, c_levels, env_dec_ups, env_dec_type, tc),
-            (Check, None) => self.infer_const_only_aux(c_name, c_levels, env_dec_ups, env_dec_type, tc),
-            (Check, Some(root_uparams)) => self.infer_const_aux(c_name, c_levels, env_dec_ups, env_dec_type, root_uparams, tc)
+        if let (Check, Some(root_uparams)) = (flag, tc.dec_uparams) {
+            assert!(c_levels.all_params_defined_many(root_uparams, tc));
         }
+
+        env_dec_type.subst(env_dec_ups, c_levels, tc)    
     }
 
     pub fn infer_sort_of(self, flag : InferFlag, tc : &mut Tc<'t, 'l, 'e>) -> LevelPtr<'l> {
@@ -66,22 +42,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                   Sort { level } => level,
                   _owise => unreachable!("infer_sort failed to produce a sort!"),
               }
-
     }    
-
-    fn infer_sort_core_only_aux(self, l : LevelPtr<'l>, tc : &mut Tc<'t, 'l, 'e>) -> Self {
-        l.new_succ(tc).new_sort(tc)
-    }
-    
-    fn infer_sort_core_aux(
-        self, 
-        l : LevelPtr<'l>, 
-        uparams : LevelsPtr<'l>, 
-        tc : &mut Tc<'t, 'l, 'e>
-    ) -> Self {
-        assert!(l.all_params_defined(uparams, tc));
-        l.new_succ(tc).new_sort(tc)
-    }
 
     fn infer_sort_core(
         self, 
@@ -89,16 +50,12 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         flag : InferFlag, 
         tc : &mut Tc<'t, 'l, 'e>
     ) -> Self {
-        match (tc.dec_uparams, flag) {
-            (_, InferOnly) => self.infer_sort_core_only_aux(level, tc),
-            (None, Check) => self.infer_sort_core_only_aux(level, tc),
-            (Some(uparams), Check) => self.infer_sort_core_aux(level, uparams, tc),
+        if let (Some(uparams), Check) = (tc.dec_uparams, flag) {
+            assert!(level.all_params_defined(uparams, tc));
         }
+
+        level.new_succ(tc).new_sort(tc)
     }    
-
-
-
-
 
     // Only makes sure that the Expr tree has the shape "some number of pis
     // applied to an appropriate number of arguments". Since we know `flag` is
@@ -136,10 +93,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         fun.inst(context, tc)
     }    
 
-
-
-
-    // while-loop ver
     fn infer_pi(self, flag : InferFlag, tc : &mut Tc<'t, 'l, 'e>) -> Self {
         let mut locals = Nil::<Expr>.alloc(tc);
         let mut universes = Nil::<Level>.alloc(tc);
@@ -149,21 +102,27 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             let b_type = b_type.inst(locals, tc);
             let dom_univ = b_type.infer_sort_of(flag, tc);
             universes = Cons(dom_univ, universes).alloc(tc);
-            let local = <ExprPtr>::new_local(b_name, b_type, b_style, tc);
+            let local = tc.get_local(b_name, b_type, b_style);
             locals = Cons(local, locals).alloc(tc);
             cursor = body;
         }
 
         let instd = cursor.inst(locals, tc);
         let mut infd = instd.infer_sort_of(flag, tc);
-        while let Cons(hd, tl) = universes.read(tc) {
-            universes = tl;
-            infd = <LevelPtr>::new_imax(hd, infd, tc);
+        loop {
+            match (universes.read(tc), locals.read(tc)) {
+                (Cons(u, us), Cons(l, ls)) => {
+                    universes = us;
+                    locals = ls;
+                    infd = <LevelPtr>::new_imax(u, infd, tc);
+                    tc.replace_local(l);
+                },
+                (Nil, Nil) => return infd.new_sort(tc),
+                _ => unreachable!("Uneven list lens in infer_pis")
+            }
         }
-        infd.new_sort(tc)
     }        
 
-    
     fn infer_lambda(self, flag : InferFlag, tc : &mut Tc<'t, 'l, 'e>) -> Self {
         let mut b_types = Nil::<Expr>.alloc(tc);
         let mut locals = Nil::<Expr>.alloc(tc);
@@ -177,7 +136,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 b_type.infer_sort_of(flag, tc);
             }
 
-            let local = <ExprPtr>::new_local(b_name, b_type, b_style, tc);
+            let local = tc.get_local(b_name, b_type, b_style);
             locals = Cons(local, locals).alloc(tc);
             cursor = body;
         }
@@ -192,6 +151,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             match l.read(tc) {
                 Local { b_name, b_style, .. } => {
                     abstrd = <ExprPtr>::new_pi(b_name, t, b_style, abstrd, tc);
+                    tc.replace_local(l);
                 },
                 _ => unreachable!("unreachable pattern match in infer_lambda")
             }
@@ -200,55 +160,22 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         abstrd
     }
 
-
-    fn infer_let_aux_core(
-        self,
-        _b_name : NamePtr<'l>,
-        _b_type : ExprPtr<'l>,
-        _b_style : BinderStyle,
-        val : ExprPtr<'l>,
-        body : ExprPtr<'l>,
-        flag : InferFlag, 
-        tc : &mut Tc<'t, 'l, 'e>
-    ) -> Self {
-        body.inst1(val, tc).infer(flag, tc)
-    }
-
-    fn infer_let_aux(
-        self,
-        b_name : NamePtr<'l>,
-        b_type : ExprPtr<'l>,
-        b_style : BinderStyle,
-        val : ExprPtr<'l>,
-        body : ExprPtr<'l>,
-        flag : InferFlag, 
-        tc : &mut Tc<'t, 'l, 'e>
-    ) -> Self {
-        b_type.infer_sort_of(flag, tc);
-        val.infer(flag, tc).assert_def_eq(b_type, tc);
-
-        self.infer_let_aux_core(b_name, b_type, b_style, val, body, flag, tc)
-    }
-
     fn infer_let(
         self, 
-        b_name : NamePtr<'l>,
         b_type : ExprPtr<'l>,
-        b_style : BinderStyle,
         val : ExprPtr<'l>,
         body : ExprPtr<'l>,
         flag : InferFlag, 
         tc : &mut Tc<'t, 'l, 'e>
     ) -> Self {
-        match flag {
-            InferOnly => self.infer_let_aux_core(b_name, b_type, b_style, val, body, flag, tc),
-            Check => self.infer_let_aux(b_name, b_type, b_style, val, body, flag, tc),
+        if flag == Check {
+            b_type.infer_sort_of(flag, tc);
+            val.infer(flag, tc).assert_def_eq(b_type, tc);
         }
 
+        body.inst1(val, tc).infer(flag, tc)
     }
         
-
-    
     pub fn ensure_type(self, tc : &mut Tc<'t, 'l, 'e>) -> LevelPtr<'l> {
         self.infer(InferOnly, tc).ensure_sort(tc)
     }
@@ -292,7 +219,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             App {..} => self.infer_app(flag, tc),
             Pi {..} => self.infer_pi(flag, tc),
             Lambda { .. } => self.infer_lambda(flag, tc), 
-            Let { b_name, b_type, b_style, val, body, .. } => self.infer_let(b_name, b_type, b_style, val, body, flag, tc),
+            Let { b_type, val, body, .. } => self.infer_let(b_type, val, body, flag, tc),
             Local { b_type, .. } => b_type,
             Var {..} => unimplemented!("Cannot infer the type of a bound variable!"),
         };

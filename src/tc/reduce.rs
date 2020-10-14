@@ -1,6 +1,7 @@
 use crate::ret_none_if;
 use crate::name::NamePtr;
 use crate::expr::{ Expr, ExprsPtr, ExprPtr, Expr::* };
+use crate::level::LevelsPtr;
 use crate::env::{ Declar, Declar::* };
 use crate::utils::{ List::*, Tc, IsCtx };
 
@@ -21,15 +22,14 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
                 .foldl_apps(args, tc)
                 .whnf_core(tc)
             },
-            _ => {
-                self.reduce_quot_lift(tc)
-                .or_else(|| self.reduce_quot_ind(tc))
-                .or_else(|| self.reduce_ind_rec(tc)) 
+            (Const { name, levels }, _)=> {
+                reduce_quot(name, args, tc)
+                .or_else(|| reduce_ind_rec(name, levels, args, tc)) 
                 .unwrap_or(self)
-            }
+            },
+            _ => self
         }
     }
-
 
     pub fn whnf_lambda(mut self, mut args : ExprsPtr<'l>, tc : &mut Tc<'t, 'l, 'e>) -> Self {
         let mut acc = Nil::<Expr>.alloc(tc);
@@ -41,7 +41,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
 
         self.inst(acc, tc).foldl_apps(args, tc).whnf_core(tc)
     }    
-
 
     pub fn whnf(self, tc : &mut Tc<'t, 'l, 'e>) -> Self {
         if let Some(cached) = tc.cache.whnf_cache.get(&self).copied() {
@@ -69,7 +68,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         }
     }
 
-
     pub fn unfold_def(self, tc : &mut Tc<'t, 'l, 'e>) -> Option<Self> {
         let (fun, args) = self.unfold_apps(tc);
         let (c_name, c_levels) = fun.try_const_info(tc)?;
@@ -83,51 +81,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         }
     }
 
-
-    fn reduce_quot_lift(self, tc : &mut Tc<'t, 'l, 'e>) -> Option<Self> {
-        let (fun, args) = self.unfold_apps(tc);
-        let (c_name, _) = fun.try_const_info(tc)?;
-        let (qmk_n, qlift_n, _) = tc.quot_names()?;
-        let (qmk_pos, arg_pos) = if c_name == qlift_n { (5, 3) } else { return None };
-        let qmk_e = args.get(qmk_pos, tc)?.whnf(tc);
-        ret_none_if! { qmk_n != qmk_e.unfold_apps_fun(tc).try_const_info(tc)?.0 };
-
-
-        let app_lhs = args.get(arg_pos, tc)?;
-        let appd = match qmk_e.read(tc) {
-            App { arg : f_arg, .. } => app_lhs.new_app(f_arg, tc),
-            _ => unreachable!("bad quot_rec (lift) app")
-        };
-
-        let skipped = args.skip(qmk_pos + 1, tc);
-        let r = appd.foldl_apps(skipped, tc);
-
-        Some(r.whnf_core(tc))
-    }    
-
-    
-
-
-    fn reduce_quot_ind(self, tc : &mut Tc<'t, 'l, 'e>) -> Option<Self> {
-        let (fun, args) = self.unfold_apps(tc);
-        let (c_name, _) = fun.try_const_info(tc)?;
-        let (qmk_n, _, qind_n) = tc.quot_names()?;
-        let (qmk_pos, arg_pos) = if c_name == qind_n { (4, 3) } else { return None };
-
-        let qmk_e = args.get(qmk_pos, tc)?.whnf(tc);
-        ret_none_if! { qmk_n != qmk_e.unfold_apps_fun(tc).try_const_info(tc)?.0 };
-
-        let f_appd = match qmk_e.read(tc) {
-            App { arg : f_arg, .. } => args.get(arg_pos, tc)?.new_app(f_arg, tc),
-            _ => unreachable!("bad quot_rec (ind) app")
-        };
-
-        let r = f_appd.foldl_apps(args.skip(qmk_pos + 1, tc), tc);
-        Some(r.whnf_core(tc))
-    }    
-    
-
-    
     fn mk_nullary_cnstr(self, num_params : u16, tc : &mut Tc<'t, 'l, 'e>) -> Option<Self> {
         let (fun, args) = self.unfold_apps(tc);
         let (c_name, c_levels) = fun.try_const_info(tc)?;
@@ -138,8 +91,6 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
         let new_const = <ExprPtr>::new_const(cnstr_name, c_levels, tc);
         Some(new_const.foldl_apps(args.take(num_params as usize, tc), tc))
     }
-    
-
     
     fn to_cnstr_when_k(
         self,
@@ -160,49 +111,72 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             None
         }
     }
-    
-
-
-    fn reduce_ind_rec(self, tc : &mut Tc<'t, 'l, 'e>) -> Option<Self> {
-        let (fun, args) = self.unfold_apps(tc);
-        let (c_name, c_levels) = fun.try_const_info(tc)?;
-
-        
-        let recursor = match tc.get_declar(&c_name)? {
-            r @ Recursor {..} => r,
-            _ => return None
-        };
-
-        let take_size = recursor.rec_num_params()?
-                      + recursor.rec_num_motives()?
-                      + recursor.rec_num_minors()?;
-
-        ret_none_if! { recursor.rec_major_idx()? as usize >= args.len(tc) };
-        ret_none_if! { c_levels.len(tc) != recursor.uparams().len(tc) };
-
-        let major = args.get(recursor.rec_major_idx()? as usize, tc)?;
-        let major = major.to_cnstr_when_k(
-            recursor.name(), 
-            recursor.rec_is_k()?, 
-            recursor.rec_num_params()?, 
-            tc
-        ).unwrap_or(major);
-
-        let major = major.whnf(tc);
-        
-        let (_, major_args) = major.unfold_apps(tc);
-
-        let rule = recursor.get_rec_rule(major, tc)?.read(tc);
-
-        let num_params = major_args.len(tc).checked_sub(rule.num_fields as usize)?;
-        let end_apps = major_args.skip(num_params, tc).take(rule.num_fields as usize, tc);
-
-        let r = rule.val
-            .subst(recursor.uparams(), c_levels, tc)
-            .foldl_apps(args.take(take_size as usize, tc), tc)
-            .foldl_apps(end_apps, tc)
-            .foldl_apps(args.skip((recursor.rec_major_idx()? + 1) as usize, tc), tc);
-        Some(r.whnf_core(tc))
-    }    
-
 }
+
+fn reduce_quot<'t, 'l : 't, 'e : 'l>(
+    c_name : NamePtr<'l>, 
+    args : ExprsPtr<'l>, 
+    tc : &mut Tc<'t, 'l, 'e>
+) -> Option<ExprPtr<'l>> {
+    let (qmk_n, qlift_n, qind_n) = tc.quot_names()?;
+    let (qmk, f, rest) = if c_name == qlift_n { 
+        (args.get(5, tc)?.whnf(tc), args.get(3, tc)?, args.skip(6, tc))
+    } else if c_name == qind_n {
+        (args.get(4, tc)?.whnf(tc), args.get(3, tc)?, args.skip(5, tc))
+    } else { 
+        return None 
+    };
+
+    ret_none_if! { qmk_n != qmk.unfold_apps_fun(tc).try_const_info(tc)?.0 };
+
+    let appd = match qmk.read(tc) {
+        App { arg, .. } => f.new_app(arg, tc),
+        _ => unreachable!("bad quot_rec app")
+    };
+
+    Some(appd.foldl_apps(rest, tc).whnf_core(tc))
+}    
+
+fn reduce_ind_rec<'t, 'l : 't, 'e : 'l>(
+    c_name : NamePtr<'l>, 
+    c_levels : LevelsPtr<'l>, 
+    args : ExprsPtr<'l>,
+    tc : &mut Tc<'t, 'l, 'e>
+) -> Option<ExprPtr<'l>> {
+    
+    let recursor = match tc.get_declar(&c_name)? {
+        r @ Recursor {..} => r,
+        _ => return None
+    };
+
+    let take_size = recursor.rec_num_params()?
+                  + recursor.rec_num_motives()?
+                  + recursor.rec_num_minors()?;
+
+    ret_none_if! { recursor.rec_major_idx()? as usize >= args.len(tc) };
+    ret_none_if! { c_levels.len(tc) != recursor.uparams().len(tc) };
+
+    let major = args.get(recursor.rec_major_idx()? as usize, tc)?;
+    let major = major.to_cnstr_when_k(
+        recursor.name(), 
+        recursor.rec_is_k()?, 
+        recursor.rec_num_params()?, 
+        tc
+    ).unwrap_or(major);
+
+    let major = major.whnf(tc);
+    
+    let (_, major_args) = major.unfold_apps(tc);
+
+    let rule = recursor.get_rec_rule(major, tc)?.read(tc);
+
+    let num_params = major_args.len(tc).checked_sub(rule.num_fields as usize)?;
+    let end_apps = major_args.skip(num_params, tc).take(rule.num_fields as usize, tc);
+
+    let r = rule.val
+        .subst(recursor.uparams(), c_levels, tc)
+        .foldl_apps(args.take(take_size as usize, tc), tc)
+        .foldl_apps(end_apps, tc)
+        .foldl_apps(args.skip((recursor.rec_major_idx()? + 1) as usize, tc), tc);
+    Some(r.whnf_core(tc))
+}    

@@ -1,24 +1,20 @@
+Basically what we're doing is putting all of the type checker's terms into arenas, and manipulating those terms as pointers into said arenas. The Rust part is that we use phantom data and phantom lifetimes to (for zero runtime cost) make sure that pointers into the backing arenas are type and memory safe. At compile time we know, modulo the correctness of Rust's type system, that an arena pointer always points to the right data, and that the backing storage cannot be dropped while there are still pointers into it, meaning we can never be stuck holding an invalid arena pointer. The insight is that we really only have two sets of Lean items with two unique lifetimes, one that holds the items needed to make the basic statements of 'theorem A : B := X' or 'inductive Q : R with constructors C1 .. Cn', and another set which holds the terms created in the process of checking that those terms are well-typed. This set of items is created and dropped with every new item checked/introduced, and is strictly less than the environment lifetime, since it's created after the environment is, and dropped before as well.
 
-As of 2/7/20 the master branch has been converted to (among other things)
-use arenas as the primary means of storage in addition to having a generally
-nicer implementation. In particular the inductive module is now simple recursive
-functions over immutable lists, whereas before there were some pretty sketchy spots
-involving a lot of mutable state.
+The benefits of using such a 'dumb'* collection are that even though we're using arenas (which don't actively try to drop items that are no longer reachable) we have a smaller memory footprint than the other type checkers since our types are very small and our collections are defacto free of duplicates, and we get a pretty significant increase in speed (about 3-4x faster than the other reference checkers) for a variety of reasons. This arena based strategy also allows for working with expression graphs that contain cycles, though Lean doesn't need this. It also works very well in a parallel context, requiring no locks or atomics since the persistent environment is read-only by the time you start spawning threads, and the temporary storage for each new declaration is local.
+The only real drawback is that pretty much every function needs to explicitly take a context as an argument, since you need the carry the arenas around, though this was already the case for all of the functions in the actual type checker module. Making the backing stores global to remove this requirement would start introducing locks and goofy wrappers and all that.
+* The authors of indexmap did a really amazing job writing that library; it's only like 10% slower than Hashbrown.
 
-The arena setup is fairly small and uses a combination
-of phantom data and zero-sized types to ensure that all arena operations are memory and type safe.
+The underlying pointer type (utils::Ptr) consists of an enum discriminant (4 bytes) and a u32 showing its position in the arena (4 bytes), with two zero sized types which are essentially just for interfacing with the compiler's static analysis systems. Pretty much everything else is some combination of one or more of these pointers and an enum discriminant, so they range from 8 to 31 bytes. By far the most common item is an expression application node, which is 19 bytes.
 
-The switch produced a type checker that's significantly (~3x) faster and uses much less memory compared to both its predecessor and the other reference typecheckers. I think arena based memory management is actually really strong for this kind of application.
+In the course of checking a version of mathlib from August 2020 (06e1405), the export file produces a list of just over 12.5 million persistent items which need to be kept alive for the duration of the program. The largest temporary stores (the storage that's created, then dropped in the course of checking one declaration) are 10 million (polynomial.monic.next_coeff_mul) and ~1.6 million items (finset.sum_range_sub_of_monotone), but the average declaration produces under 100k temporary items (~3mb). 
+The total number of attempted item allocations in mathlib is 1.2 billion, with duplicates outnumbering unique items 4:1 (~922 million rejections with duplicates, ~269 million unique items). 
 
-I'm busy with some related work at the moment, but I'd eventually like to write some kind
-of retrospective or paper on the implementation just to show that this as a viable 
-if not preferrable solutio for memory management in ITPs. If anyone would like to help 
-or is working on something similar please contact me.
+I'm busy with some related work at the moment, but I'd eventually like to write some kind of retrospective or paper on the implementation just to show that this as a viable if not preferrable solution for memory management in ITPs. If anyone is working on something similar please contact me if I can be of any help.
 
 The executable example shows the basics of how to actually use the type checker; you can pass \
 a number of threads, and an absolute path to an export file.\
 An argument of zero threads will default to one thread.\
 Example : 
 ```
-cargo run --release --example basic 4 /home/computer/lean/core.out
+cargo run --release --example basic 4 <path to your export file>
 ```

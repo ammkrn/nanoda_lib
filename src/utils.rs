@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::collections::HashMap;
 use std::hash::{ Hash, BuildHasherDefault };
@@ -9,7 +10,7 @@ use rustc_hash::FxHasher;
 
 use crate::name::{ NamePtr, Name, Name::* };
 use crate::level::{ LevelsPtr, Level, Level::* };
-use crate::expr::{ ExprPtr, Expr, LocalSerial };
+use crate::expr::{ ExprPtr, Expr, LocalSerial, BinderStyle };
 use crate::env::{ Declar, RecRule, Notation };
 use crate::tc::eq::ShortCircuit;
 use crate::tc::infer::InferFlag;
@@ -41,8 +42,8 @@ pub struct TcZst;
 // end up causing any headaches elsewhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Ptr2<PH> {
-    E(usize, PH, EnvZst),
-    L(usize, PH, LiveZst),
+    E(u32, PH, EnvZst),
+    L(u32, PH, LiveZst),
 }
 
 pub type Ptr<'a, A> = Ptr2<PhantomData<&'a A>>;
@@ -62,13 +63,19 @@ pub trait HasMkPtr : Copy + Default + Debug {
 
 impl HasMkPtr for EnvZst {
     fn mk_ptr<'a, A>(self, index : usize) -> Ptr<'a, A> {
-        Ptr::E(index, PhantomData, self)
+        match u32::try_from(index) {
+            Ok(n) => Ptr::E(n, PhantomData, self),
+            Err(..) => unreachable!("usize to u32 conv overflow in EnvZst::mk_ptr")
+        }
     }
 }
 
 impl HasMkPtr for LiveZst {
     fn mk_ptr<'a, A>(self, index : usize) -> Ptr<'a, A> {
-        Ptr::L(index, PhantomData, self)
+        match u32::try_from(index) {
+            Ok(n) => Ptr::L(n, PhantomData, self),
+            Err(..) => unreachable!("usize to u32 conv overflow in LiveZst::mk_ptr")
+        }
     }
 }
 
@@ -96,12 +103,12 @@ where A : Eq + Hash,
         }
     }
 
-    pub fn get_elem(&self, index : usize, _ : PhantomData<&'_ A>, _ : Z) -> &A {
-        self.elems.get_index(index).expect("Checked `None`")
+    pub fn get_elem(&self, index : u32, _ : PhantomData<&'_ A>, _ : Z) -> &A {
+        self.elems.get_index(index as usize).expect("Checked `None`")
     }
 
-    pub fn extend_safe(&self, index : usize, _z : Z) -> Ptr<'a, A> {
-        self.marker.mk_ptr(index)
+    pub fn extend_safe(&self, index : u32, _z : Z) -> Ptr<'a, A> {
+        self.marker.mk_ptr(index as usize)
     }
 
     fn insert_elem(&mut self, elem : A) -> Ptr<'a, A> {
@@ -271,6 +278,7 @@ impl<'t, 'l : 't, 'e : 'l> Live<'l, 'e> {
             dec_uparams,
             safe_only : safe_only.unwrap_or(false),
             cache : TcCache::new(),
+            local_cache : FxHashMap::with_hasher(Default::default())
         }
     }
 
@@ -300,6 +308,8 @@ impl<'t, 'l : 't, 'e : 'l> Live<'l, 'e> {
             _ => unreachable!("Cannot use a Live::Checker to admit a declaration!")
         }
     }    
+
+
 }
 
 pub struct Tc<'t, 'l : 't, 'e : 'l> {
@@ -307,6 +317,7 @@ pub struct Tc<'t, 'l : 't, 'e : 'l> {
     pub dec_uparams : Option<LevelsPtr<'l>>,
     pub safe_only : bool,
     pub cache : TcCache<'l>,
+    local_cache : FxHashMap<ExprPtr<'l>, Vec<ExprPtr<'l>>>,
 }
 
 impl<'t, 'l : 't, 'e : 'l> Tc<'t, 'l, 'e> {
@@ -317,6 +328,23 @@ impl<'t, 'l : 't, 'e : 'l> Tc<'t, 'l, 'e> {
             self.live.get_env().quot_ind?
         ))
     }    
+
+    pub fn get_local(&mut self, n : NamePtr<'l>, t : ExprPtr<'l>, s : BinderStyle) -> ExprPtr<'l> {
+        let out = self.local_cache.get_mut(&t).and_then(|v| v.pop());
+        out.unwrap_or_else(|| <ExprPtr>::new_local(n, t, s, self))
+    }
+
+    pub fn replace_local(&mut self, l : ExprPtr<'l>) {
+        match l.read(self) {
+            Expr::Local { b_type, .. } =>  {
+                match self.local_cache.get_mut(&b_type) {
+                    Some(v) => { v.push(l); },
+                    None => { self.local_cache.insert(b_type, vec![l]); }
+                }
+            },
+            _ => unreachable!("Can't replace a non-local")
+        }
+    }      
 }
 
 pub trait IsCtx<'a> {
@@ -411,7 +439,7 @@ impl<'l, 'e : 'l> IsLiveCtx<'l> for Live<'l, 'e> {
         }
     }
     
-    
+    #[allow(unused_must_use)]
     fn next_local(&mut self) -> LocalSerial {
         match self {
             | Compiler { next_local, .. }

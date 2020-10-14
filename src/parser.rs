@@ -158,7 +158,7 @@ impl<'e> Env<'e> {
         };
 
         match new_name {
-            Ptr::E(index, ..) => assert_eq!(index, lean_pos),
+            Ptr::E(index, ..) => assert_eq!(index as usize, lean_pos),
             _ => unreachable!()
         }
 
@@ -176,7 +176,7 @@ impl<'e> Env<'e> {
          };
 
         match new_level {
-            Ptr::E(index, ..) => assert_eq!(index, lean_pos),
+            Ptr::E(index, ..) => assert_eq!(index as usize, lean_pos),
             _ => unreachable!()
         }
 
@@ -216,7 +216,7 @@ impl<'e> Env<'e> {
         };
 
         match new_expr {
-            Ptr::E(index, ..) => assert_eq!(index, lean_pos),
+            Ptr::E(index, ..) => assert_eq!(index as usize, lean_pos),
             _ => unreachable!()
         }
 
@@ -323,25 +323,38 @@ impl<'e> Env<'e> {
     }
 
     pub fn check_loop(&self, num_threads : usize) {
-        let next = AtomicUsize::new(0);
-
-        thread::scope(|s| {
-            for _ in 0..num_threads {
-                s.spawn(|_| {
-                    loop {
-                        let task_idx = next.fetch_add(1, Relaxed);
-                        match self.declars.get_index(task_idx) {
-                            None => break,
-                            Some((_, d)) => {
-                                let mut checker = self.as_checker();
-                                d.check(true, &mut checker);
-                            }
-                        }
-
+        if num_threads == 0 || num_threads == 1 {
+            let mut task_idx = 0usize;
+            loop {
+                match self.declars.get_index(task_idx) {
+                    None => break,
+                    Some((_, d)) => {
+                        task_idx += 1;
+                        let mut checker = self.as_checker();
+                        d.check(true, &mut checker);
                     }
-                });
+                }
             }
-        }).unwrap();
+        } else {
+            let next = AtomicUsize::new(0);
+            thread::scope(|s| {
+                for _ in 0..num_threads {
+                    s.spawn(|_| {
+                        loop {
+                            let task_idx = next.fetch_add(1, Relaxed);
+                            match self.declars.get_index(task_idx) {
+                                None => break,
+                                Some((_, d)) => {
+                                    let mut checker = self.as_checker();
+                                    d.check(true, &mut checker);
+                                }
+                            }
+
+                        }
+                    });
+                }
+            }).unwrap();
+        }
 
         println!("Successfully checked {} declarations!", self.declars.len());
     }
