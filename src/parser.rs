@@ -296,13 +296,8 @@ impl<'e> Env<'e> {
             cnstr_types = Cons(cnstr_type, cnstr_types).alloc(self);
         }
 
-        let num_indices = type_.telescope_size(self) - num_params;
-
-
-
         let indblock = IndBlock::new(
             num_params, 
-            vec![num_indices],
             uparams,
             ind_names, 
             ind_types, 
@@ -338,8 +333,12 @@ impl<'e> Env<'e> {
         } else {
             let next = AtomicUsize::new(0);
             thread::scope(|s| {
+                let mut threads = Vec::new();
                 for _ in 0..num_threads {
-                    s.spawn(|_| {
+                    let t = s
+                    .builder()
+                    .stack_size(8388608)
+                    .spawn(|_| {
                         loop {
                             let task_idx = next.fetch_add(1, Relaxed);
                             match self.declars.get_index(task_idx) {
@@ -351,9 +350,13 @@ impl<'e> Env<'e> {
                             }
 
                         }
-                    });
+                    }).expect("failed to successfully spawn a scoped thread in `check_loop`");
+                    threads.push(t);
                 }
-            }).unwrap();
+                for t in threads {
+                    t.join().expect("A thread in `check_loop` panicked while being joined");
+                }
+            }).expect("failed to unwrap thread scope successfully");
         }
 
         println!("Successfully checked {} declarations!", self.declars.len());

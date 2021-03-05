@@ -152,10 +152,10 @@ impl<'l, 'e : 'l> DeclarSpec<'e> {
             // compared to definitions, so I'm just going to let it rock.
             InductiveSpec(mut indblock) => {
                 indblock.declare_ind_types(compiler);
+                indblock.mk_local_indices(compiler);
                 indblock.declare_cnstrs(compiler);
                 indblock.mk_elim_level(compiler);
                 indblock.init_k_target(compiler);
-                indblock.mk_local_indices(compiler);
                 indblock.mk_majors_wrapper(compiler);
                 indblock.mk_motives_wrapper(compiler);
                 indblock.mk_minors_wrapper(compiler);

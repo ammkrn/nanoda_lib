@@ -42,6 +42,10 @@ impl<'a> IndBlock<'a> {
         self.local_params.expect("Block local params have not been set yet!")
     }
 
+    fn num_indices<'l, 'e>(&self, name: NamePtr<'a>, ctx: &Live<'l, 'e>) -> u16 {
+        let pos = self.ind_names.pos(name, ctx).expect("unable to get num_indices");
+        *&self.nums_indices[pos]
+    }
 
     fn local_indices(&self) -> ExprsPtr<'a> {
         self.local_indices.expect("Local rec indices have not been set yet!")
@@ -85,7 +89,6 @@ impl<'a> IndBlock<'a> {
     
 
     pub fn new(num_params : u16,
-               nums_indices : Vec<u16>,
                uparams : LevelsPtr<'a>,
                ind_names : NamesPtr<'a>,
                ind_types : ExprsPtr<'a>,
@@ -97,7 +100,7 @@ impl<'a> IndBlock<'a> {
         assert_eq!(*&nums_cnstrs[0] as usize, cnstr_names.len(ctx));
         IndBlock {
             num_params,
-            nums_indices,
+            nums_indices: Vec::new(),
             uparams,
             ind_names,
             ind_types,
@@ -146,19 +149,19 @@ pub fn mk_local_indices1<'l, 'e : 'l>(
     ind_type_cursor : ExprPtr<'l>,
     rem_params : ExprsPtr<'l>,
     live : &mut Live<'l, 'e>
-) -> ExprsPtr<'l> {
+) -> (ExprsPtr<'l>, u16) {
     match (ind_type_cursor.read(live), rem_params.read(live)) {
         (Pi { body, .. }, Cons(hd, tl)) => {
-            let body = body.inst1(hd, live);
+            let body = body.inst1(hd, live).whnf(&mut live.as_tc(None, None));
             mk_local_indices1(body, tl, live)
         },
         (Pi { b_name, b_type, b_style, body, .. }, Nil) => {
             let local = <ExprPtr>::new_local(b_name, b_type, b_style, live); 
-            let body = body.inst1(local, live);
-            let sink = mk_local_indices1(body, rem_params, live);
-            Cons(local, sink).alloc(live)
+            let body = body.inst1(local, live).whnf(&mut live.as_tc(None, None));
+            let (sink, num) = mk_local_indices1(body, rem_params, live);
+            (Cons(local, sink).alloc(live), num + 1)
         },
-        _ => Nil::<Expr>.alloc(live)
+        _ => (Nil::<Expr>.alloc(live), 0)
     }
 }
 
@@ -166,14 +169,16 @@ fn mk_local_indices_aux<'l, 'e : 'l>(
     rem_ind_types : ExprsPtr<'l>,
     local_params : ExprsPtr<'l>,
     live : &mut Live<'l, 'e>
-) -> ExprsPtr<'l> {
+) -> (ExprsPtr<'l>, Vec<u16>) {
     match rem_ind_types.read(live) {
         Cons(hd, tl) => {
-            let sink = mk_local_indices_aux(tl, local_params, live);
-            let hd = mk_local_indices1(hd, local_params, live); 
-            hd.concat(sink, live)
+            let (sink, nums_rhs) = mk_local_indices_aux(tl, local_params, live);
+            let (hd, num) = mk_local_indices1(hd, local_params, live); 
+            let mut nums = vec![num];
+            nums.extend(nums_rhs);
+            (hd.concat(sink, live), nums)
         },
-        _ => Nil::<Expr>.alloc(live)
+        _ => (Nil::<Expr>.alloc(live), Vec::new())
     }
 }
 
@@ -197,8 +202,14 @@ impl<'l, 'e : 'l> IndBlock<'l> {
         ctx : &mut Live<'l, 'e>
     ) -> LevelPtr<'l> {
         match (ind_type_cursor.read(ctx), rem_params.read(ctx)) {
-            (Pi { body, .. }, Cons(_, tl)) => self.get_codom_univ(body, tl, ctx),
-            (Pi { body, .. }, Nil) => self.get_codom_univ(body, rem_params, ctx),
+            (Pi { body, .. }, Cons(_, tl)) => {
+                let body = body.whnf(&mut ctx.as_tc(None, None));
+                self.get_codom_univ(body, tl, ctx)
+            }
+            (Pi { body, .. }, Nil) => {
+                let body = body.whnf(&mut ctx.as_tc(None, None));
+                self.get_codom_univ(body, rem_params, ctx)
+            }
             (_, Nil) => ind_type_cursor.ensure_sort(&mut ctx.as_tc(Some(self.uparams), None)),
             _ => unreachable!("Cannot run out of telescope space with params left to go!")
         }
@@ -212,7 +223,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
     // 3. ensuring that the result level of all inductives being declared in a block are equal.
     #[allow(unconditional_recursion)]
     fn check_ind_type(
-        &self, 
+        &mut self, 
         ind_name : NamePtr<'l>,
         ind_type_cursor : ExprPtr<'l>,
         rem_params : ExprsPtr<'l>,
@@ -222,10 +233,13 @@ impl<'l, 'e : 'l> IndBlock<'l> {
             (Pi { b_type, body, .. }, Cons(hd, tl)) => {
                 let local_type = hd.local_type_infal(ctx);
                 b_type.assert_def_eq(local_type, &mut ctx.as_tc(Some(self.uparams), None));
-                let body = body.inst1(hd, ctx);
+                let body = body.inst1(hd, ctx).whnf(&mut ctx.as_tc(None, None));
                 self.check_ind_type(ind_name, body, tl, ctx)
             },
-            (Pi { body, .. }, Nil) => self.check_ind_type(ind_name, body, rem_params, ctx),
+            (Pi { body, .. }, Nil) => {
+                let body = body.whnf(&mut ctx.as_tc(None, None));
+                self.check_ind_type(ind_name, body, rem_params, ctx)
+            }
             (_, Nil) => {
                 // This is done "again" because we need to ensure that all items in the block
                 // have the same codomain universe.
@@ -238,7 +252,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
     }            
 
     pub fn declare_ind_type1(
-        &self,
+        &mut self,
         ind_name : NamePtr<'l>,
         ind_type : ExprPtr<'l>,
         ctx : &mut Live<'l, 'e>
@@ -332,14 +346,21 @@ impl<'l, 'e : 'l> IndBlock<'l> {
         ctx : &mut Live<'l, 'e>
     ) -> bool {
         let (base_const, base_apps) = stripped_cnstr_type.unfold_apps(ctx);
+        let ind_name = if let Some((name, _)) = base_const.try_const_info(ctx) {
+            name
+        } else {
+            return false
+        };
+        
         let cond1 = base_const == parent_ind_const;
-        let cond2 = base_apps.len(ctx) == parent_ind_type.telescope_size(ctx) as usize;
-
-        if ((!cond1) || (!cond2)) {
+        if !cond1 {
+            return false
+        }
+        let cond2 = base_apps.len(ctx) == (self.num_params as usize + self.num_indices(ind_name, ctx) as usize);
+        if !cond2 {
             false
         } else {
-            let cond3 = is_valid_ind_app_cond3(base_apps, self.local_params(), ctx);
-            cond1 && cond2 && cond3
+            is_valid_ind_app_cond3(base_apps, self.local_params(), ctx)
         }
     }    
 
@@ -699,8 +720,9 @@ impl<'l, 'e : 'l> IndBlock<'l> {
 
 
     pub fn mk_local_indices(&mut self, live : &mut Live<'l, 'e>) {
-        let local_indices = mk_local_indices_aux(self.ind_types, self.local_params(), live);
+        let (local_indices, nums) = mk_local_indices_aux(self.ind_types, self.local_params(), live);
         self.local_indices = Some(local_indices);
+        self.nums_indices = nums;
     }
 
     pub fn mk_major1(
