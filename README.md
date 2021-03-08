@@ -11,10 +11,17 @@ The total number of attempted item allocations in mathlib is 1.2 billion, with d
 
 I'm busy with some related work at the moment, but I'd eventually like to write some kind of retrospective or paper on the implementation just to show that this as a viable if not preferrable solution for memory management in ITPs. If anyone is working on something similar please contact me if I can be of any help.
 
-The executable example shows the basics of how to actually use the type checker; you can pass \
+The `basic.rs` example shows the basics of how to actually use the type checker; you can pass \
 a number of threads, and an absolute path to an export file.\
 An argument of zero threads will default to one thread.\
 Example : 
 ```
 cargo run --release --example basic 4 <path to your export file>
 ```
+
+The `debug.rs` example only takes a file path argument; the checker will be run on 1 thread only, and the declaration names will be displayed as they're compiled and checked. It can be invoked as follows:
+```
+cargo run --release --example debug <path to export file>
+```
+
+

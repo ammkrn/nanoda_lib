@@ -340,7 +340,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
     */
     pub fn is_valid_ind_app(
         &self,
-        parent_ind_type : ExprPtr<'l>,
+        _parent_ind_type : ExprPtr<'l>,
         parent_ind_const : ExprPtr<'l>,
         stripped_cnstr_type : ExprPtr<'l>,
         ctx : &mut Live<'l, 'e>

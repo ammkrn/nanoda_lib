@@ -119,6 +119,9 @@ impl<'l, 'e : 'l> DeclarSpec<'e> {
     pub fn compile(self, compiler : &mut Live<'l, 'e>) {
         match self {
             AxiomSpec { name, uparams, type_, is_unsafe } => {
+                if compiler.debug_mode() {
+                    println!("compiling axiom: {}", name.nanoda_dbg(compiler));
+                }
                 let d = Axiom {
                     name,
                     uparams,
@@ -128,6 +131,9 @@ impl<'l, 'e : 'l> DeclarSpec<'e> {
                 compiler.admit_declar(d);
             },
             DefinitionSpec { name, uparams, type_, val, is_unsafe } => {
+                if compiler.debug_mode() {
+                    println!("compiling def : {}", name.nanoda_dbg(compiler));
+                }
                 let d = Definition {
                     name,
                     uparams,
@@ -144,13 +150,21 @@ impl<'l, 'e : 'l> DeclarSpec<'e> {
             OpaqueSpec {..} => {
                 unimplemented!("Opaque not yet implemented")
             },
-            QuotSpec => add_quot(compiler),
+            QuotSpec => {
+                if compiler.debug_mode() {
+                    println!("compiling quot")
+                }
+                add_quot(compiler)
+            }
             // Right now, the compilation step for inductive also includes
             // all of their checks. Breaking them out would require making 
             // annoying changes to the inductive module, and as things are now
             // (it might change with mutuals) they're extremely cheap to check
             // compared to definitions, so I'm just going to let it rock.
             InductiveSpec(mut indblock) => {
+                if compiler.debug_mode() {
+                    println!("compiling inductive: {}", indblock.ind_names.nanoda_dbg(compiler));
+                }
                 indblock.declare_ind_types(compiler);
                 indblock.mk_local_indices(compiler);
                 indblock.declare_cnstrs(compiler);
@@ -599,9 +613,15 @@ impl<'a> Declar<'a> {
     pub fn check<'l>(self, _should_check : bool, live : &mut Live<'l, 'a>) {
         match self {
             Axiom { name, uparams, type_, .. } => {
+                if live.debug_mode() {
+                    println!("checking axiom: {}", name.nanoda_dbg(live));
+                }
                 check_vitals(name, uparams, type_, live);
             },            
             Definition { name, uparams, type_, val, is_unsafe, .. } if !is_unsafe => {
+                if live.debug_mode() {
+                    println!("checking def: {}", name.nanoda_dbg(live));
+                }
                 {
                     let mut tc = live.as_tc(Some(uparams), None);
                     check_vitals_w_tc(name, uparams, type_, &mut tc);

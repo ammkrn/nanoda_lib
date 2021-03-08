@@ -9,15 +9,7 @@ fn main() {
 
     let mut args = std::env::args();
     let _ = args.next();
-    let num_threads = match args.next() {
-        None => panic!("The first argument to the example must be \
-        the number of threads. Please see the readme for an example"),
-        Some(n) => match n.parse::<usize>() {
-            Err(e) => panic!("Error parsing number of threads : {}", e),
-            Ok(n) => n
-        }
-    };
-
+    
     let export_path = match args.next() {
         None => panic!("The second argument to the example must be \
         an absolute path to the export file. Please see the readme for \
@@ -38,7 +30,7 @@ fn main() {
     };
 
     let start = Instant::now();
-    let mut parser = Parser::new(num_threads, buf_reader, false);
+    let mut parser = Parser::new(1, buf_reader, true);
     let num_declars = parser.parser_loop();
     let time = start.elapsed();
     println!("Checked {} declarations in {:#?}\n", num_declars, time)

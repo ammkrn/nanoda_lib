@@ -26,21 +26,23 @@ pub struct Parser  {
     string_buffer : String,
     line_num : usize,
     finished : bool,
+    debug_mode: bool,
 }
 
 impl Parser {
-    pub fn new(num_threads : usize, buf_reader : BufReader<File>) -> Self {
+    pub fn new(num_threads : usize, buf_reader : BufReader<File>, debug_mode: bool) -> Self {
         Parser {
             num_threads,
             buf_reader,
             string_buffer : String::new(),
             line_num : 0usize,
             finished : false,
+            debug_mode
         }
     }
 
     pub fn parser_loop(&mut self) -> usize {
-        let mut env = Env::new();
+        let mut env = Env::new(self.debug_mode);
         let mut specs = Vec::<DeclarSpec>::new();
 
         loop {
