@@ -11,23 +11,22 @@ use crate::tc::infer::InferFlag::*;
 
 impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
 
-    // This will always return an Expr<Ptr>
-    pub fn whnf_core(self, tc : &mut Tc<'t, 'l, 'e>) -> Self {
-        let (fun, args) = self.unfold_apps(tc);
-        match (fun.read(tc), args.read(tc)) {
-            (Sort { level }, _) => level.simplify(tc).new_sort(tc),
-            (Lambda {..}, Cons(..)) => fun.whnf_lambda(args, tc),
-            (Let { val, body, .. }, _) => {
-                body.inst1(val, tc)
-                .foldl_apps(args, tc)
-                .whnf_core(tc)
-            },
-            (Const { name, levels }, _)=> {
-                reduce_quot(name, args, tc)
-                .or_else(|| reduce_ind_rec(name, levels, args, tc)) 
-                .unwrap_or(self)
-            },
-            _ => self
+    pub fn whnf_core(mut self, tc : &mut Tc<'t, 'l, 'e>) -> Self {
+        loop {
+            let (fun, args) = self.unfold_apps(tc);
+            match (fun.read(tc), args.read(tc)) {
+                (Sort { level }, _) => return level.simplify(tc).new_sort(tc),
+                (Lambda {..}, Cons(..)) => { self = fun.whnf_lambda(args, tc); },
+                (Let { val, body, .. }, _) => { self = body.inst1(val, tc).foldl_apps(args, tc) },
+                (Const { name, levels }, _)=> {
+                    if let Some(reduced) = reduce_quot(name, args, tc).or_else(|| reduce_ind_rec(name, levels, args, tc)) {
+                        self = reduced;
+                    } else {
+                        return self
+                    }
+                },
+                _ => return self
+            }
         }
     }
 
@@ -39,7 +38,7 @@ impl<'t, 'l : 't, 'e : 'l> ExprPtr<'l> {
             self = body;
         }
 
-        self.inst(acc, tc).foldl_apps(args, tc).whnf_core(tc)
+        self.inst(acc, tc).foldl_apps(args, tc)
     }    
 
     pub fn whnf(self, tc : &mut Tc<'t, 'l, 'e>) -> Self {
@@ -134,7 +133,7 @@ fn reduce_quot<'t, 'l : 't, 'e : 'l>(
         _ => unreachable!("bad quot_rec app")
     };
 
-    Some(appd.foldl_apps(rest, tc).whnf_core(tc))
+    Some(appd.foldl_apps(rest, tc))
 }    
 
 fn reduce_ind_rec<'t, 'l : 't, 'e : 'l>(
@@ -178,5 +177,5 @@ fn reduce_ind_rec<'t, 'l : 't, 'e : 'l>(
         .foldl_apps(args.take(take_size as usize, tc), tc)
         .foldl_apps(end_apps, tc)
         .foldl_apps(args.skip((recursor.rec_major_idx()? + 1) as usize, tc), tc);
-    Some(r.whnf_core(tc))
+    Some(r)
 }    

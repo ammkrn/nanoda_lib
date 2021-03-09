@@ -208,10 +208,11 @@ pub struct Env<'e> {
     pub quot_mk : Option<NamePtr<'e>>,
     pub quot_lift : Option<NamePtr<'e>>,
     pub quot_ind : Option<NamePtr<'e>>,
+    pub debug_mode: bool
 }
 
 impl<'l, 'e : 'l> Env<'e> {
-    pub fn new() -> Self {
+    pub fn new(debug_mode: bool) -> Self {
         let mut env = Env {
             store : Store::new(),
             declars : FxIndexMap::with_hasher(Default::default()),
@@ -220,6 +221,7 @@ impl<'l, 'e : 'l> Env<'e> {
             quot_mk : None,
             quot_lift : None,
             quot_ind : None,
+            debug_mode
         };
 
         Anon.alloc(&mut env);
@@ -353,6 +355,7 @@ pub trait IsCtx<'a> {
     fn live_store(&self) -> Option<&Store<'a, LiveZst>>;
     fn mut_store(&mut self) -> &mut Store<'a, Self::Writable>;
     fn get_declar(&self, n : &NamePtr) -> Option<Declar<'a>>;
+    fn debug_mode(&self) -> bool;
 }
 
 impl<'e> IsCtx<'e> for Env<'e> {
@@ -372,6 +375,10 @@ impl<'e> IsCtx<'e> for Env<'e> {
 
     fn get_declar(&self, n : &NamePtr) -> Option<Declar<'e>> {
         self.declars.get(n).copied()
+    }
+
+    fn debug_mode(&self) -> bool {
+        self.debug_mode
     }
 }
 
@@ -402,6 +409,14 @@ impl<'l, 'e : 'l> IsCtx<'l> for Live<'l, 'e> {
     fn get_declar(&self, n : &NamePtr) -> Option<Declar<'l>> {
         self.get_env().declars.get(n).copied()
     }
+
+    fn debug_mode(&self) -> bool {
+        match self {
+            Live::Compiler { env, .. } => env.debug_mode(),
+            Live::Checker { env, .. } => env.debug_mode()
+        }
+    }
+
 }
 
 impl<'t, 'l : 't, 'e : 'l> IsCtx<'l> for Tc<'t, 'l, 'e> {
@@ -421,6 +436,10 @@ impl<'t, 'l : 't, 'e : 'l> IsCtx<'l> for Tc<'t, 'l, 'e> {
 
     fn get_declar(&self, n : &NamePtr) -> Option<Declar<'l>> {
         self.live.get_declar(n)
+    }
+
+    fn debug_mode(&self) -> bool {
+        self.live.debug_mode()
     }
 }
 

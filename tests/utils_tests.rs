@@ -9,7 +9,7 @@ use nanoda_lib::param;
 
 #[test]
 fn util_test2() {
-    let mut env = Env::new();
+    let mut env = Env::new(false);
     let mut env = env.as_compiler();
 
     let l1 = param!(["u", "v"], &mut env);
@@ -21,7 +21,7 @@ fn util_test2() {
 
 #[test]
 fn pos_test0() {
-    let mut env = Env::new();
+    let mut env = Env::new(false);
     let mut live = env.as_compiler();
 
     let l = param!(["a", "b", "c", "d", "e"], &mut live);
@@ -44,7 +44,7 @@ fn pos_test0() {
 
 #[test]
 fn concat_test0() {
-    let mut env = Env::new();
+    let mut env = Env::new(false);
     let mut live = env.as_compiler();
 
     let l1 = param!(["a", "b"], &mut live);
@@ -58,7 +58,7 @@ fn concat_test0() {
 
 #[test]
 fn concat_test1() {
-    let mut env = Env::new();
+    let mut env = Env::new(false);
     let mut live = env.as_compiler();
 
     let l1 = param!(["a", "b"], &mut live);
@@ -69,7 +69,7 @@ fn concat_test1() {
 }
 #[test]
 fn concat_test2() {
-    let mut env = Env::new();
+    let mut env = Env::new(false);
     let mut live = env.as_compiler();
 
     let l1 = Nil::<Level>.alloc(&mut live);

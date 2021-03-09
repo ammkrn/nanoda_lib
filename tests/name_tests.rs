@@ -4,7 +4,7 @@ use nanoda_lib::name::Name::*;
 
 #[test]
 fn name_test0() {
-    let mut env = Env::new();
+    let mut env = Env::new(false);
 
     let name = Anon.alloc(&mut env);
     let name = name.new_str(format!("A"), &mut env);
