@@ -422,11 +422,11 @@ fn parse_rest_string(ws : &mut SplitWhitespace) -> String {
 }
 
 fn parse_binder_info(ws : &mut SplitWhitespace) -> crate::expr::BinderStyle {
-  ws.next().map(|elem| match elem {
-      s if s.contains("#BD") => crate::expr::BinderStyle::Default,
-      s if s.contains("#BI") => crate::expr::BinderStyle::Implicit,
-      s if s.contains("#BC") => crate::expr::BinderStyle::InstImplicit,
-      s if s.contains("#BS") => crate::expr::BinderStyle::StrictImplicit,
-      _ => unreachable!(),
-  }).expect("parse_binder_info")
+    match ws.next() {
+        Some("#BD") => crate::expr::BinderStyle::Default,
+        Some("#BI") => crate::expr::BinderStyle::Implicit,
+        Some("#BC") => crate::expr::BinderStyle::InstImplicit,
+        Some("#BS") => crate::expr::BinderStyle::StrictImplicit,
+        _ => unreachable!(),
+    }
 }
