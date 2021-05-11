@@ -279,6 +279,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
     ) -> ExprsPtr<'l> {
         match (rem_names.read(ctx), rem_types.read(ctx)) {
             (Cons(n, ns), Cons(t, ts)) if ns.len(ctx) > 0 => {
+                let _ = t.infer(Check, &mut ctx.as_tc(None, None));
                 // Recurse first
                 let ind_const_sink = self.declare_ind_types_aux(ns, ts, ctx);
                 //
@@ -286,6 +287,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
                 Cons(ind_const, ind_const_sink).alloc(ctx)
             },
             (Cons(n, ns), Cons(t, ts)) => {
+                let _ = t.infer(Check, &mut ctx.as_tc(None, None));
                 assert_eq!(ns.len(ctx), 0);
                 assert_eq!(ts.len(ctx), 0);
                 // This just executes the (Nil, Nil) branch for logging.
@@ -498,6 +500,7 @@ impl<'l, 'e : 'l> IndBlock<'l> {
     ) -> Vec<Declar<'l>> {
         match (rem_cnstr_names.read(ctx), rem_cnstr_types.read(ctx)) {
             (Cons(n, ns), Cons(t, ts)) => {
+                let _ = t.infer(Check, &mut ctx.as_tc(None, None));
                 // recurse first
                 let mut sink = self.mk_cnstrs_group(
                     ind_name, 
