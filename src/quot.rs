@@ -1,11 +1,57 @@
-use crate::utils::{ Live, List };
+use crate::utils::{ Live, List, List::*, IsCtx };
 use crate::name::{ Name, Name::* };
 use crate::level::{ Level::*, LevelsPtr, Level };
 use crate::expr::{ ExprPtr, BinderStyle, BinderStyle::* };
 use crate::env::Declar::*;
 use crate::{ app, param, arrow, fold_pis, name, sort };
 
+pub fn check_eq<'l, 'e : 'l>(live : &mut Live<'l, 'e>) {
+    let prop = Zero.alloc(live).new_sort(live);
+    let name = name!(["eq"], live.mut_env());
+    let cname = name!(["eq", "refl"], live.mut_env());
+    let eq_declar = live.get_declar(&name).unwrap();
+    match eq_declar {
+        Inductive { uparams, type_, num_params, all_cnstr_names, .. } => {
+            let eq_const = <ExprPtr>::new_const(name, uparams, live);
+            assert_eq!(uparams.len(live), 1);
+            assert_eq!(num_params, 2);
+            let uparam = match uparams.read(live) {
+                Cons(hd, tl) if tl.read(live) == Nil => hd,
+                _ => panic!("cannot add quot; inductive `eq` is expected to have 1 uparam")
+            };
+            let alpha = <ExprPtr>::new_local(name!("α", live), uparam.new_sort(live), Implicit, live);
+            let inner = arrow!([alpha, alpha, prop], live);
+            let expected = fold_pis!([alpha, inner], live);
+            type_.assert_def_eq(expected, &mut live.as_tc(Some(uparams), None));
+            match all_cnstr_names.read(live) {
+                Cons(hd, tl) => {
+                    assert_eq!(tl.read(live), Nil);
+                    assert_eq!(cname, hd);
+                    match live.get_declar(&hd).unwrap() {
+                        Constructor { uparams, type_, .. } => {
+                            let uparam = match uparams.read(live) {
+                                Cons(hd, tl) if tl.read(live) == Nil => hd,
+                                _ => panic!()
+                            };
+                            let alpha = <ExprPtr>::new_local(name!("α", live), uparam.new_sort(live), Implicit, live);
+                            let a = <ExprPtr>::new_local(name!("a", live), alpha, Default, live);
+
+                            let app = app!([eq_const, alpha, a, a], live);
+                            let expected = fold_pis!([alpha, a, app], live);
+                            type_.assert_def_eq(expected, &mut live.as_tc(Some(uparams), None));
+                        },
+                        _ => panic!("cannot add quot; `eq.refl` was not found in the environment")
+                    }
+                },
+                _ => panic!("cannot add quot; `eq` type improperly formed; no `refl` constructor")
+            }
+        },
+        _ => panic!("cannot add quot; improperly formed `eq` type")
+    }
+}
+
 pub fn add_quot<'l, 'e : 'l>(live : &mut Live<'l, 'e>) {
+    check_eq(live);
     let prop = Zero.alloc(live).new_sort(live);
     let sort_u = sort!("u", live);
     let sort_v = sort!("v", live);

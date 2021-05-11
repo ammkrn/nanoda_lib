@@ -1,6 +1,6 @@
 [package]
 name = "nanoda_lib"
-version = "0.2.32"
+version = "0.2.33"
 authors = ["ammkrn <ammkrn@tuta.io>"]
 edition = "2018"
 
