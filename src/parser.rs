@@ -84,15 +84,24 @@ impl<'e> Env<'e> {
             Err(e) => panic!("Failed to parse leading num : {}\n", e),
         };
 
-        let mut as_chars = ws.next().expect("as_chars").chars();
-        assert!(as_chars.next() == Some('#'));
+        let as_chars = ws.next().expect("as_chars");
+        assert!(as_chars.starts_with("#"));
         
-        match as_chars.next() {
-           Some('N') => { self.make_name(leading_num, as_chars.next().unwrap(), ws); },
-           Some('U') => { self.make_level(leading_num, as_chars.next().unwrap(), ws); },
-           Some('E') => { self.make_expr(leading_num, as_chars.next().unwrap(), ws); },
-           owise => panic!("Neither Name, nor Universe, nor Expr : {:?} : {:#?}\n", owise, ws)
+        if as_chars.starts_with("#N") {
+           self.make_name(leading_num, as_chars, ws);
+        } else if as_chars.starts_with("#U") {
+           self.make_level(leading_num, as_chars, ws);
+        } else if as_chars.starts_with("#E") {
+           self.make_expr(leading_num, as_chars, ws);
+        } else {
+           panic!("Neither Name, nor Universe, nor Expr : {}\n", as_chars)
         }
+        //match as_chars.next() {
+        //   Some('N') => { self.make_name(leading_num, as_chars.next().unwrap(), ws); },
+        //   Some('U') => { self.make_level(leading_num, as_chars.next().unwrap(), ws); },
+        //   Some('E') => { self.make_expr(leading_num, as_chars.next().unwrap(), ws); },
+        //   owise => panic!("Neither Name, nor Universe, nor Expr : {:?} : {:#?}\n", owise, ws)
+        //}
     }    
 
     fn get_name(&mut self, ws : &mut SplitWhitespace) -> NamePtr<'e> {
@@ -160,12 +169,12 @@ impl<'e> Env<'e> {
     }
 
     // #[trace(parser_new_name)]
-    fn make_name(&mut self, lean_pos : usize, kind : char, ws : &mut SplitWhitespace) -> Ptr<Name> {
+    fn make_name(&mut self, lean_pos : usize, kind : &str, ws : &mut SplitWhitespace) -> Ptr<Name> {
         let prefix_name = self.get_name(ws);
         let new_name = match kind {
-            'S' => prefix_name.new_str(parse_rest_string(ws), self),
-            'I' => prefix_name.new_num(parse_u64(ws), self),
-            owise => unreachable!("parser::make_name, {}\n", owise)
+            "#NS" => prefix_name.new_str(parse_rest_string(ws), self),
+            "#NI" => prefix_name.new_num(parse_u64(ws), self),
+            owise => panic!("parser::make_name received bad suffix, {}\n", owise)
         };
 
         match new_name {
@@ -177,13 +186,13 @@ impl<'e> Env<'e> {
     }
 
     // #[trace(parser_new_level)]
-    fn make_level(&mut self, lean_pos : usize, kind : char, ws : &mut SplitWhitespace) -> Ptr<Level> {
+    fn make_level(&mut self, lean_pos : usize, kind : &str, ws : &mut SplitWhitespace) -> Ptr<Level> {
          let new_level = match kind {
-             'S' => self.get_level(ws).new_succ(self),
-             'M' => self.get_level(ws).new_max(self.get_level(ws), self),
-             'I' => self.get_level(ws).new_imax(self.get_level(ws), self),
-             'P' => self.get_name(ws).new_param(self),
-             owise => unreachable!("parser::make_level. owise : {:#?}\n", owise)
+             "#US" => self.get_level(ws).new_succ(self),
+             "#UM" => self.get_level(ws).new_max(self.get_level(ws), self),
+             "#UIM" => self.get_level(ws).new_imax(self.get_level(ws), self),
+             "#UP" => self.get_name(ws).new_param(self),
+             owise => panic!("parser::make_level. received bad suffix, {}\n", owise)
          };
 
         match new_level {
@@ -195,27 +204,27 @@ impl<'e> Env<'e> {
     }    
 
     // #[trace(parser_new_expr)]
-    fn make_expr(&mut self, lean_pos : usize, kind : char, ws : &mut SplitWhitespace) -> Ptr<Expr> {
+    fn make_expr(&mut self, lean_pos : usize, kind : &str, ws : &mut SplitWhitespace) -> Ptr<Expr> {
         let new_expr = match kind {
-            'V' => <Ptr<Expr>>::new_var(parse_u16(ws), self),
-            'S' => self.get_level(ws).new_sort(self),
-            'C' => <Ptr<Expr>>::new_const(self.get_name(ws), self.get_levels(ws), self),
-            'A' => self.get_expr(ws).new_app(self.get_expr(ws), self),
-            'P' => {
+            "#EV" => <Ptr<Expr>>::new_var(parse_u16(ws), self),
+            "#ES" => self.get_level(ws).new_sort(self),
+            "#EC" => <Ptr<Expr>>::new_const(self.get_name(ws), self.get_levels(ws), self),
+            "#EA" => self.get_expr(ws).new_app(self.get_expr(ws), self),
+            "#EP" => {
                 let b_style = parse_binder_info(ws);
                 let b_name = self.get_name(ws);
                 let b_type = self.get_expr(ws);
                 let body   = self.get_expr(ws);
                 <Ptr<Expr>>::new_pi(b_name, b_type, b_style, body, self)
             }
-            'L' => {
+            "#EL" => {
                 let b_style = parse_binder_info(ws);
                 let b_name = self.get_name(ws);
                 let b_type = self.get_expr(ws);
                 let body   = self.get_expr(ws);
                 <Ptr<Expr>>::new_lambda(b_name, b_type, b_style, body, self)
             }
-            'Z' => {
+            "#EZ" => {
 
                 let b_name = self.get_name(ws);
                 let b_type = self.get_expr(ws);
@@ -223,7 +232,7 @@ impl<'e> Env<'e> {
                 let body   = self.get_expr(ws);
                 <Ptr<Expr>>::new_let(b_name, b_type, crate::expr::BinderStyle::Default, val, body, self)
             }
-            otherwise => unreachable!("parser `make_expr` line : {} expectex expression cue, got {:?}", line!(), otherwise)
+            owise => panic!("parser::make_expr received bad suffix, {}", owise)
         };
 
         match new_expr {
