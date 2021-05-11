@@ -1,6 +1,6 @@
 [package]
 name = "nanoda_lib"
-version = "0.2.3"
+version = "0.2.31"
 authors = ["ammkrn <ammkrn@tuta.io>"]
 edition = "2018"
 
@@ -8,7 +8,7 @@ edition = "2018"
 [profile.release]
 opt-level=3
 overflow-checks = true
-lto=true
+#lto=true
 
 [dependencies]
 crossbeam-utils = "0.7.2"

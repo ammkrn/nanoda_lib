@@ -97,18 +97,24 @@ impl<'e> Env<'e> {
 
     fn get_name(&mut self, ws : &mut SplitWhitespace) -> NamePtr<'e> {
         let lean_pos = parse_usize(ws);
-        EnvZst.mk_ptr(lean_pos)
+        let ptr: NamePtr = EnvZst.mk_ptr(lean_pos);
+        ptr.read(self);
+        ptr
     }    
 
     fn get_level(&mut self, ws : &mut SplitWhitespace) -> LevelPtr<'e> {
         let lean_pos = parse_usize(ws);
-        EnvZst.mk_ptr(lean_pos)
+        let ptr: LevelPtr = EnvZst.mk_ptr(lean_pos);
+        ptr.read(self);
+        ptr
     }    
 
 
     fn get_expr(&mut self, ws : &mut SplitWhitespace) -> ExprPtr<'e> {
         let lean_pos = parse_usize(ws);
-        EnvZst.mk_ptr(lean_pos)
+        let ptr: ExprPtr = EnvZst.mk_ptr(lean_pos);
+        ptr.read(self);
+        ptr
     }    
 
     // Given a sequence of numbers [n1, n2, n3], collect the sequence
@@ -117,7 +123,9 @@ impl<'e> Env<'e> {
         let mut base = Nil::<Level>.alloc(self);
         for char_chunk in ws.rev() {
             let pos = char_chunk.parse::<usize>().expect("uparams_char_chunk");
-            base = Cons(EnvZst.mk_ptr(pos), base).alloc(self)
+            let ptr: LevelPtr = EnvZst.mk_ptr(pos);
+            ptr.read(self);
+            base = Cons(ptr, base).alloc(self)
         }
         base
     }
@@ -130,7 +138,8 @@ impl<'e> Env<'e> {
         let mut base = Nil::<Level>.alloc(self);
         for char_chunk in ws.rev() {
             let pos = char_chunk.parse::<usize>().expect("uparams_char_chunk");
-            let fetched : Ptr<Name> = EnvZst.mk_ptr(pos);
+            let fetched : NamePtr = EnvZst.mk_ptr(pos);
+            fetched.read(self);
             base = Cons(fetched.new_param(self), base).alloc(self)
         };
         base
@@ -270,6 +279,7 @@ impl<'e> Env<'e> {
         let mut uparams = Nil::<Level>.alloc(self);
         for index in uparam_indices.into_iter().rev() {
             let param = EnvZst.mk_ptr(*index).new_param(self);
+            param.read(self);
             uparams = Cons(param, uparams).alloc(self);
         }
 
@@ -290,8 +300,10 @@ impl<'e> Env<'e> {
         // be in another loop that's like `for i in num_inductives`
         // which creates separate lists for each batch of constructors
         for two_slice in cnstr_indices.chunks(2usize).rev() {
-            let cnstr_name = EnvZst.mk_ptr(two_slice[0]);
-            let cnstr_type = EnvZst.mk_ptr(two_slice[1]);
+            let cnstr_name: NamePtr = EnvZst.mk_ptr(two_slice[0]);
+            let cnstr_type: ExprPtr = EnvZst.mk_ptr(two_slice[1]);
+            cnstr_name.read(self);
+            cnstr_type.read(self);
             num_cnstrs += 1;
 
             cnstr_names = Cons(cnstr_name, cnstr_names).alloc(self);
