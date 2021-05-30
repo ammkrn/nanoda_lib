@@ -166,6 +166,9 @@ fn reduce_ind_rec<'t, 'l : 't, 'e : 'l>(
     let major = major.whnf(tc);
     
     let (_, major_args) = major.unfold_apps(tc);
+    let _ = format!("rec {:?}", recursor);
+    let _ = format!("len: {}", tc.env_store().rec_rules.len());
+
 
     let rule = recursor.get_rec_rule(major, tc)?.read(tc);
 

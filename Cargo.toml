@@ -8,7 +8,8 @@ edition = "2018"
 [profile.release]
 opt-level=3
 overflow-checks = true
-lto=true
+#lto=true
+debug=true
 
 [dependencies]
 crossbeam-utils = "0.7.2"
