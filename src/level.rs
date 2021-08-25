@@ -54,6 +54,21 @@ impl<'a> Level<'a> {
     }
 }
 
+use crate::utils::IsStored;
+impl<'x> LevelPtr<'x> {
+    pub fn combining2<'a, C: IsLiveCtx<'a>>(self, other: Self, ctx: &mut C) -> LevelPtr<'a>
+    where
+        'x: 'a,
+    {
+        match (self.read2(ctx), other.read2(ctx)) {
+            (Zero, r) => r.alloc2(ctx),
+            (l, Zero) => l.alloc2(ctx),
+            (Succ(l), Succ(r)) => l.combining2(r, ctx).new_succ(ctx),
+            _ => self.new_max(other, ctx),
+        }
+    }
+}
+
 impl<'a> LevelPtr<'a> {
     pub fn new_succ(self, ctx : &mut impl IsCtx<'a>) -> LevelPtr<'a> {
         Succ(self).alloc(ctx)
@@ -97,13 +112,13 @@ impl<'a> LevelPtr<'a> {
             Max(l, r) => {
                 let l_prime = l.simplify(ctx);
                 let r_prime = r.simplify(ctx);
-                l_prime.combining(r_prime, ctx)
+                l_prime.combining2(r_prime, ctx)
             },
             Imax(l, r) => {
                 let r_prime = r.simplify(ctx);
                 match r_prime.read(ctx) {
                     Zero => r_prime,
-                    Succ(..) => l.simplify(ctx).combining(r_prime, ctx),
+                    Succ(..) => l.simplify(ctx).combining2(r_prime, ctx),
                     _ => l.simplify(ctx).new_imax(r_prime, ctx)
                 }
             }

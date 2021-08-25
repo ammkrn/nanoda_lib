@@ -1,6 +1,6 @@
+#![feature(generic_associated_types)]
 #![allow(non_snake_case)]
 #![allow(unused_parens)]
-
 
 pub mod utils;
 pub mod name;
