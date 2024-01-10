@@ -1,0 +1,19 @@
+prelude
+
+inductive List (α : Type u) where
+  | nil : List α
+  | cons (head : α) (tail : List α) : List α
+
+inductive Sexpr (A : Type v) (B :Type w)
+| atom (a : A) (b : B) : Sexpr A B
+| ofList : List (Sexpr A B) → Sexpr A B
+
+/-
+inductive Sexpr (A : Type v) (B :Type w)
+| atom (a : A) (b : B) : Sexpr A B
+| ofList : List (Sexpr A B) → Sexpr A B
+
+inductive ListSexpr  A B
+| nil : ListSexpr A B
+| cons : Sexpr A B → ListSexpr A B → ListSexpr A B
+-/

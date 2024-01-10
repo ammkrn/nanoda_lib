@@ -1,26 +1,75 @@
-Basically what we're doing is putting all of the type checker's terms into arenas, and manipulating those terms as pointers into said arenas. The Rust part is that we use phantom data and phantom lifetimes to (for zero runtime cost) make sure that pointers into the backing arenas are type and memory safe. At compile time we know, modulo the correctness of Rust's type system, that an arena pointer always points to the right data, and that the backing storage cannot be dropped while there are still pointers into it, meaning we can never be stuck holding an invalid arena pointer. The insight is that we really only have two sets of Lean items with two unique lifetimes, one that holds the items needed to make the basic statements of 'theorem A : B := X' or 'inductive Q : R with constructors C1 .. Cn', and another set which holds the terms created in the process of checking that those terms are well-typed. This set of items is created and dropped with every new item checked/introduced, and is strictly less than the environment lifetime, since it's created after the environment is, and dropped before as well.
+# About
 
-* Note to self about future work: when rust stabilizes the allocator api, the backing storage for all of the collections can be changed to use something like a bump allocator for the cost of one additional lifetime annotation. This should be a pretty big win since we'll no longer be allocating collections anew for every declaration and (more importantly) *all of the linked-list stuff can be replaced with `Vec<A, Bump>`*, which will remove all of the syntactic clutter (most prominent in `inductive.rs`) and make operations on sequences faster.
+This is an external type checker for the [Lean 4](https://lean-lang.org/) programming language and theorem prover. You can read more about what an external type checker is and why you might want to use one in [this book](https://github.com/ammkrn/type_checking_in_lean4).
 
-The benefits of using such a 'dumb' collection (dumb in the sense that does almost nothing to manage its memory) are that even though we're using arenas (which don't actively try to drop items that are no longer reachable) we have a smaller memory footprint than the other type checkers since our types are very small and our collections are defacto free of duplicates, and we get a pretty significant increase in speed (about 3-4x faster than the other reference checkers) for a variety of reasons. This arena based strategy also allows for working with expression graphs that contain cycles, though Lean doesn't need this. It also works very well in a parallel context, requiring no locks or atomics since the persistent environment is read-only by the time you start spawning threads, and the temporary storage for each new declaration is local.
-The only real drawback is that pretty much every function needs to explicitly take a context as an argument, since you need the carry the arenas around, though this was already the case for all of the functions in the actual type checker module. Making the backing stores global to remove this requirement would start introducing locks and goofy wrappers and all that.
+# Usage
 
-The underlying pointer type (utils::Ptr) consists of an enum discriminant (4 bytes) and a u32 showing its position in the arena (4 bytes), with two zero sized types which are essentially just for interfacing with the compiler's static analysis systems. Pretty much everything else is some combination of one or more of these pointers and an enum discriminant, so they range from 8 to 31 bytes. By far the most common item is an expression application node, which is 19 bytes.
+## Building and running the binary
 
-In the course of checking a version of mathlib from August 2020 (06e1405), the export file produces a list of just over 12.5 million persistent items which need to be kept alive for the duration of the program. The largest temporary stores (the storage that's created, then dropped in the course of checking one declaration) are 10 million (polynomial.monic.next_coeff_mul) and ~1.6 million items (finset.sum_range_sub_of_monotone), but the average declaration produces under 100k temporary items (~3mb). 
-The total number of attempted item allocations in mathlib is 1.2 billion, with duplicates outnumbering unique items 4:1 (~922 million rejections with duplicates, ~269 million unique items). 
+Either run the binary directly through cargo `cargo run --release -- <path_to_config>`, or build the binary using `cargo build --release`, then run the built binary, passing a path to a [configuration](#configuration-file). Building with cargo should just work on all modern platforms without requiring additional build steps.
 
-The `basic.rs` example shows the basics of how to actually use the type checker; you can pass \
-a number of threads, and an absolute path to an export file.\
-An argument of zero threads will default to one thread.\
-Example : 
+The binary takes a single argument, which is a path to a json configuration file describing the resource locations and desired options needed to run the type checker. Export files can be streamed via stdin rather than by file path by setting the configuration option `use_stdin: true`, at which point the executable will expect to receive the contents of the export file via stdin.
+
+## Using the library
+
+The library component can be imported and used as a normal rust crate by specifying it as a dependency in a `Cargo.toml` file.
+
+# Configuration file
+
+The execution conditions of `nanoda_bin` are determined by a json configuration file, there is no old school CLI. This was a conscious design choice to accommodate modern development practices (checking in to version control, use with CI and automation), what we envision to be the most likely use case for external type checkers (running a suite of external checkers), and because traditional command line interfaces are just not a great way to interact with software.
+
+There is ongoing discussion about migrating the export format to json [here](https://github.com/leanprover/lean4export/issues/3), so I don't consider the introduction of a json parser to be a huge deal.
+
+## Configuration options
+
+Users can either specify a path to the export file to be checked, or set `"use_stdin": true`, in which case the program will wait for the export file to be passed via stdin. If the `"export_file_path"` key is not defined, then `"use_stdin"` must be set to `true`. Specifying an export file and setting `"use_stdin": true` are mutually exclusive, and will result in a hard error.
+
+The `"permitted_axioms"` list is where users specify the axioms an export file is permitted to use. For axioms to be permitted, they must be identified in the config file. The average Lean user will want to permit the three semi-official axioms, which are `Quot.sound`, `Classical.choice`, and `propext`, and most export files will also rely on `Lean.trustCompiler`.
+
+if `"unpermitted_axiom_hard_error"` is set to `true`, the presence of an axiom in the export file that is not in the `permitted_axioms` list will cause a hard error and abort checking, regardless of whether it's used by any later declarations. If set to `false`, the unpermitted axiom will simply be ignored, meaning it will not be checked, will not be added to the environment, and will cause a hard error only if another exported declaration actually tries to use it. This value is currently set to `true` by default out of an abundance of caution, but this may change; most users will probably want to set this to `false`, since things like the prelude's `sorryAx` are declared so that they may be used by metaprograms, but will not actually be invoked by other declarations in the file and are therefore safe to just skip.
+
+`"nat_extension"` and `"string_extension"` enable or disable the Nat and String kernel extensions. While we expect most users to opt into the Nat and String kernel extensions, they are disabled by default.
+
+`"pp_declars"` is a list of declarations to be printed back by the pretty printer.
+
+`"pp_options"` are the options to be used by the pretty printer.
+
+`"pp_to_stdout"` determines whether the pretty printer output is written to stdout. This is not mutually exclusive with `"pp_output_path"`; if both options are set, the pretty printer output will be written to both stdout and the specified path.
+
+`"pp_output_path"` can be set if the pretty printer output should be written to a file path. This is not mutually exclusive with `"pp_output_path"`; if both options are set, the pretty printer output will be written to both stdout and the specified path.
+
+`"declar_sep"` is a separator to print between each pretty printed declaration. A default of "\n\n" will end each declaration with a newline, then put a blank line between successive declarations. While this does allow for the injection of arbitrary strings into the pretty printer output, it's rejected if not valid UTF-8, and the configuration file is controlled entirely by the operator of the type checker, so I don't consider this any more of a vector for attack than specifying an incorrect export file path or knowingly whitelisting an unsound axiom.
+
+If `"print_success_message"` is set to false, no additional output will be printed on success, and users should look to the platform-specific exit code. If `"pp_to_stdout"` is `true` and `"print_success_message"` is `false` the pretty printer output will still be written to stdout.
+
+An example configuration file:
+
 ```
-cargo run --release --example basic 4 <path to your export file>
+{
+    "export_file_path": "MyLeanProject/export",
+    "use_stdin": false,
+    "permitted_axioms": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound",
+        "Lean.trustCompiler"
+    ],
+    "unpermitted_axiom_hard_error": true,
+    "nat_extension": true,
+    "string_extension": true,
+    "pp_declars": ["Nat.add_zero", "Eq.symm"],
+    "pp_output_path": "/Users/user/file.txt",
+    "pp_to_stdout": false,
+    "pp_options": {
+        "all": null,
+        "explicit": false,
+        "universes": null,
+        "notation": null,
+        "proofs": false,
+        "indent": 2,
+        "width": 100,
+        "declar_sep": "\n\n",
+    },
+    "print_success_message": false
+}
 ```
-
-The `debug.rs` example only takes a file path argument; the checker will be run on 1 thread only, and the declaration names will be displayed as they're compiled and checked. It can be invoked as follows:
-```
-cargo run --release --example debug <path to export file>
-```
-
-

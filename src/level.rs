@@ -1,348 +1,269 @@
-use crate::name::{ NamePtr };
-use crate::expr::{ Expr::*, ExprPtr };
-use crate::levels;
-use crate::utils::{ 
-    Ptr, 
-    List, 
-    List::*, 
-    ListPtr, 
-    IsCtx, 
-    IsLiveCtx, 
-    Store, 
-    Env, 
-    LiveZst, 
-    HasNanodaDbg 
-};
+//! Implementation of the `Level` type representing universes
+use crate::util::{LevelPtr, LevelsPtr, NamePtr, TcCtx};
 
-pub type LevelPtr<'a> = Ptr<'a, Level<'a>>;
-pub type LevelsPtr<'a> = ListPtr<'a, Level<'a>>;
-
+pub(crate) const ZERO_HASH: u64 = 283;
+pub(crate) const SUCC_HASH: u64 = 541;
+pub(crate) const MAX_HASH: u64 = 1091;
+pub(crate) const IMAX_HASH: u64 = 1747;
+pub(crate) const PARAM_HASH: u64 = 947;
 use Level::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level<'a> {
     Zero,
-    Succ(LevelPtr<'a>),
-    Max(LevelPtr<'a>, LevelPtr<'a>),
-    Imax(LevelPtr<'a>, LevelPtr<'a>),
-    Param(NamePtr<'a>)
+    Succ(LevelPtr<'a>, u64),
+    Max(LevelPtr<'a>, LevelPtr<'a>, u64),
+    IMax(LevelPtr<'a>, LevelPtr<'a>, u64),
+    Param(NamePtr<'a>, u64),
 }
 
 impl<'a> Level<'a> {
-    pub fn insert_env<'e>(
-        self, 
-        env : &mut Env<'e>, 
-        live : &Store<LiveZst>
-    ) -> LevelPtr<'e> {
-        let r = match self {
-            Zero => unreachable!("Level::insert_Env(), Zero should always be in Env"),
-            Succ(pred) => pred.insert_env(env, live).new_succ(env),
-            Max(l, r) => {
-                let l = l.insert_env(env, live);
-                let r = r.insert_env(env, live);
-                l.new_max(r, env)
-            }
-            Imax(l, r) => {
-                let l = l.insert_env(env, live);
-                let r = r.insert_env(env, live);
-                l.new_imax(r, env)
-            },
-            Param(n) => n.insert_env(env, live).new_param(env)
-        };
-        assert!(r.in_env());
-        r          
+    fn get_hash(&self) -> u64 {
+        match self {
+            Zero => ZERO_HASH,
+            Succ(.., hash) | Max(.., hash) | IMax(.., hash) | Param(.., hash) => *hash,
+        }
     }
 }
 
-impl<'a> LevelPtr<'a> {
-    pub fn new_succ(self, ctx : &mut impl IsCtx<'a>) -> LevelPtr<'a> {
-        Succ(self).alloc(ctx)
+impl<'a> std::hash::Hash for Level<'a> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { state.write_u64(self.get_hash()) }
+}
+
+impl<'t, 'p: 't> TcCtx<'t, 'p> {
+    pub(crate) fn level_succs(&self, mut l: LevelPtr<'t>) -> (LevelPtr<'t>, usize) {
+        let mut num_succs = 0usize;
+        while let Succ(pred, ..) = self.read_level(l) {
+            l = pred;
+            num_succs += 1;
+        }
+        (l, num_succs)
     }
 
-    pub fn new_max(self, other : Self, ctx : &mut impl IsCtx<'a>) -> LevelPtr<'a> {
-        Max(self, other).alloc(ctx)
-    }
-    
-    pub fn new_imax(self, other : Self, ctx : &mut impl IsCtx<'a>) -> LevelPtr<'a> {
-        Imax(self, other).alloc(ctx)
-    }
-
-    pub fn new_sort(self, ctx : &mut impl IsCtx<'a>) -> ExprPtr<'a> {
-        Sort { level : self }.alloc(ctx)
-    }
-
-    pub fn is_any_max(self, ctx : &impl IsLiveCtx<'a>) -> bool {
-        matches!(self.read(ctx), Max(..) | Imax(..))
-    }
-
-    pub fn is_param(self, ctx : &impl IsLiveCtx<'a>) -> bool {
-        matches!(self.read(ctx), Param(..))
-    }
-
-    
-    pub fn combining(self, other : Self, ctx : &mut impl IsLiveCtx<'a>) -> LevelPtr<'a> {
-        match (self.read(ctx), other.read(ctx)) {
-            (Zero, r) => r.alloc(ctx),
-            (l, Zero) => l.alloc(ctx),
-            (Succ(l), Succ(r)) => l.combining(r, ctx).new_succ(ctx),
-            _ => self.new_max(other, ctx)
+    fn combining(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> LevelPtr<'t> {
+        match self.read_level_pair(l, r) {
+            (Zero, _) => r,
+            (_, Zero) => l,
+            (Succ(l, ..), Succ(r, ..)) => {
+                let pred = self.combining(l, r);
+                self.succ(pred)
+            }
+            _ => self.max(l, r),
         }
     }
 
-    pub fn simplify(self, ctx : &mut impl IsLiveCtx<'a>) -> LevelPtr<'a> {
-        match self.read(ctx) {
-            Zero => Zero.alloc(ctx),
-            p @ Param(..) => p.alloc(ctx),
-            Succ(pred) => pred.simplify(ctx).new_succ(ctx),
-            Max(l, r) => {
-                let l_prime = l.simplify(ctx);
-                let r_prime = r.simplify(ctx);
-                l_prime.combining(r_prime, ctx)
-            },
-            Imax(l, r) => {
-                let r_prime = r.simplify(ctx);
-                match r_prime.read(ctx) {
-                    Zero => r_prime,
-                    Succ(..) => l.simplify(ctx).combining(r_prime, ctx),
-                    _ => l.simplify(ctx).new_imax(r_prime, ctx)
+    pub fn simplify(&mut self, l: LevelPtr<'t>) -> LevelPtr<'t> {
+        match self.read_level(l) {
+            Zero | Param(..) => l,
+            Succ(val, ..) => {
+                let val = self.simplify(val);
+                self.succ(val)
+            }
+            Max(l, r, ..) => {
+                let l = self.simplify(l);
+                let r = self.simplify(r);
+                self.combining(l, r)
+            }
+            IMax(l, r, ..) => {
+                let r_simp = self.simplify(r);
+                match self.read_level(r_simp) {
+                    Zero => r_simp,
+                    Succ { .. } => {
+                        let l_simp = self.simplify(l);
+                        self.combining(l_simp, r_simp)
+                    }
+                    _ => {
+                        let l_simp = self.simplify(l);
+                        self.imax(l_simp, r_simp)
+                    }
                 }
             }
         }
-    }    
+    }
 
-    
-    // for some level `l` and list of params `ps`,
-    // assert that :
-    // `forall Level::Param(n) \in l, Level::Param(n) \in ps`
-    pub fn all_params_defined(self, params : LevelsPtr<'a>, ctx : &impl IsLiveCtx<'a>) -> bool {
-        match self.read(ctx) {
+    /// returns `true` iff every element in `ls` is a `Param`, and `ls` has no duplicate elements.
+    pub(crate) fn no_dupes_all_params(&mut self, ls: LevelsPtr<'t>) -> bool {
+        let mut set = crate::util::new_fx_hash_set();
+        for l in self.read_levels(ls).iter().copied() {
+            match self.read_level(l) {
+                Param(..) =>
+                    if set.contains(&l) {
+                        return false
+                    } else {
+                        set.insert(l);
+                    },
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Return `uparams [ks |-> vs]` for a list of uparams
+    pub fn subst_levels(&mut self, uparams: LevelsPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> LevelsPtr<'t> {
+        let out =
+            self.read_levels(uparams).clone().iter().copied().map(|l| self.subst_level(l, ks, vs)).collect::<Vec<_>>();
+        self.alloc_levels(std::sync::Arc::from(out))
+    }
+
+    /// Return `uparam [ks |-> vs]`
+    pub fn subst_level(&mut self, level: LevelPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> LevelPtr<'t> {
+        match self.read_level(level) {
+            Zero => self.zero(),
+            Succ(val, ..) => {
+                let val = self.subst_level(val, ks, vs);
+                self.succ(val)
+            }
+            Max(l, r, ..) => {
+                let l_prime = self.subst_level(l, ks, vs);
+                let r_prime = self.subst_level(r, ks, vs);
+                self.max(l_prime, r_prime)
+            }
+            IMax(l, r, ..) => {
+                let l_prime = self.subst_level(l, ks, vs);
+                let r_prime = self.subst_level(r, ks, vs);
+                self.imax(l_prime, r_prime)
+            }
+            Param(..) => {
+                let (ks, vs) = (self.read_levels(ks), self.read_levels(vs));
+                for (k, v) in ks.iter().copied().zip(vs.iter().copied()) {
+                    if level == k {
+                        return v
+                    }
+                }
+                level
+            }
+        }
+    }
+
+    /// for some level `l` and list of params `ps`, assert that:\
+    /// `forall Param(n) e. l, n e. params`
+    pub(crate) fn all_uparams_defined(&self, level: LevelPtr<'t>, params: LevelsPtr<'t>) -> bool {
+        match self.read_level(level) {
             Zero => true,
-            Succ(pred) => pred.all_params_defined(params, ctx),
-            | Max(lhs, rhs)
-            | Imax(lhs, rhs) => lhs.all_params_defined(params, ctx) 
-                                && rhs.all_params_defined(params, ctx),
-            Param(_) => match params.read(ctx) {
-                Nil => false,
-                Cons(hd, _) if self == hd => true,
-                Cons(_, tl) => self.all_params_defined(tl, ctx)
-            }
+            Succ(val, ..) => self.all_uparams_defined(val, params),
+            Max(l, r, ..) | IMax(l, r, ..) =>
+                self.all_uparams_defined(l, params) && self.all_uparams_defined(r, params),
+            Param(..) => self.read_levels(params).iter().copied().any(|x| x == level),
         }
     }
 
-    pub fn subst(
-        self, 
-        ks : LevelsPtr<'a>, 
-        vs : LevelsPtr<'a>, 
-        ctx : &mut impl IsLiveCtx<'a>
-    ) -> LevelPtr<'a> {
-        match self.read(ctx) {
-            Zero => Zero.alloc(ctx),
-            Succ(pred) => pred.subst(ks, vs, ctx).new_succ(ctx),
-            Max(l, r) => {
-                let l_prime = l.subst(ks, vs, ctx);
-                let r_prime = r.subst(ks, vs, ctx);
-                l_prime.new_max(r_prime, ctx)
+    fn is_any_max(&self, level: LevelPtr<'t>) -> bool { matches!(self.read_level(level), Max(..) | IMax(..)) }
+
+    fn is_param(&self, level: LevelPtr<'t>) -> bool { matches!(self.read_level(level), Param(..)) }
+
+    fn subst_simp(&mut self, level: LevelPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> LevelPtr<'t> {
+        let l = self.subst_level(level, ks, vs);
+        self.simplify(l)
+    }
+
+    /// Test whether `lhs <= rhs` by checking whether it holds regardless of whether
+    /// a parameter `p` is zero or non-zero.
+    fn leq_imax_by_cases(&mut self, param: LevelPtr<'t>, lhs: LevelPtr<'t>, rhs: LevelPtr<'t>, diff: isize) -> bool {
+        let zero = self.zero();
+        let one = self.succ(zero);
+        let zero_slice = self.alloc_levels_slice(&[zero]);
+        let one_slice = self.alloc_levels_slice(&[one]);
+        let param_slice = self.alloc_levels_slice(&[param]);
+
+        let lhs_0 = self.subst_simp(lhs, param_slice, zero_slice);
+        let rhs_0 = self.subst_simp(rhs, param_slice, zero_slice);
+        let lhs_s = self.subst_simp(lhs, param_slice, one_slice);
+        let rhs_s = self.subst_simp(rhs, param_slice, one_slice);
+
+        self.leq_core(lhs_0, rhs_0, diff) && self.leq_core(lhs_s, rhs_s, diff)
+    }
+
+    // The more positive it is, the more have been applied ot the right side compared to the left side.
+    fn leq_core(&mut self, l_in: LevelPtr<'t>, r_in: LevelPtr<'t>, diff: isize) -> bool {
+        match self.read_level_pair(l_in, r_in) {
+            (Zero, _) if diff >= 0 => true,
+            (_, Zero) if diff < 0 => false,
+            (Param(a, ..), Param(x, ..)) => a == x && diff >= 0,
+            (Param(..), Zero) => false,
+            (Zero, Param { .. }) => diff >= 0,
+            (Succ(s, ..), _) => self.leq_core(s, r_in, diff - 1),
+            (_, Succ(s, ..)) => self.leq_core(l_in, s, diff + 1),
+            (Max(a, b, ..), _) => self.leq_core(a, r_in, diff) && self.leq_core(b, r_in, diff),
+            (Param(..), Max(x, y, ..)) => self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff),
+            (Zero, Max(x, y, ..)) => self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff),
+            (IMax(a, b, ..), IMax(x, y, ..)) if (a == x) && (b == y) => true,
+            (IMax(_, b, _), _) if self.is_param(b) => self.leq_imax_by_cases(b, l_in, r_in, diff),
+
+            (_, IMax(_, y, _)) if self.is_param(y) => self.leq_imax_by_cases(y, l_in, r_in, diff),
+
+            (IMax(a, b, ..), _) if self.is_any_max(b) => match self.read_level(b) {
+                IMax(x, y, ..) => {
+                    let new_lhs = self.imax(a, y);
+                    let new_rhs = self.imax(x, y);
+                    let new_max = self.max(new_lhs, new_rhs);
+                    self.leq_core(new_max, r_in, diff)
+                }
+                Max(x, y, ..) => {
+                    let new_lhs = self.imax(a, x);
+                    let new_rhs = self.imax(a, y);
+                    let new_max = self.max(new_lhs, new_rhs);
+                    let new_max = self.simplify(new_max);
+                    self.leq_core(new_max, r_in, diff)
+                }
+                _ => panic!(),
             },
-            Imax(l, r) => {
-                let l_prime = l.subst(ks, vs, ctx);
-                let r_prime = r.subst(ks, vs, ctx);
-                l_prime.new_imax(r_prime, ctx)
-            }
-            Param(..) => match (ks.read(ctx), vs.read(ctx)) {
-                (Cons(k, _), Cons(v, _)) if self == k => v,
-                (Cons(_, ks_tl), Cons(_, vs_tl)) => self.subst(ks_tl, vs_tl, ctx),
-                (Nil, Nil) => self,
-                _ => unreachable!("level::subst must get lists of equal length!")
-            }
-        }
-    }       
-
-    
-    
-    fn ensure_imax_leq(
-        self, 
-        lhs : Self,
-        rhs : Self,
-        diff : isize, 
-        ctx : &mut impl IsLiveCtx<'a>
-    ) -> bool {
-        assert!(self.is_param(ctx));
-        let self_list = levels!([self], ctx);
-        let zero_list = levels!([Zero.alloc(ctx)], ctx);
-        let succ_of_list = levels!([self.new_succ(ctx)], ctx);
-
-        let mut closure = |k : LevelsPtr<'a>, v : LevelsPtr<'a>| {
-            let lhs_p = lhs.subst(k, v, ctx).simplify(ctx);
-            let rhs_p = rhs.subst(k, v, ctx).simplify(ctx);
-            lhs_p.leq_core(rhs_p, diff, ctx)
-        };
-
-        closure(self_list, zero_list) && closure(self_list, succ_of_list)
-    }
-    // Important note about this is that a return value of `false` does NOT
-    // indicate `greater than`, it just means "L is not less than or equal to R"
-    // since there are times where we can't say for sure one way or the other.
-    // An example would be (Param(A), Param(X)). Without some extra information
-    // (which this function will never receive), there's no way to know whether
-    // any particular substitution for A and X will produce a pair such that 
-    // L <= R or R <= L   
-    fn leq_core(
-        self, 
-        other : Self, 
-        diff : isize, 
-        ctx : &mut impl IsLiveCtx<'a>
-    ) -> bool {
-        match (self.read(ctx), other.read(ctx)) {
-            (Zero, _) if diff >= 0             => true,
-            (_, Zero) if diff < 0              => false,
-            (Param(a), Param(x))               => a == x && diff >= 0,
-            (Param(..), Zero)                  => false,
-            (Zero, Param(..))                  => diff >= 0,
-
-            (Succ(s), _)                       => s.leq_core(other, diff - 1, ctx),
-            (_, Succ(s))                       => self.leq_core(s, diff + 1, ctx),
-
-            (Max(a, b), _)                     => a.leq_core(other, diff, ctx) 
-                                               && b.leq_core(other, diff, ctx),
-
-            (Param(..), Max(x, y))             => self.leq_core(x, diff, ctx)
-                                               || self.leq_core(y, diff, ctx),
-
-            (Zero, Max(x, y))                  => self.leq_core(x, diff, ctx)
-                                               || self.leq_core(y, diff, ctx),
-
-            (Imax(a, b), Imax(x, y)) if (a == x) && (b == y) => true,
-
-            (Imax(.., b), _) if b.is_param(ctx)   => b.ensure_imax_leq(self, other, diff, ctx),
-
-            (_, Imax(.., y)) if y.is_param(ctx)   => y.ensure_imax_leq(self, other, diff, ctx),
-
-            (Imax(a, b), _) if b.is_any_max(ctx)  => match b.read(ctx) {
-               Imax(x, y) => {
-
-                   let new_lhs = <Self>::new_imax(a, y, ctx); 
-                   let new_rhs = <Self>::new_imax(x, y, ctx);
-                   let new_max = <Self>::new_max(new_lhs, new_rhs, ctx);
-                   new_max.leq_core(other, diff, ctx)
-               },
-               Max(x, y) => {
-                    let new_lhs = <Self>::new_imax(a, x, ctx);
-                    let new_rhs = <Self>::new_imax(a, y, ctx);
-                    let new_max = <Self>::new_max(new_lhs, new_rhs, ctx).simplify(ctx);
-                    new_max.leq_core(other, diff, ctx)
-                },
-                _ => unreachable!(),
+            (_, IMax(x, y, ..)) if self.is_any_max(y) => match self.read_level(y) {
+                IMax(j, k, ..) => {
+                    let new_lhs = self.imax(x, k);
+                    let new_rhs = self.imax(j, k);
+                    let new_max = self.max(new_lhs, new_rhs);
+                    self.leq_core(l_in, new_max, diff)
+                }
+                Max(j, k, ..) => {
+                    let new_lhs = self.imax(x, j);
+                    let new_rhs = self.imax(x, k);
+                    let new_rhs = self.max(new_lhs, new_rhs);
+                    let new_rhs = self.simplify(new_rhs);
+                    self.leq_core(l_in, new_rhs, diff)
+                }
+                _ => panic!(),
             },
-
-            (_, Imax(x, y)) if y.is_any_max(ctx)  => match y.read(ctx) {
-                Imax(j, k) => {
-                    let new_lhs = <Self>::new_imax(x, k, ctx);
-                    let new_rhs = <Self>::new_imax(j, k, ctx);
-                    let new_max = <Self>::new_max(new_lhs, new_rhs, ctx);
-                    self.leq_core(new_max, diff, ctx)
-                },
-                Max(j, k) => {
-                    let new_lhs = <Self>::new_imax(x, j, ctx);
-                    let new_rhs = <Self>::new_imax(x, k, ctx);
-                    let new_max = <Self>::new_max(new_lhs, new_rhs, ctx).simplify(ctx);
-                    self.leq_core(new_max, diff, ctx)
-                },
-                _ => unreachable!(),
-            }
-            _ => unreachable!()
-        }
-    }            
-
-
-    pub fn leq(self, other : Self, ctx : &mut impl IsLiveCtx<'a>) -> bool {
-        let l_prime = self.simplify(ctx);
-        let r_prime = other.simplify(ctx);
-        l_prime.leq_core(r_prime, 0, ctx)
-    }
-
-    pub fn geq(self, other : Self, ctx : &mut impl IsLiveCtx<'a>) -> bool {
-        self.eq_antisymm(other, ctx)
-        || (!self.leq(other, ctx))
-    }
-
-    pub fn eq_antisymm(self, other : Self, ctx : &mut impl IsLiveCtx<'a>) -> bool {
-        self.leq(other, ctx) 
-        && other.leq(self, ctx)
-    }        
-
-    // For these inequality predicates, we need to do somewhat goofy
-    // looking things because of Imax/Param interaction, where
-    // levels can be equal to zero without literally being `Level::Zero`
-    pub fn is_zero(self, ctx : &mut impl IsLiveCtx<'a>) -> bool {
-        self.leq(Zero.alloc(ctx), ctx)
-    }
-
-    pub fn is_nonzero(self, ctx : &mut impl IsLiveCtx<'a>) -> bool {
-        Zero.alloc(ctx).new_succ(ctx).leq(self, ctx)
-    }
-
-    pub fn maybe_zero(self, ctx : &mut impl IsLiveCtx<'a>) -> bool {
-        !self.is_nonzero(ctx)
-    }
-
-    pub fn maybe_nonzero(self, ctx : &mut impl IsLiveCtx<'a>) -> bool {
-        !self.is_zero(ctx)
-    }
-
-    pub fn use_dep_elim(self, ctx : &mut impl IsLiveCtx<'a>) -> bool {
-        self.maybe_nonzero(ctx)
-    }           
-
-}
-
-impl<'a> LevelsPtr<'a> {
-    pub fn subst_many(self, ks : Self, vs : Self, ctx : &mut impl IsLiveCtx<'a>) -> Self {
-        match self.read(ctx) {
-            Nil => Nil::<Level>.alloc(ctx),
-            Cons(hd, tl) => {
-                let sink = tl.subst_many(ks, vs, ctx);
-                let hd = hd.subst(ks, vs, ctx);
-                Cons(hd, sink).alloc(ctx)
-            }
-        }
-    }
-    pub fn all_params_defined_many(self, ls : Self, ctx : &mut impl IsLiveCtx<'a>) -> bool {
-        match self.read(ctx) {
-            Nil => true,
-            Cons(hd, tl) => hd.all_params_defined(ls, ctx) 
-                            && tl.all_params_defined_many(ls, ctx)
+            _ => panic!(),
         }
     }
 
-    pub fn eq_antisymm_many(self, other : Self, ctx : &mut impl IsLiveCtx<'a>) -> bool {
-        match (self.read(ctx), other.read(ctx)) {
-            (Cons(hd_l, tl_l), Cons(hd_r, tl_r)) => {
-                hd_l.eq_antisymm(hd_r, ctx)
-                && tl_l.eq_antisymm_many(tl_r, ctx)
-            },
-            (Nil, Nil) => true,
-            _ => false
-        }
+    pub fn leq(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> bool {
+        let l_prime = self.simplify(l);
+        let r_prime = self.simplify(r);
+        self.leq_core(l_prime, r_prime, 0)
     }
 
-    
-    pub fn fold_imaxs(self, sink : LevelPtr<'a>, ctx : &mut impl IsLiveCtx<'a>) -> LevelPtr<'a> {
-        match self.read(ctx) {
-            Nil => sink,
-            Cons(hd, tl) => tl.fold_imaxs(hd.new_imax(sink, ctx), ctx)
+    pub fn eq_antisymm(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> bool { self.leq(l, r) && self.leq(r, l) }
+
+    pub fn eq_antisymm_many(&mut self, xs: LevelsPtr<'t>, ys: LevelsPtr<'t>) -> bool {
+        let xs = self.read_levels(xs).clone();
+        let ys = self.read_levels(ys).clone();
+        if xs.len() != ys.len() {
+            return false
         }
+        xs.iter().copied().zip(ys.iter().copied()).all(|(x, y)| self.eq_antisymm(x, y))
     }
-}
 
+    /// Does this list of universe parameters already contain `Param(n)` for some `n : Name`
+    ///
+    /// Used for generating a unique elim universe in the inductive module
+    pub(crate) fn contains_param(&self, uparams: LevelsPtr<'t>, candidate: NamePtr<'t>) -> bool {
+        self.read_levels(uparams).iter().copied().any(|lptr| match self.read_level(lptr) {
+            Param(n, ..) => n == candidate,
+            _ => false,
+        })
+    }
 
-impl<'a> HasNanodaDbg<'a> for Level<'a> {
-    fn nanoda_dbg(self, ctx : &impl IsCtx<'a>) -> String {
-        match self {
-            Zero => format!("0"),
-            Succ(pred) => format!("S({})", pred.nanoda_dbg(ctx)),
-            Max(l, r) => format!("M({}, {})", l.nanoda_dbg(ctx), r.nanoda_dbg(ctx)),
-            Imax(l, r) => format!("Im({}, {})", l.nanoda_dbg(ctx), r.nanoda_dbg(ctx)),
-            Param(n) => format!("{}", n.nanoda_dbg(ctx))
-        }
+    /// l <= 0 -> is_zero(l)
+    pub fn is_zero(&mut self, level: LevelPtr<'t>) -> bool {
+        let zero = self.zero();
+        self.leq(level, zero)
+    }
+
+    // 1 <= level -> is_nonzero(level)
+    pub fn is_nonzero(&mut self, level: LevelPtr<'t>) -> bool {
+        let zero = self.zero();
+        let one = self.succ(zero);
+        self.leq(one, level)
     }
 }

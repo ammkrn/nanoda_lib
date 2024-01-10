@@ -1,0 +1,8 @@
+prelude
+inductive False : Prop
+mutual
+  unsafe def a : False := c
+  unsafe opaque b : False := c
+  unsafe opaque c : False := b
+  unsafe def d : False := b
+end

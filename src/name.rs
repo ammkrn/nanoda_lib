@@ -1,102 +1,83 @@
-use crate::level::{ LevelPtr, Level::* };
-use crate::utils::{ 
-    alloc_str, 
-    Ptr, 
-    ListPtr, 
-    IsCtx, 
-    IsLiveCtx, 
-    Store, 
-    Env, 
-    LiveZst, 
-    HasNanodaDbg 
-};
-
-
+//! Implementaiton of the `Name` type (hierarchical names)
+use crate::util::{CowStr, NamePtr, StringPtr, TcCtx};
 use Name::*;
 
-pub type StringPtr<'a> = Ptr<'a, String>;
-pub type NamePtr<'a> = Ptr<'a, Name<'a>>;
-pub type NamesPtr<'a> = ListPtr<'a, Name<'a>>;
+pub(crate) const ANON_HASH: u64 = 43;
+pub(crate) const STR_HASH: u64 = 911;
+pub(crate) const NUM_HASH: u64 = 103;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Name<'a> {
     Anon,
-    Str(NamePtr<'a>, StringPtr<'a>),
-    Num(NamePtr<'a>, u64),
+    Str(NamePtr<'a>, StringPtr<'a>, u64),
+    Num(NamePtr<'a>, u64, u64),
+}
+
+impl<'a> std::hash::Hash for Name<'a> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { state.write_u64(self.get_hash()) }
 }
 
 impl<'a> Name<'a> {
-    // This is the jankiest once since we have to deal with String.
-    pub fn insert_env<'e>(self, env : &mut Env<'e>, live : &Store<LiveZst>) -> NamePtr<'e> {
+    fn get_hash(&self) -> u64 {
         match self {
-            Anon => unreachable!("Anon should always begin in the environment!"),
-            Str(pfx, sfx) => {
-                let pfx = pfx.insert_env(env, live);
-                match sfx {
-                    Ptr::E(index, _, z) => {
-                        let sfx2 = env.store.strings.extend_safe(index, z);
-                        assert_eq!(sfx, sfx2);
-                        Str(pfx, sfx2).alloc(env)
-                    },
-                    Ptr::L(index, h, z) => {
-                        let sfx = live.strings.get_elem(index, h, z).clone();
-                        pfx.new_str(sfx, env)
-                    }
-                }
+            Anon => ANON_HASH,
+            Str(.., hash) | Num(.., hash) => *hash,
+        }
+    }
+}
+
+impl<'x, 't: 'x, 'p: 't> TcCtx<'t, 'p> {
+    pub(crate) fn get_name_prefix(&self, n: NamePtr<'t>) -> NamePtr<'t> {
+        match self.read_name(n) {
+            Anon => n,
+            Str(pfx, ..) => pfx,
+            Num(pfx, ..) => pfx,
+        }
+    }
+
+    pub(crate) fn concat_name(&mut self, n1: NamePtr<'t>, n2: NamePtr<'t>) -> NamePtr<'t> {
+        match self.read_name(n2) {
+            Anon => n1,
+            Str(pfx, sfx, ..) => {
+                let pfx = self.concat_name(n1, pfx);
+                self.str(pfx, sfx)
+            }
+            Num(pfx, sfx, ..) => {
+                let pfx = self.concat_name(n1, pfx);
+                self.num(pfx, sfx)
+            }
+        }
+    }
+
+    pub(crate) fn append_index_after(&mut self, n: NamePtr<'t>, idx: u64) -> NamePtr<'t> {
+        match self.read_name(n) {
+            Str(pfx, sfx, ..) => {
+                let s = self.read_string(sfx);
+                let s = self.alloc_string(CowStr::Owned(format!("{}_{}", s, idx)));
+                self.str(pfx, s)
+            }
+            _ => {
+                let s = self.alloc_string(CowStr::Owned(format!("_{}", idx)));
+                self.str(n, s)
+            }
+        }
+    }
+
+    pub(crate) fn replace_pfx(&mut self, n: NamePtr<'t>, outgoing: NamePtr<'t>, incoming: NamePtr<'t>) -> NamePtr<'t> {
+        match self.read_name(n) {
+            Anon => match self.read_name(outgoing) {
+                Anon => incoming,
+                _ => self.anonymous(),
             },
-            Num(pfx, sfx) => pfx.insert_env(env, live).new_num(sfx, env)
-        }
-    }
-}
-
-
-impl<'a> NamePtr<'a> {
-
-    pub fn new_str(self, s : String, ctx : &mut impl IsCtx<'a>) -> NamePtr<'a> {
-        Str(self, alloc_str(s, ctx)).alloc(ctx)
-    }
-
-    pub fn new_num(self, n : u64, ctx : &mut impl IsCtx<'a>) -> NamePtr<'a> {
-        Num(self, n).alloc(ctx)
-    }
-
-    pub fn new_param(self, ctx : &mut impl IsCtx<'a>) -> LevelPtr<'a> {
-        Param(self).alloc(ctx)
-    }
-
-    pub fn get_prefix(self, ctx : &impl IsLiveCtx<'a>) -> NamePtr<'a> {
-        match self.read(ctx) {
-            Anon => self,
-            | Str(pfx, _)
-            | Num(pfx, _) => pfx
-        }
-    }
-
-
-
-}
-
-
-
-impl<'a> HasNanodaDbg<'a> for Name<'a> {
-    fn nanoda_dbg(self, ctx : &impl IsCtx<'a>) -> String {
-        match self {
-            Anon => String::new(),
-            Str(pfx, sfx) if pfx.read(ctx) == Anon => {
-                sfx.read(ctx).clone()
+            Str(..) | Num(..) if n == outgoing => incoming,
+            Str(pfx, sfx, ..) => {
+                let pfx = self.replace_pfx(pfx, outgoing, incoming);
+                self.str(pfx, sfx)
             }
-            Str(pfx, sfx) => {
-                format!("{}.{}", pfx.nanoda_dbg(ctx), sfx.read(ctx))
-            }
-            Num(pfx, sfx) if pfx.read(ctx) == Anon => {
-                sfx.to_string()
-            },
-            Num(pfx, sfx) => {
-                format!("{}.{}", pfx.nanoda_dbg(ctx), sfx.to_string())
+            Num(pfx, sfx, ..) => {
+                let pfx = self.replace_pfx(pfx, outgoing, incoming);
+                self.num(pfx, sfx)
             }
         }
     }
 }
-
-
-

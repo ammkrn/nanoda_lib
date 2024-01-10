@@ -1,0 +1,5 @@
+prelude
+
+inductive False : Prop
+
+axiom Foo : False

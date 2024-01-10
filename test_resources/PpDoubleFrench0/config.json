@@ -1,0 +1,7 @@
+{
+    "export_file_path": "test_resources/PpDoubleFrench0/export",
+    "permitted_axioms": [],
+    "nat_extension": false,
+    "string_extension": false,
+    "print_success_message": false
+}

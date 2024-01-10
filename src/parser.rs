@@ -1,411 +1,698 @@
-use std::sync::atomic::{ AtomicUsize, Ordering::Relaxed };
-use std::fs::File;
-use std::io::{ BufRead, BufReader };
-use std::str::SplitWhitespace;
-
-use crossbeam_utils::thread;
-
-use crate::name::{ NamePtr, Name };
-use crate::level::{ LevelPtr, LevelsPtr, Level };
-use crate::expr::{ ExprPtr, Expr };
-use crate::env::{ DeclarSpec, DeclarSpec::*, Notation };
-use crate::inductive::IndBlock;
-use crate::utils::{ 
-    Env, 
-    EnvZst,
-    HasMkPtr,
-    Ptr,
-    alloc_str,
-    List::* 
+use crate::env::{
+    ConstructorData, Declar, DeclarInfo, InductiveData, Notation, RecRule, RecursorData, ReducibilityHint,
+    ReducibilityHint::*,
 };
+use crate::expr::{BinderStyle, Expr};
+use crate::hash64;
+use crate::level::Level;
+use crate::name::Name;
+use crate::util::{
+    new_fx_hash_map, new_fx_index_map, BigUintPtr, Config, DagMarker, ExportFile, ExprPtr, FxHashMap, FxIndexMap,
+    LeanDag, LevelPtr, LevelsPtr, NamePtr, StringPtr,
+};
+use num_bigint::BigUint;
+use std::error::Error;
+use std::io::BufRead;
+use std::str::{FromStr, SplitWhitespace};
+use std::sync::{atomic::AtomicBool, Arc};
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Semver(u16, u16, u16);
 
-pub struct Parser  {
-    num_threads : usize,
-    buf_reader : BufReader<File>,
-    string_buffer : String,
-    line_num : usize,
-    finished : bool,
-    debug_mode: bool,
+pub(crate) const MIN_SUPPORTED_SEMVER: Semver = Semver(0, 1, 2);
+
+pub struct Parser<'a, R: BufRead> {
+    buf_reader: R,
+    line_num: usize,
+    dag: LeanDag<'a>,
+    // rec rules are treated separately during parsing because the export
+    // file doesn't nest them within a recursor, but they're not stored separately
+    // in the dag, so we need to hold onto them temporarily in a way that can be
+    // indexed by a usize.
+    rec_rules: Vec<RecRule<'a>>,
+    declars: FxIndexMap<NamePtr<'a>, Declar<'a>>,
+    notations: FxHashMap<NamePtr<'a>, Notation<'a>>,
+    config: Config,
 }
 
-impl Parser {
-    pub fn new(num_threads : usize, buf_reader : BufReader<File>, debug_mode: bool) -> Self {
-        Parser {
-            num_threads,
-            buf_reader,
-            string_buffer : String::new(),
-            line_num : 0usize,
-            finished : false,
-            debug_mode
-        }
+pub(crate) fn parse_export_file<'p, R: BufRead>(
+    buf_reader: R,
+    config: Config,
+) -> Result<ExportFile<'p>, Box<dyn Error>> {
+    let mut parser = Parser::new(buf_reader, config);
+    // A temporary buffer to hold the line being parsed; gets filled and cleared in each loop,
+    // but lets us use std's `SplitWhitespace`, which makes life easier.
+    let mut line_buffer = String::new();
+    let semver = {
+        parser.buf_reader.read_line(&mut line_buffer)?;
+        parse_semver(&line_buffer)?
+    };
+    if semver < MIN_SUPPORTED_SEMVER {
+        return Err(Box::from(format!(
+            "parsed semver is less than the minimum supported export version. Found {:?}, min supported is {:?}",
+            MIN_SUPPORTED_SEMVER, semver
+        )))
     }
-
-    pub fn parser_loop(&mut self) -> usize {
-        let mut env = Env::new(self.debug_mode);
-        let mut specs = Vec::<DeclarSpec>::new();
-
-        loop {
-            self.line_num += 1;
-
-            match self.buf_reader.read_line(&mut self.string_buffer) {
-                Err(e) => panic!("Error in handling outer_loop! {}\n", e),
-                Ok(0) => { self.finished = true; break }
-                Ok(..) => {
-                    let mut ws = self.string_buffer.split_whitespace();
-                    match ws.next().expect("Failed to read split_whitespace") {
-                        | s @ "#PREFIX"
-                        | s @ "#INFIX" 
-                        | s @ "#POSTFIX" => env.make_notation(s, &mut ws),
-                        "#AX" => env.make_axiom(&mut ws, &mut specs),
-                        "#DEF" => env.make_definition(&mut ws, &mut specs),
-                        "#QUOT" => env.make_quot(&mut specs),
-                        "#IND" => env.make_inductive(&mut ws, &mut specs),
-                        owise => env.parse_primitive(owise, &mut ws),
-                    }
+    loop {
+        // Make sure the line buffer is empty.
+        line_buffer.clear();
+        match parser.buf_reader.read_line(&mut line_buffer)? {
+            // If EOF has been reached, we're done.
+            0 => break,
+            // If we're able to read more than 0 bytes, a line has been parsed.
+            _ => {
+                let mut line_rem_toks = line_buffer.split_whitespace();
+                let tok = line_rem_toks
+                    .next()
+                    .ok_or_else(|| Box::<dyn Error>::from("Export file cannot contain empty lines"))?;
+                match tok {
+                    s @ "#PREFIX" | s @ "#INFIX" | s @ "#POSTFIX" => parser.parse_notation(s, &mut line_rem_toks),
+                    "#AX" => parser.parse_axiom(&mut line_rem_toks),
+                    "#DEF" => parser.parse_def(&mut line_rem_toks),
+                    "#OPAQ" => parser.parse_opaque(&mut line_rem_toks),
+                    "#QUOT" => parser.parse_quot(&mut line_rem_toks),
+                    "#THM" => parser.parse_theorem(&mut line_rem_toks),
+                    "#IND" => parser.parse_inductive(&mut line_rem_toks),
+                    "#CTOR" => parser.parse_constructor(&mut line_rem_toks),
+                    "#REC" => parser.parse_recursor(&mut line_rem_toks),
+                    // otherwise, the parsed line is some non-declaration primitive
+                    // (Name, Level, Expr) which should be prefixed by its index.
+                    leading_idx => parser.parse_primitive(leading_idx.parse::<u32>()?, &mut line_rem_toks)?,
                 }
             }
-            self.string_buffer.clear();
         }
-
-        assert!(self.finished);
-        env.compile_loop(specs);
-        env.check_loop(self.num_threads);
-        env.declars.len()
+        // Increment the line number; this is only tracked for error reporting.
+        parser.line_num += 1;
     }
 
-
+    let name_cache = parser.dag.mk_name_cache();
+    let mut f = ExportFile {
+        dag: parser.dag,
+        declars: parser.declars,
+        notations: parser.notations,
+        quot_checked: AtomicBool::new(false),
+        name_cache,
+        config: parser.config,
+    };
+    f.check_no_cycles();
+    Ok(f)
 }
 
-impl<'e> Env<'e> {
-    fn parse_primitive(&mut self, lead : &str, ws : &mut SplitWhitespace) {
-        let leading_num = match lead.parse::<usize>() {
-            Ok(n) => n,
-            Err(e) => panic!("Failed to parse leading num : {}\n", e),
+impl<'a, R: BufRead> Parser<'a, R> {
+    pub fn new(buf_reader: R, config: Config) -> Self {
+        Self {
+            buf_reader,
+            line_num: 0usize,
+            dag: LeanDag::new_parser(),
+            rec_rules: Vec::new(),
+            declars: new_fx_index_map(),
+            notations: new_fx_hash_map(),
+            config,
+        }
+    }
+
+    fn parse_rest_cowstr(&self, ws: &mut SplitWhitespace) -> crate::util::CowStr<'a> {
+        let s = ws.next().unwrap();
+        assert!(ws.next().is_none());
+        std::borrow::Cow::Owned(s.to_owned())
+    }
+
+    /// Allocate a parsed string as a DAG item.
+    fn parse_insert_string(&mut self, ws: &mut SplitWhitespace) -> StringPtr<'a> {
+        let s = self.parse_rest_cowstr(ws);
+        StringPtr::from(DagMarker::ExportFile, self.dag.strings.insert_full(s).0)
+    }
+
+    /// Parse a `#NS` row and add it to the dag. The leading index and discriminator
+    /// have already been found, and the leading index is passed as `idx`.
+    fn parse_name_str_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let pfx = self.parse_name_ptr(ws);
+        let sfx = self.parse_insert_string(ws);
+        let insert_result = {
+            let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
+            self.dag.names.insert_full(Name::Str(pfx, sfx, hash))
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
+
+    /// Parse a `#NI` row and add it to the dag. The leading index and discriminator
+    /// have already been found, and the leading index is passed as `idx`.
+    fn parse_name_num_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let pfx = self.parse_name_ptr(ws);
+        let sfx = parse_u64(ws);
+        let insert_result = {
+            let hash = hash64!(crate::name::NUM_HASH, pfx, sfx);
+            self.dag.names.insert_full(Name::Num(pfx, sfx, hash))
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
+
+    fn parse_level_succ_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let l = self.parse_level_ptr(ws);
+        let insert_result = {
+            let hash = hash64!(crate::level::SUCC_HASH, l);
+            self.dag.levels.insert_full(Level::Succ(l, hash))
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
+    fn parse_level_max_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let l = self.parse_level_ptr(ws);
+        let r = self.parse_level_ptr(ws);
+        let insert_result = {
+            let hash = hash64!(crate::level::MAX_HASH, l, r);
+            self.dag.levels.insert_full(Level::Max(l, r, hash))
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
+
+    fn parse_level_imax_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let l = self.parse_level_ptr(ws);
+        let r = self.parse_level_ptr(ws);
+        let insert_result = {
+            let hash = hash64!(crate::level::IMAX_HASH, l, r);
+            self.dag.levels.insert_full(Level::IMax(l, r, hash))
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
+
+    fn parse_level_param_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let n = self.parse_name_ptr(ws);
+        let insert_result = {
+            let hash = hash64!(crate::level::PARAM_HASH, n);
+            self.dag.levels.insert_full(Level::Param(n, hash))
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
+
+    fn num_loose_bvars(&self, e: ExprPtr<'a>) -> u16 {
+        self.dag.exprs.get_index(e.idx as usize).unwrap().num_loose_bvars()
+    }
+
+    fn has_fvars(&self, e: ExprPtr<'a>) -> bool { self.dag.exprs.get_index(e.idx as usize).unwrap().has_fvars() }
+
+    fn parse_expr_var_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let dbj_idx = parse_u16(ws);
+        let insert_result = {
+            let hash = hash64!(crate::expr::VAR_HASH, dbj_idx);
+            self.dag.exprs.insert_full(Expr::Var { dbj_idx, hash })
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
+
+    fn parse_expr_sort_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let level = self.parse_level_ptr(ws);
+        let insert_result = {
+            let hash = hash64!(crate::expr::SORT_HASH, level);
+            self.dag.exprs.insert_full(Expr::Sort { level, hash })
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
+
+    fn parse_expr_const_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let name = self.parse_name_ptr(ws);
+        let levels = self.parse_level_ptrs(ws);
+        let insert_result = {
+            let hash = hash64!(crate::expr::CONST_HASH, name, levels);
+            self.dag.exprs.insert_full(Expr::Const { name, levels, hash })
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
+
+    fn parse_expr_app_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let fun = self.parse_expr_ptr(ws);
+        let arg = self.parse_expr_ptr(ws);
+        let insert_result = {
+            let hash = hash64!(crate::expr::APP_HASH, fun, arg);
+            let num_bvars = self.num_loose_bvars(fun).max(self.num_loose_bvars(arg));
+            let locals = self.has_fvars(fun) || self.has_fvars(arg);
+            self.dag.exprs.insert_full(Expr::App { fun, arg, num_loose_bvars: num_bvars, has_fvars: locals, hash })
         };
 
-        let mut as_chars = ws.next().expect("as_chars").chars();
-        assert!(as_chars.next() == Some('#'));
-        
-        match as_chars.next() {
-           Some('N') => { self.make_name(leading_num, as_chars.next().unwrap(), ws); },
-           Some('U') => { self.make_level(leading_num, as_chars.next().unwrap(), ws); },
-           Some('E') => { self.make_expr(leading_num, as_chars.next().unwrap(), ws); },
-           owise => panic!("Neither Name, nor Universe, nor Expr : {:?} : {:#?}\n", owise, ws)
-        }
-    }    
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
 
-    fn get_name(&mut self, ws : &mut SplitWhitespace) -> NamePtr<'e> {
-        let lean_pos = parse_usize(ws);
-        EnvZst.mk_ptr(lean_pos)
-    }    
+    fn parse_expr_lambda_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let binder_style = parse_binder_info(ws);
+        let binder_name = self.parse_name_ptr(ws);
+        let binder_type = self.parse_expr_ptr(ws);
+        let body = self.parse_expr_ptr(ws);
+        let insert_result = {
+            let hash = hash64!(crate::expr::LAMBDA_HASH, binder_name, binder_style, binder_type, body);
+            let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
+            let locals = self.has_fvars(binder_type) || self.has_fvars(body);
+            self.dag.exprs.insert_full(Expr::Lambda {
+                binder_name,
+                binder_style,
+                binder_type,
+                body,
+                num_loose_bvars: num_bvars,
+                has_fvars: locals,
+                hash,
+            })
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
 
-    fn get_level(&mut self, ws : &mut SplitWhitespace) -> LevelPtr<'e> {
-        let lean_pos = parse_usize(ws);
-        EnvZst.mk_ptr(lean_pos)
-    }    
+    fn parse_expr_pi_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let binder_style = parse_binder_info(ws);
+        let binder_name = self.parse_name_ptr(ws);
+        let binder_type = self.parse_expr_ptr(ws);
+        let body = self.parse_expr_ptr(ws);
+        let insert_result = {
+            let hash = hash64!(crate::expr::PI_HASH, binder_name, binder_style, binder_type, body);
+            let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
+            let locals = self.has_fvars(binder_type) || self.has_fvars(body);
+            self.dag.exprs.insert_full(Expr::Pi {
+                binder_name,
+                binder_style,
+                binder_type,
+                body,
+                num_loose_bvars: num_bvars,
+                has_fvars: locals,
+                hash,
+            })
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
 
+    fn parse_expr_let_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let binder_name = self.parse_name_ptr(ws);
+        let binder_type = self.parse_expr_ptr(ws);
+        let val = self.parse_expr_ptr(ws);
+        let body = self.parse_expr_ptr(ws);
+        let insert_result = {
+            let hash = hash64!(crate::expr::LET_HASH, binder_name, binder_type, val, body);
+            let num_bvars = self
+                .num_loose_bvars(binder_type)
+                .max(self.num_loose_bvars(val).max(self.num_loose_bvars(body).saturating_sub(1)));
+            let locals = self.has_fvars(binder_type) || self.has_fvars(val) || self.has_fvars(body);
+            self.dag.exprs.insert_full(Expr::Let {
+                binder_name,
+                binder_type,
+                val,
+                body,
+                num_loose_bvars: num_bvars,
+                has_fvars: locals,
+                hash,
+            })
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
 
-    fn get_expr(&mut self, ws : &mut SplitWhitespace) -> ExprPtr<'e> {
-        let lean_pos = parse_usize(ws);
-        EnvZst.mk_ptr(lean_pos)
-    }    
+    fn parse_expr_proj_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let ty_name = self.parse_name_ptr(ws);
+        let idx = parse_usize(ws);
+        let structure = self.parse_expr_ptr(ws);
+        let insert_result = {
+            let hash = hash64!(crate::expr::PROJ_HASH, ty_name, idx, structure);
+            let num_bvars = self.num_loose_bvars(structure);
+            let locals = self.has_fvars(structure);
+            self.dag.exprs.insert_full(Expr::Proj {
+                ty_name,
+                idx,
+                structure,
+                num_loose_bvars: num_bvars,
+                has_fvars: locals,
+                hash,
+            })
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
+
+    fn parse_expr_stringlit_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let s = parse_hex_string(ws).unwrap();
+        let string_ptr =
+            StringPtr::from(DagMarker::ExportFile, self.dag.strings.insert_full(crate::util::CowStr::Owned(s)).0);
+        let insert_result = {
+            let hash = hash64!(crate::expr::STRING_LIT_HASH, string_ptr);
+            self.dag.exprs.insert_full(Expr::StringLit { ptr: string_ptr, hash })
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
+
+    fn parse_expr_natlit_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+        let chars = ws.next().unwrap();
+        let bignat = BigUint::from_str(chars).unwrap();
+        let num_ptr = BigUintPtr::from(DagMarker::ExportFile, self.dag.bignums.insert_full(bignat).0);
+        let insert_result = {
+            let hash = hash64!(crate::expr::NAT_LIT_HASH, num_ptr);
+            self.dag.exprs.insert_full(Expr::NatLit { ptr: num_ptr, hash })
+        };
+        assert_eq!((assigned_idx as usize, true), insert_result);
+    }
+
+    fn parse_name_ptr(&self, ws: &mut SplitWhitespace) -> NamePtr<'a> {
+        let idx = parse_u32(ws);
+        NamePtr::from(DagMarker::ExportFile, idx as usize)
+    }
+
+    fn try_parse_name_ptr(&self, ws: &mut SplitWhitespace) -> Option<NamePtr<'a>> {
+        let idx = try_parse_u32(ws)?;
+        Some(NamePtr::from(DagMarker::ExportFile, idx as usize))
+    }
+
+    fn parse_level_ptr(&self, ws: &mut SplitWhitespace) -> LevelPtr<'a> {
+        let idx = parse_u32(ws);
+        LevelPtr::from(DagMarker::ExportFile, idx as usize)
+    }
+
+    fn parse_expr_ptr(&self, ws: &mut SplitWhitespace) -> ExprPtr<'a> {
+        let idx = parse_u32(ws);
+        crate::util::Ptr { idx, dag_marker: DagMarker::ExportFile, ph: std::marker::PhantomData }
+    }
 
     // Given a sequence of numbers [n1, n2, n3], collect the sequence
     // [levels[n1], levels[n2], levels[n3]] into a list.
-    fn get_levels(&mut self, ws : &mut SplitWhitespace) -> LevelsPtr<'e> {
-        let mut base = Nil::<Level>.alloc(self);
-        for char_chunk in ws.rev() {
-            let pos = char_chunk.parse::<usize>().expect("uparams_char_chunk");
-            base = Cons(EnvZst.mk_ptr(pos), base).alloc(self)
+    fn parse_level_ptrs(&mut self, ws: &mut SplitWhitespace) -> LevelsPtr<'a> {
+        let mut levels = Vec::new();
+        for cs in ws {
+            let i = cs.parse::<usize>().expect("uparams_char_chunk");
+            levels.push(LevelPtr::from(DagMarker::ExportFile, i))
         }
-        base
+        LevelsPtr::from(DagMarker::ExportFile, self.dag.uparams.insert_full(Arc::from(levels)).0)
     }
 
-    // Given a sequence of numbers [x1, x2, .., xN], collect the sequence
-    // of names [names[x1], names[x2], .., names[xN]], then map over
-    // them with the `new_param : Name -> Level` constructor.
-    // ** Does not need to be traced since it only manipulates extant items.
-    fn get_uparams(&mut self, ws : &mut SplitWhitespace) -> LevelsPtr<'e> {
-        let mut base = Nil::<Level>.alloc(self);
-        for char_chunk in ws.rev() {
-            let pos = char_chunk.parse::<usize>().expect("uparams_char_chunk");
-            let fetched : Ptr<Name> = EnvZst.mk_ptr(pos);
-            base = Cons(fetched.new_param(self), base).alloc(self)
-        };
-        base
-    }        
+    /// Consumes the rest of the iterator.
+    fn parse_names(&mut self, ws: &mut SplitWhitespace, limit: Option<u16>) -> Vec<NamePtr<'a>> {
+        let mut name_ptrs = Vec::new();
+        if let Some(limit) = limit {
+            for _ in 0..limit {
+                let char_chunk = ws.next().unwrap();
+                let idx = char_chunk.parse::<u32>().expect("uparams_char_chunk");
+                name_ptrs.push(NamePtr::from(DagMarker::ExportFile, idx as usize));
+            }
+        } else {
+            for char_chunk in ws {
+                let idx = char_chunk.parse::<u32>().expect("uparams_char_chunk");
+                name_ptrs.push(NamePtr::from(DagMarker::ExportFile, idx as usize));
+            }
+        }
+        name_ptrs
+    }
 
-    fn make_notation(&mut self, discrim : &str, ws : &mut SplitWhitespace) {
-        let name = self.get_name(ws);
+    fn name_as_level(&mut self, ws: &mut SplitWhitespace) -> Option<LevelPtr<'a>> {
+        let name_ptr = self.try_parse_name_ptr(ws)?;
+        let hash = hash64!(crate::level::PARAM_HASH, name_ptr);
+        // Has to already exist
+        let idx = self.dag.levels.get_index_of(&Level::Param(name_ptr, hash)).unwrap();
+        Some(LevelPtr::from(DagMarker::ExportFile, idx))
+    }
+
+    // This doesn't interfere with the export file indices because every declaration
+    // also has some associated `Expr::Const` which would already have made the
+    // uparam names an associated `Level`
+    /// Consumes the rest of the iterator.
+    fn parse_uparams(&mut self, ws: &mut SplitWhitespace, limit: Option<u16>) -> LevelsPtr<'a> {
+        let mut level_ptrs = Vec::new();
+        if let Some(limit) = limit {
+            for _ in 0..limit {
+                level_ptrs.push(self.name_as_level(ws).unwrap())
+            }
+        } else {
+            while let Some(level_ptr) = self.name_as_level(ws) {
+                level_ptrs.push(level_ptr)
+            }
+        }
+        LevelsPtr::from(DagMarker::ExportFile, self.dag.uparams.insert_full(Arc::from(level_ptrs)).0)
+    }
+
+    fn parse_primitive(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) -> Result<(), Box<dyn Error>> {
+        let discrim = ws.next().expect("Parse primitive");
+        match discrim {
+            "#RR" => self.parse_rec_rule(assigned_idx, ws),
+            "#NS" => self.parse_name_str_row(assigned_idx, ws),
+            "#NI" => self.parse_name_num_row(assigned_idx, ws),
+            "#US" => self.parse_level_succ_row(assigned_idx, ws),
+            "#UM" => self.parse_level_max_row(assigned_idx, ws),
+            "#UIM" => self.parse_level_imax_row(assigned_idx, ws),
+            "#UP" => self.parse_level_param_row(assigned_idx, ws),
+            "#EV" => self.parse_expr_var_row(assigned_idx, ws),
+            "#ES" => self.parse_expr_sort_row(assigned_idx, ws),
+            "#EC" => self.parse_expr_const_row(assigned_idx, ws),
+            "#EA" => self.parse_expr_app_row(assigned_idx, ws),
+            "#EL" => self.parse_expr_lambda_row(assigned_idx, ws),
+            "#EP" => self.parse_expr_pi_row(assigned_idx, ws),
+            "#EZ" => self.parse_expr_let_row(assigned_idx, ws),
+            "#EJ" => self.parse_expr_proj_row(assigned_idx, ws),
+            "#ELN" => {
+                if !self.config.nat_extension {
+                    return Err(Box::<dyn Error>::from(
+                        "Export file contained nat literal, but nat kernel extension not enabled",
+                    ))
+                }
+                self.parse_expr_natlit_row(assigned_idx, ws)
+            }
+            "#ELS" => {
+                if !self.config.string_extension {
+                    return Err(Box::<dyn Error>::from(
+                        "Export file contained string literal, but string lit extension not enabled",
+                    ))
+                }
+                self.parse_expr_stringlit_row(assigned_idx, ws)
+            }
+            owise => return Err(Box::<dyn Error>::from(format!("Unrecognized primitive {}", owise))),
+        }
+        Ok(())
+    }
+
+    // Used for the axiom whitelist feature.
+    fn name_to_string(&self, n: NamePtr<'a>) -> String {
+        match self.dag.names.get_index(n.idx()).copied().unwrap() {
+            Name::Anon => String::new(),
+            Name::Str(pfx, sfx, _) => {
+                let mut s = self.name_to_string(pfx);
+                if !s.is_empty() {
+                    s.push('.');
+                }
+                s + self.dag.strings.get_index(sfx.idx()).unwrap()
+            }
+            Name::Num(pfx, sfx, _) => {
+                let mut s = self.name_to_string(pfx);
+                if !s.is_empty() {
+                    s.push('.');
+                }
+                s + format!("{}", sfx).as_str()
+            }
+        }
+    }
+
+    fn parse_axiom(&mut self, ws: &mut SplitWhitespace) {
+        let name = self.parse_name_ptr(ws);
+        let ty = self.parse_expr_ptr(ws);
+        let uparams = self.parse_uparams(ws, None);
+        let info = DeclarInfo { name, ty, uparams };
+        let axiom = Declar::Axiom { info };
+        let axiom_permitted = self.config.permitted_axioms.contains(&self.name_to_string(name));
+        if !axiom_permitted && self.config.unpermitted_axiom_hard_error {
+            panic!("export file declares unpermitted axiom {:?}", self.name_to_string(name))
+        }
+        if axiom_permitted {
+            self.declars.insert(name, axiom);
+        }
+    }
+
+    fn parse_hint(&mut self, ws: &mut SplitWhitespace) -> ReducibilityHint {
+        match ws.next() {
+            Some("O") => Opaque,
+            Some("A") => Abbrev,
+            Some("R") => Regular(parse_u16(ws)),
+            owise => panic!("expected to parse reducibility hint, found {:?}", owise),
+        }
+    }
+
+    fn parse_def(&mut self, ws: &mut SplitWhitespace) {
+        let name = self.parse_name_ptr(ws);
+        let ty = self.parse_expr_ptr(ws);
+        let val = self.parse_expr_ptr(ws);
+        let hint = self.parse_hint(ws);
+        let uparams = self.parse_uparams(ws, None);
+        let info = DeclarInfo { name, ty, uparams };
+        let definition = Declar::Definition { info, val, hint };
+        self.declars.insert(name, definition);
+    }
+
+    fn parse_opaque(&mut self, ws: &mut SplitWhitespace) {
+        let name = self.parse_name_ptr(ws);
+        let ty = self.parse_expr_ptr(ws);
+        let val = self.parse_expr_ptr(ws);
+        let uparams = self.parse_uparams(ws, None);
+        let info = DeclarInfo { name, ty, uparams };
+        let definition = Declar::Opaque { info, val };
+        self.declars.insert(name, definition);
+    }
+
+    pub(crate) fn parse_theorem(&mut self, ws: &mut SplitWhitespace) {
+        let name = self.parse_name_ptr(ws);
+        let ty = self.parse_expr_ptr(ws);
+        let val = self.parse_expr_ptr(ws);
+        let uparams = self.parse_uparams(ws, None);
+        let info = DeclarInfo { name, ty, uparams };
+        let theorem = Declar::Theorem { info, val };
+        self.declars.insert(name, theorem);
+    }
+
+    fn parse_quot(&mut self, ws: &mut SplitWhitespace) {
+        let name = self.parse_name_ptr(ws);
+        let ty = self.parse_expr_ptr(ws);
+        let uparams = self.parse_uparams(ws, None);
+        let info = DeclarInfo { name, ty, uparams };
+        let quot = Declar::Quot { info };
+        self.declars.insert(name, quot);
+    }
+
+    fn parse_inductive(&mut self, ws: &mut SplitWhitespace) {
+        let name = self.parse_name_ptr(ws);
+        let ty = self.parse_expr_ptr(ws);
+        let is_recursive = parse_bool(ws);
+        let is_nested = parse_bool(ws);
+        let num_params = parse_u16(ws);
+        let num_indices = parse_u16(ws);
+        let num_inductives = parse_u16(ws);
+        let all_ind_names = Arc::from(self.parse_names(ws, Some(num_inductives)));
+        let num_ctors = parse_u16(ws);
+        let all_ctor_names = Arc::from(self.parse_names(ws, Some(num_ctors)));
+        let uparams = self.parse_uparams(ws, None);
+        let info = DeclarInfo { name, ty, uparams };
+
+        let inductive = Declar::Inductive(InductiveData {
+            info,
+            is_recursive,
+            is_nested,
+            num_params,
+            num_indices,
+            all_ind_names,
+            all_ctor_names,
+        });
+        self.declars.insert(name, inductive);
+    }
+
+    fn parse_constructor(&mut self, ws: &mut SplitWhitespace) {
+        let name = self.parse_name_ptr(ws);
+        let ty = self.parse_expr_ptr(ws);
+        let parent_inductive = self.parse_name_ptr(ws);
+        let ctor_idx = parse_u16(ws);
+        let num_params = parse_u16(ws);
+        let num_fields = parse_u16(ws);
+        let uparams = self.parse_uparams(ws, None);
+        let info = DeclarInfo { name, ty, uparams };
+        let ctor = Declar::Constructor(ConstructorData {
+            info,
+            inductive_name: parent_inductive,
+            ctor_idx,
+            num_params,
+            num_fields,
+        });
+        self.declars.insert(name, ctor);
+    }
+
+    fn parse_rec_rule(&mut self, assigned_idx: u32, line_rem_toks: &mut SplitWhitespace) {
+        let ctor_name = self.parse_name_ptr(line_rem_toks);
+        let ctor_telescope_size_wo_params = parse_u16(line_rem_toks);
+        let val = self.parse_expr_ptr(line_rem_toks);
+        let rule = RecRule { ctor_name, ctor_telescope_size_wo_params, val };
+        assert_eq!(assigned_idx as usize, self.rec_rules.len());
+        self.rec_rules.push(rule)
+    }
+
+    fn parse_recursor(&mut self, ws: &mut SplitWhitespace) {
+        let name = self.parse_name_ptr(ws);
+        let ty = self.parse_expr_ptr(ws);
+        let num_inductives = parse_u16(ws);
+        let all_inductives = Arc::from(self.parse_names(ws, Some(num_inductives)));
+
+        let num_params = parse_u16(ws);
+        let num_indices = parse_u16(ws);
+        let num_motives = parse_u16(ws);
+        let num_minors = parse_u16(ws);
+        let num_rec_rules = parse_u16(ws);
+        let mut rec_rules = Vec::new();
+        for _ in 0..num_rec_rules {
+            let idx = parse_usize(ws);
+            let rr = self.rec_rules[idx];
+            rec_rules.push(rr);
+        }
+        let is_k = parse_bool(ws);
+        let uparams = self.parse_uparams(ws, None);
+        let info = DeclarInfo { name, ty, uparams };
+        let recursor = Declar::Recursor(RecursorData {
+            info,
+            all_inductives,
+            num_params,
+            num_indices,
+            num_motives,
+            num_minors,
+            rec_rules: Arc::from(rec_rules),
+            is_k,
+        });
+        self.declars.insert(name, recursor);
+    }
+
+    fn parse_notation(&mut self, discrim: &str, ws: &mut SplitWhitespace) {
+        let name = self.parse_name_ptr(ws);
         let priority = parse_usize(ws);
-        let symbol = alloc_str(ws.collect::<String>(), self);
+        let symbol = Arc::from(ws.flat_map(|x| x.chars()).collect::<String>());
         let made = match discrim {
-            "#PREFIX"  => Notation::new_prefix(name, priority, symbol),
-            "#INFIX"   => Notation::new_infix(name, priority, symbol),
+            "#PREFIX" => Notation::new_prefix(name, priority, symbol),
+            "#INFIX" => Notation::new_infix(name, priority, symbol),
             "#POSTFIX" => Notation::new_postfix(name, priority, symbol),
             _ => unreachable!(),
         };
-
         self.notations.insert(name, made);
     }
+}
 
-    // #[trace(parser_new_name)]
-    fn make_name(&mut self, lean_pos : usize, kind : char, ws : &mut SplitWhitespace) -> Ptr<Name> {
-        let prefix_name = self.get_name(ws);
-        let new_name = match kind {
-            'S' => prefix_name.new_str(parse_rest_string(ws), self),
-            'I' => prefix_name.new_num(parse_u64(ws), self),
-            owise => unreachable!("parser::make_name, {}\n", owise)
-        };
+fn parse_usize(ws: &mut SplitWhitespace) -> usize {
+    ws.next().expect("parser::parse_usize::next()").parse::<usize>().expect("parser::parse_usize::and_then")
+}
 
-        match new_name {
-            Ptr::E(index, ..) => assert_eq!(index as usize, lean_pos),
-            _ => unreachable!()
-        }
-
-        new_name
-    }
-
-    // #[trace(parser_new_level)]
-    fn make_level(&mut self, lean_pos : usize, kind : char, ws : &mut SplitWhitespace) -> Ptr<Level> {
-         let new_level = match kind {
-             'S' => self.get_level(ws).new_succ(self),
-             'M' => self.get_level(ws).new_max(self.get_level(ws), self),
-             'I' => self.get_level(ws).new_imax(self.get_level(ws), self),
-             'P' => self.get_name(ws).new_param(self),
-             owise => unreachable!("parser::make_level. owise : {:#?}\n", owise)
-         };
-
-        match new_level {
-            Ptr::E(index, ..) => assert_eq!(index as usize, lean_pos),
-            _ => unreachable!()
-        }
-
-        new_level
-    }    
-
-    // #[trace(parser_new_expr)]
-    fn make_expr(&mut self, lean_pos : usize, kind : char, ws : &mut SplitWhitespace) -> Ptr<Expr> {
-        let new_expr = match kind {
-            'V' => <Ptr<Expr>>::new_var(parse_u16(ws), self),
-            'S' => self.get_level(ws).new_sort(self),
-            'C' => <Ptr<Expr>>::new_const(self.get_name(ws), self.get_levels(ws), self),
-            'A' => self.get_expr(ws).new_app(self.get_expr(ws), self),
-            'P' => {
-                let b_style = parse_binder_info(ws);
-                let b_name = self.get_name(ws);
-                let b_type = self.get_expr(ws);
-                let body   = self.get_expr(ws);
-                <Ptr<Expr>>::new_pi(b_name, b_type, b_style, body, self)
-            }
-            'L' => {
-                let b_style = parse_binder_info(ws);
-                let b_name = self.get_name(ws);
-                let b_type = self.get_expr(ws);
-                let body   = self.get_expr(ws);
-                <Ptr<Expr>>::new_lambda(b_name, b_type, b_style, body, self)
-            }
-            'Z' => {
-
-                let b_name = self.get_name(ws);
-                let b_type = self.get_expr(ws);
-                let val    = self.get_expr(ws);
-                let body   = self.get_expr(ws);
-                <Ptr<Expr>>::new_let(b_name, b_type, crate::expr::BinderStyle::Default, val, body, self)
-            }
-            otherwise => unreachable!("parser `make_expr` line : {} expectex expression cue, got {:?}", line!(), otherwise)
-        };
-
-        match new_expr {
-            Ptr::E(index, ..) => assert_eq!(index as usize, lean_pos),
-            _ => unreachable!()
-        }
-
-        new_expr
-    }    
-
-    fn make_axiom(&mut self, ws : &mut SplitWhitespace, specs : &mut Vec<DeclarSpec<'e>>) {
-        let name = self.get_name(ws);
-        let type_ = self.get_expr(ws);
-        let uparams = self.get_uparams(ws);        
-        let axiom = DeclarSpec::new_axiom(
-            name, 
-            uparams,
-            type_,
-            false
-        );
-        specs.push(axiom);
-    }
-
-    fn make_definition(&mut self, ws : &mut SplitWhitespace, specs : &mut Vec<DeclarSpec<'e>>) {
-        let name = self.get_name(ws);
-        let type_ = self.get_expr(ws);
-        let val = self.get_expr(ws);        
-        let uparams = self.get_uparams(ws);
-        let definition = DeclarSpec::new_def(
-            name,
-            uparams,
-            type_,
-            val,
-            false
-        );
-        specs.push(definition);
-    }
-
-
-    fn make_quot(&mut self, specs : &mut Vec<DeclarSpec>) {
-        specs.push(DeclarSpec::new_quot());
-    }
-
-    fn make_inductive(&mut self, ws : &mut SplitWhitespace, specs : &mut Vec<DeclarSpec<'e>>) {
-        let num_params = parse_u16(ws);
-        let name       = self.get_name(ws);
-        let type_      = self.get_expr(ws);
-
-        let num_intros = parse_u16(ws);
-        let rest_usize = parse_rest_usize(ws);
-        let (cnstr_indices, uparam_indices) = rest_usize.split_at(2 * (num_intros as usize));
-
-        let mut uparams = Nil::<Level>.alloc(self);
-        for index in uparam_indices.into_iter().rev() {
-            let param = EnvZst.mk_ptr(*index).new_param(self);
-            uparams = Cons(param, uparams).alloc(self);
-        }
-
-        // This is technically a change in direction for all of these sequences.
-        // (ind type and ind name only have one element for lean3 though)
-        // We read them as [c0, c1, .., cN]
-        // but we place them in the list as [cN, .., c1, c0]
-        // We end up needing this to make things nicer in inductive.
-        //let /*mut*/ ind_names = list!([name], self);
-        //let /*mut*/ ind_types = list!([type_], self);
-        let ind_names = Cons(name, Nil::<Name>.alloc(self)).alloc(self);
-        let ind_types = Cons(type_, Nil::<Expr>.alloc(self)).alloc(self);
-        let mut cnstr_names = Nil::<Name>.alloc(self);
-        let mut cnstr_types = Nil::<Expr>.alloc(self);
-        let mut num_cnstrs = 0u16;
-
-        // When we actually have the possibility of mutuals, this will
-        // be in another loop that's like `for i in num_inductives`
-        // which creates separate lists for each batch of constructors
-        for two_slice in cnstr_indices.chunks(2usize).rev() {
-            let cnstr_name = EnvZst.mk_ptr(two_slice[0]);
-            let cnstr_type = EnvZst.mk_ptr(two_slice[1]);
-            num_cnstrs += 1;
-
-            cnstr_names = Cons(cnstr_name, cnstr_names).alloc(self);
-            cnstr_types = Cons(cnstr_type, cnstr_types).alloc(self);
-        }
-
-        let indblock = IndBlock::new(
-            num_params, 
-            uparams,
-            ind_names, 
-            ind_types, 
-            vec![num_cnstrs],
-            cnstr_names, 
-            cnstr_types, 
-            false,
-            self
-        );
-
-        specs.push(InductiveSpec(indblock))
-    }            
-
-    pub fn compile_loop(&mut self, specs : Vec<DeclarSpec<'e>>) {
-        for spec in specs {
-            spec.compile(&mut self.as_compiler());
-        }
-    }
-
-    pub fn check_loop(&self, num_threads : usize) {
-        if num_threads == 0 || num_threads == 1 {
-            let mut task_idx = 0usize;
-            loop {
-                match self.declars.get_index(task_idx) {
-                    None => break,
-                    Some((_, d)) => {
-                        task_idx += 1;
-                        let mut checker = self.as_checker();
-                        d.check(true, &mut checker);
-                    }
-                }
-            }
-        } else {
-            let next = AtomicUsize::new(0);
-            thread::scope(|s| {
-                let mut threads = Vec::new();
-                for _ in 0..num_threads {
-                    let t = s
-                    .builder()
-                    .stack_size(8388608)
-                    .spawn(|_| {
-                        loop {
-                            let task_idx = next.fetch_add(1, Relaxed);
-                            match self.declars.get_index(task_idx) {
-                                None => break,
-                                Some((_, d)) => {
-                                    let mut checker = self.as_checker();
-                                    d.check(true, &mut checker);
-                                }
-                            }
-
-                        }
-                    }).expect("failed to successfully spawn a scoped thread in `check_loop`");
-                    threads.push(t);
-                }
-                for t in threads {
-                    t.join().expect("A thread in `check_loop` panicked while being joined");
-                }
-            }).expect("failed to unwrap thread scope successfully");
-        }
-
-        println!("Successfully checked {} declarations!", self.declars.len());
+fn parse_bool(ws: &mut SplitWhitespace) -> bool {
+    match ws.next() {
+        Some("1") => true,
+        Some("0") => false,
+        owise => panic!("Parse bool expected 1 or 0, got {:?}", owise),
     }
 }
 
-fn parse_usize(ws : &mut SplitWhitespace) -> usize {
+fn parse_u64(ws: &mut SplitWhitespace) -> u64 {
+    ws.next().expect("parser::parse_u64::next()").parse::<u64>().expect("parser::parse_u64::and_then")
+}
+fn parse_u32(ws: &mut SplitWhitespace) -> u32 {
+    ws.next().expect("parser::parse_u32::next").parse::<u32>().expect("parser::parse_u32::parse")
+}
+
+fn try_parse_u32(ws: &mut SplitWhitespace) -> Option<u32> { ws.next().and_then(|s| s.parse::<u32>().ok()) }
+
+fn parse_u16(ws: &mut SplitWhitespace) -> u16 {
+    ws.next().expect("parser::parse_u16::next").parse::<u16>().expect("parser::parse_u16::parse")
+}
+
+fn parse_binder_info(ws: &mut SplitWhitespace) -> BinderStyle {
     ws.next()
-      .expect("parser::parse_usize::next()")
-      .parse::<usize>()
-      .expect("parser::parse_usize::and_then")
+        .map(|elem| match elem {
+            s if s.contains("#BD") => BinderStyle::Default,
+            s if s.contains("#BI") => BinderStyle::Implicit,
+            s if s.contains("#BC") => BinderStyle::InstanceImplicit,
+            s if s.contains("#BS") => BinderStyle::StrictImplicit,
+            _ => panic!(),
+        })
+        .expect("parse_binder_info")
 }
 
-fn parse_u64(ws : &mut SplitWhitespace) -> u64 {
-    ws.next()
-      .expect("parser::parse_u64::next()")
-      .parse::<u64>()
-      .expect("parser::parse_u64::and_then")
+pub(crate) fn parse_hex_string(ws: &mut SplitWhitespace) -> Option<String> {
+    let bytes = ws.map(|hex_pair| u8::from_str_radix(hex_pair, 16).ok()).collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
 }
 
-fn parse_u16(ws : &mut SplitWhitespace) -> u16 {
-    ws.next()
-      .expect("parser::parse_u16::next")
-      .parse::<u16>()
-      .expect("parser::parse_u16::parse")
-}
-  
-  
-fn parse_rest_usize(ws : &mut SplitWhitespace) -> Vec<usize> {
-    let mut sink = Vec::new();
-    for char_chunk in ws {
-        let parsed = char_chunk.parse::<usize>().expect("rest_usize::loop");
-        sink.push(parsed)
+/// Information about the semver is currently unused awaiting community input.
+pub(crate) fn parse_semver(line: &str) -> Result<Semver, Box<dyn Error>> {
+    let mut iter = line.trim().split('.');
+
+    let major = iter.next().unwrap().parse::<u16>()?;
+    let minor = iter.next().unwrap().parse::<u16>()?;
+    let patch = iter.next().unwrap().parse::<u16>()?;
+    if iter.next().is_some() {
+        Err(Box::<dyn Error>::from("improper semver line; pre-release identiiers or trailing items are not allowed"))
+    } else {
+        Ok(Semver(major, minor, patch))
     }
-    sink
-}
-  
-fn parse_rest_string(ws : &mut SplitWhitespace) -> String {
-  ws.collect::<String>()
-}
-
-fn parse_binder_info(ws : &mut SplitWhitespace) -> crate::expr::BinderStyle {
-  ws.next().map(|elem| match elem {
-      s if s.contains("#BD") => crate::expr::BinderStyle::Default,
-      s if s.contains("#BI") => crate::expr::BinderStyle::Implicit,
-      s if s.contains("#BC") => crate::expr::BinderStyle::InstImplicit,
-      s if s.contains("#BS") => crate::expr::BinderStyle::StrictImplicit,
-      _ => unreachable!(),
-  }).expect("parse_binder_info")
 }

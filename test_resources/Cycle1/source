@@ -1,0 +1,4 @@
+prelude
+inductive MyFalse : Prop
+
+unsafe def x : MyFalse := x

@@ -1,0 +1,22 @@
+prelude
+
+inductive List (α : Type u) where
+  | nil : List α
+  | cons (head : α) (tail : List α) : List α
+
+structure Array (α : Type u) where
+  data : List α
+
+mutual
+
+inductive Sexpr1 (A : Type u) (B : Type v)
+| atom : A -> Sexpr1 A B
+| ofLists : List (Sexpr2 A B) -> List (Sexpr1 A B) -> Sexpr1 A B
+
+inductive Sexpr2 (A : Type u) (B : Type v)
+| atom : B -> Sexpr2 A B
+| ofArrays : Array (Sexpr2 A B) -> Array (Sexpr1 A B) -> Sexpr2 A B
+| ofArrays' : Array (List (Sexpr2 A B)) -> List (Array (Sexpr1 A B)) -> Sexpr2 A B
+| ofArrays'' : Array (List (Array (Sexpr2 A B))) -> List (Array (List (List (Sexpr1 A B)))) -> Sexpr2 A B
+
+end

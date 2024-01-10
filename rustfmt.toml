@@ -1,0 +1,10 @@
+brace_style = "PreferSameLine"
+fn_params_layout = "Tall"
+fn_single_line = true
+match_arm_blocks = false
+trailing_semicolon = false
+use_field_init_shorthand = true
+where_single_line = false
+use_small_heuristics = "Max"
+tab_spaces = 4
+max_width = 120

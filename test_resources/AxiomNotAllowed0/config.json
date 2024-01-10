@@ -1,0 +1,8 @@
+{
+    "export_file_path": "test_resources/AxiomNotAllowed0/export",
+    "use_stdin": false,
+    "permitted_axioms": [],
+    "unpermitted_axiom_hard_error": true,
+    "nat_extension": false,
+    "string_extension": false
+}

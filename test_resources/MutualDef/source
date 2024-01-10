@@ -1,0 +1,11 @@
+mutual
+
+def a : Nat -> Nat -> Nat
+  | x, 0 => x
+  | x, y+1 => b x y
+
+def b : Nat -> Nat -> Nat
+  | x, 0 => x
+  | x, y+1 => a x y
+
+end

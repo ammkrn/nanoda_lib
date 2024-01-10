@@ -1,0 +1,15 @@
+{
+    "export_file_path": "test_resources/PpLet0/export",
+    "use_stdin": false,
+    "permitted_axioms": null,
+    "pp_declars": ["letPrintTestDef"],
+    "nat_extension": false,
+    "string_extension": false,
+    "pp_options": {
+        "width": 60,
+        "declar_sep": "\n\n"
+    },
+    "pp_output_path": null,
+    "pp_to_stdout": true,
+    "print_success_message": false
+}

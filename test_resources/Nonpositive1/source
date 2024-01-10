@@ -1,0 +1,4 @@
+prelude
+
+unsafe inductive Foo (A : Type u)
+| mk (a : A) : (Foo A -> Nat) -> Foo A

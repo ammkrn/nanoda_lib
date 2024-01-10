@@ -1,0 +1,8 @@
+{
+    "export_file_path": "test_resources/Cycle1/export",
+    "use_stdin": false,
+    "permitted_axioms": [],
+    "nat_extension": false,
+    "string_extension": false,
+    "print_success_message": false
+}

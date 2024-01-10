@@ -1,0 +1,4 @@
+prelude
+
+unsafe inductive Bar (A : Type u)
+| mk (a : A) : (Nat -> (Nat -> Bar A) -> Bar A) -> Bar A

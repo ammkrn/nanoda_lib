@@ -1,0 +1,9 @@
+prelude
+inductive Unit : Type
+| mk : Unit
+
+def id {A : Type u} : A → A := fun x => x
+
+def «日本国憲法» : Unit → Unit := id
+
+def testDoubleFrench : Unit → Unit := fun («正当に選挙された») => «正当に選挙された»

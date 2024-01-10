@@ -1,0 +1,10 @@
+{
+    "export_file_path": "test_resources/Sexpr3/export",
+    "pp_options": {
+        "width": 100,
+        "declar_sep": "\n\n"
+    },
+    "pp_output_path": null,
+    "pp_to_stdout": true,
+    "print_success_message": false
+}

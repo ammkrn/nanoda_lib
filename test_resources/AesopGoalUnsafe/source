@@ -1,0 +1,30 @@
+-- should fail; requies exporter to permit unsafe declarations
+set_option autoImplicit false
+structure GoalId where
+  toNat : Nat
+
+structure GoalData (Rapp MVarCluster : Type): Type where
+  id : GoalId
+  parent : IO.Ref MVarCluster
+  children : Array (IO.Ref Rapp)
+
+structure MVarClusterData (Goal Rapp : Type) : Type where
+  parent? : Option (IO.Ref Rapp)
+  goals : Array (IO.Ref Goal)
+  isIrrelevant : Bool
+
+
+structure RappData (Goal MVarCluster : Type) : Type where
+  children : Array (IO.Ref MVarCluster)
+  isIrrelevant : Bool
+
+mutual
+  unsafe inductive GoalUnsafe
+    | mk (d : GoalData RappUnsafe MVarClusterUnsafe)
+
+  unsafe inductive MVarClusterUnsafe
+    | mk (d : MVarClusterData GoalUnsafe RappUnsafe)
+
+  unsafe inductive RappUnsafe
+    | mk (d : RappData GoalUnsafe MVarClusterUnsafe)
+end

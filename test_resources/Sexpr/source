@@ -1,0 +1,9 @@
+prelude
+
+inductive List (A : Type u)
+| nil : List A
+| cons : A → List A → List A
+
+inductive Sexpr (A : Type u)
+| atom  : A → Sexpr A
+| ofList : List (Sexpr A) -> Sexpr A

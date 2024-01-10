@@ -1,0 +1,13 @@
+{
+    "export_file_path": "test_resources/Init/export",
+    "use_stdin": false,
+    "permitted_axioms": ["propext", "Classical.choice", "Quot.sound", "Lean.trustCompiler"],
+    "unpermitted_axiom_hard_error": false,
+    "nat_extension": true,
+    "string_extension": true,
+    "pp_options": null,
+    "pp_declars": null,
+    "pp_output_path": null,
+    "pp_to_stdout": false,
+    "print_success_message": false
+}

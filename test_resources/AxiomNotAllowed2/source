@@ -1,0 +1,9 @@
+-- Axiom not in the allow list 
+prelude
+
+inductive False : Prop
+
+axiom HaveFalse : False
+
+theorem ofFalse : False := HaveFalse
+

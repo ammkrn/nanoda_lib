@@ -1,0 +1,18 @@
+prelude
+
+inductive List (A : Type u)
+| nil : List A
+| cons : A → List A → List A
+
+structure Array (A : Type u) where
+  elems : List A
+
+structure Array2 (A : Type u) where
+  elems : Array A
+
+structure Array3 (A : Type u) where
+  elems : Array2 A
+
+inductive Sexpr (A : Type u)
+| atom  : A → Sexpr A
+| ofArray3 : Array3 (Sexpr A) -> Sexpr A

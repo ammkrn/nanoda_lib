@@ -1,0 +1,29 @@
+{
+    "export_file_path": "test_resources/Sexpr2/export",
+    "pp_declars": [
+        "List",
+        "List.nil",
+        "List.cons",
+        "List.rec",
+        "Array",
+        "Array.mk",
+        "Array.rec",
+        "Sexpr1",
+        "Sexpr1.rec",
+        "Sexpr1.atom",
+        "Sexpr1.ofLists",
+        "Sexpr2",
+        "Sexpr2.rec",
+        "Sexpr2.atom",
+        "Sexpr2.ofArrays",
+        "Sexpr2.ofArrays'",
+        "Sexpr2.ofArrays''"
+    ],
+    "pp_options": {
+        "width": 100,
+        "declar_sep": "\n\n"
+    },
+    "pp_output_path": null,
+    "pp_to_stdout": true,
+    "print_success_message": false
+}
