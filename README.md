@@ -10,13 +10,15 @@ Either run the binary directly through cargo `cargo run --release -- <path_to_co
 
 The binary takes a single argument, which is a path to a json configuration file describing the resource locations and desired options needed to run the type checker. Export files can be streamed via stdin rather than by file path by setting the configuration option `use_stdin: true`, at which point the executable will expect to receive the contents of the export file via stdin.
 
+Export files can be created with [lean4export](https://github.com/ammkrn/lean4export/tree/format2024). The format in the linked fork is expected by this type checker, and is under review for inclusion upstream. The link will be updated if/when the changes are merged.
+
 ## Using the library
 
 The library component can be imported and used as a normal rust crate by specifying it as a dependency in a `Cargo.toml` file.
 
 # Configuration file
 
-The execution conditions of `nanoda_bin` are determined by a json configuration file, there is no old school CLI. This was a conscious design choice to accommodate modern development practices (checking in to version control, use with CI and automation), what we envision to be the most likely use case for external type checkers (running a suite of external checkers), and because traditional command line interfaces are just not a great way to interact with software.
+The execution conditions of `nanoda_bin` are determined by a json configuration file, there is no old school CLI. This was a conscious design choice to accommodate modern development practices (checking in to version control, use with CI and automation) and what we envision to be the most likely use case for external type checkers (running a suite of external checkers). The UI for external checkers is somewhat TBD and is expected to evolve as the community starts to integrate these into what they're doing.
 
 There is ongoing discussion about migrating the export format to json [here](https://github.com/leanprover/lean4export/issues/3), so I don't consider the introduction of a json parser to be a huge deal.
 
