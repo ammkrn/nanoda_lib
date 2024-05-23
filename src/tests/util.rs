@@ -1,10 +1,7 @@
 use crate::util::{Config, CowStr, ExportFile, ExprPtr, LevelPtr, TcCtx};
 use rand::distributions::Alphanumeric;
 use rand::{rngs::ThreadRng, Rng};
-use serde_json::Value as JsonValue;
 use std::error::Error;
-use std::fs::OpenOptions;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn test_export_file<A>(

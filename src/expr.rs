@@ -369,8 +369,13 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub fn subst_expr_levels(&mut self, e: ExprPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> ExprPtr<'t> {
+        if let Some(cached) = self.expr_cache.dsubst_cache.get(&(e, ks, vs)).copied() {
+            return cached
+        }
         self.expr_cache.subst_cache.clear();
-        self.subst_aux(e, ks, vs)
+        let out = self.subst_aux(e, ks, vs);
+        self.expr_cache.dsubst_cache.insert((e, ks, vs), out);
+        out
     }
 
     pub(crate) fn subst_declar_info_levels(
@@ -399,17 +404,21 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     /// From `f a_0 .. a_N`, return `(f, [a_0, ..a_N])`
-    pub fn unfold_apps(&self, e: ExprPtr<'t>) -> (ExprPtr<'t>, Vec<ExprPtr<'t>>) {
-        match self.read_expr(e) {
-            App { fun, arg, .. } => {
-                let (out, mut args) = self.unfold_apps(fun);
-                args.push(arg);
-                (out, args)
+    pub fn unfold_apps(&self, mut e: ExprPtr<'t>) -> (ExprPtr<'t>, Vec<ExprPtr<'t>>) {
+        let mut args = Vec::new();
+        loop {
+            match self.read_expr(e) {
+                App { fun, arg, .. } => {
+                    e = fun;
+                    args.push(arg);
+                },
+                _ => break
             }
-            _ => (e, Vec::new()),
         }
+        args.reverse();
+        (e, args)
     }
-
+    
     /// If this is a const application, return (Const {..}, name, levels, args)
     pub fn unfold_const_apps(
         &self,

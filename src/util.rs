@@ -152,6 +152,7 @@ pub struct ExprCache<'t> {
     pub(crate) inst_cache: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
     /// Caches (e, ks, vs) |-> output for level substitution.
     pub(crate) subst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
+    pub(crate) dsubst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
     /// Caches (e, offset) |-> output for abstraction (re-binding free variables).
     /// This cache is reset before every new call to `inst`, so there's no need to
     /// cache the sequence of free variables.
@@ -165,6 +166,7 @@ impl<'t> ExprCache<'t> {
             inst_cache: new_fx_hash_map(),
             abstr_cache: new_fx_hash_map(),
             subst_cache: new_fx_hash_map(),
+            dsubst_cache: new_fx_hash_map(),
             abstr_cache_levels: new_fx_hash_map(),
         }
     }

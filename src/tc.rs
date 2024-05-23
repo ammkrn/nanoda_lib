@@ -397,7 +397,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         };
         let (_, struct_ty_name, struct_ty_levels, struct_ty_args) = self.ctx.unfold_const_apps(structure_ty).unwrap();
 
-        let InductiveData { info: inductive_info, all_ctor_names, num_params, num_indices, .. } =
+        let InductiveData { info: inductive_info, all_ctor_names, num_params, .. } =
             self.env.get_inductive(&struct_ty_name).unwrap();
 
         let ConstructorData { info: ctor_info, .. } = self.env.get_constructor(&all_ctor_names[0]).unwrap();
