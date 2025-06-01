@@ -348,6 +348,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn check_inductive_spec_0th(&mut self, uparams: LevelsPtr<'t>, st: &mut InductiveCheckState<'t>) {
         self.tc_cache.clear();
         let (ind_name, mut ind_ty_cursor) = st.all_inductives_incl_specialized.get(0).map(|x| (x.name, x.ty)).unwrap();
+        ind_ty_cursor = self.whnf(ind_ty_cursor);
         let mut indices_locals = Vec::new();
         let mut i = 0;
         while let Pi { binder_name, binder_style, binder_type, body, .. } = self.ctx.read_expr(ind_ty_cursor) {
@@ -385,7 +386,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// Check the rest of the types in a mutual block, ensuring they agree with the base type.
     fn check_inductive_specs_mutual1(&mut self, st: &mut InductiveCheckState<'t>, ind: IndTyHeader<'t>) {
         self.tc_cache.clear();
-        let mut ind_ty_cursor = ind.ty;
+        let mut ind_ty_cursor = self.whnf(ind.ty);
         let mut indices_locals = Vec::new();
         let mut i = 0;
         while let Pi { binder_name, binder_style, binder_type, body, .. } = self.ctx.read_expr(ind_ty_cursor) {

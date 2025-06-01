@@ -737,7 +737,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
                 Proj { idx, structure, .. } => {
                     // Lean's pretty-printer for structure fields is 1-indexed
                     self.pp_expr_aux(structure)
-                        .parens(MAX_LEVEL - 1)
+                        .parens(MAX_LEVEL)
                         .group()
                         .concat(DocPtr::from("."))
                         .concat(DocPtr::from((idx + 1).to_string()))

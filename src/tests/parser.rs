@@ -18,7 +18,7 @@ fn bad_semver() {
     match r {
         Err(e) => assert_eq!(
             e.to_string(),
-            "parsed semver is less than the minimum supported export version. Found Semver(0, 1, 2), min supported is Semver(0, 0, 1)"
+            "parsed semver is less than the minimum supported export version. Found Semver(0, 1, 2), min supported is Semver(2, 0, 0)"
         ),
         _ => panic!()
     }

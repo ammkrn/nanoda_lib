@@ -3,7 +3,7 @@ use crate::env::{ConstructorData, Declar, DeclarInfo, Env, InductiveData, RecRul
 use crate::expr::Expr;
 use crate::level::Level;
 use crate::name::Name;
-use crate::util::{nat_div, nat_mod, nat_sub, ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, TcCache, TcCtx};
+use crate::util::{nat_div, nat_mod, nat_sub, nat_gcd, nat_land, nat_lor, nat_xor, nat_shr, nat_shl, ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, TcCache, TcCtx};
 use num_traits::pow::Pow;
 
 use DeltaResult::*;
@@ -32,6 +32,12 @@ pub(crate) enum NatBinOp {
     Div,
     Beq,
     Ble,
+    Gcd,
+    LAnd,
+    LOr,
+    XOr,
+    Shl,
+    Shr,
 }
 
 /// A flag that accompanies calls to type inference; if the flag is `Check`,
@@ -321,6 +327,12 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             Pow => self.ctx.mk_nat_lit_quick(arg1.pow(arg2)),
             Div => self.ctx.mk_nat_lit_quick(nat_div(arg1, arg2)),
             Mod => self.ctx.mk_nat_lit_quick(nat_mod(arg1, arg2)),
+            Gcd => self.ctx.mk_nat_lit_quick(nat_gcd(&arg1, &arg2)),
+            LAnd => self.ctx.mk_nat_lit_quick(nat_land(arg1, arg2)),
+            LOr => self.ctx.mk_nat_lit_quick(nat_lor(arg1, arg2)),
+            XOr => self.ctx.mk_nat_lit_quick(nat_xor(&arg1, &arg2)),
+            Shl => self.ctx.mk_nat_lit_quick(nat_shl(arg1, arg2)),
+            Shr => self.ctx.mk_nat_lit_quick(nat_shr(arg1, arg2)),
             Beq => self.ctx.bool_to_expr(arg1 == arg2)?,
             Ble => self.ctx.bool_to_expr(arg1 <= arg2)?,
         })
@@ -361,6 +373,18 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     NatBinOp::Beq
                 } else if name == self.ctx.export_file.name_cache.nat_ble? {
                     NatBinOp::Ble
+                } else if name == self.ctx.export_file.name_cache.nat_land? {
+                    NatBinOp::LAnd
+                } else if name == self.ctx.export_file.name_cache.nat_lor? {
+                    NatBinOp::LOr
+                } else if name == self.ctx.export_file.name_cache.nat_xor? {
+                    NatBinOp::XOr
+                } else if name == self.ctx.export_file.name_cache.nat_gcd? {
+                    NatBinOp::Gcd
+                } else if name == self.ctx.export_file.name_cache.nat_shl? {
+                    NatBinOp::Shl
+                } else if name == self.ctx.export_file.name_cache.nat_shr? {
+                    NatBinOp::Shr
                 } else {
                     return None
                 };
@@ -887,6 +911,22 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             }
         }
     }
+    
+    pub fn get_major_induct_aux(&self, mut ty: ExprPtr<'t>, idx: usize) -> NamePtr<'t> {
+        for i in 0..idx {
+            match self.ctx.read_expr(ty) {
+                Pi {body, ..} => { ty = body },
+                _ => panic!("exhausted telescope early in get_major_induct_aux {}/{}", i, idx)
+            }
+        }
+        match self.ctx.read_expr(ty) {
+            Pi {binder_type, ..} => {
+                let (_, name, _, _) = self.ctx.unfold_const_apps(binder_type).expect("major premise must be a const or const app");
+                name
+            },
+            _ => panic!("exhausted telescope early in get_major_induct_aux {}/{}", idx, idx)
+        }
+    }
 
     fn reduce_rec(
         &mut self,
@@ -903,7 +943,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             NatLit { ptr, .. } => self.ctx.nat_lit_to_constructor(ptr),
             StringLit { ptr, .. } => self.ctx.str_lit_to_constructor(ptr)?,
             _ => {
-                let ind_rec_name_prefix = self.ctx.get_name_prefix(info.name);
+                let ind_rec_name_prefix = self.get_major_induct_aux(rec.info.ty, rec.major_idx());
                 self.iota_try_eta_struct(ind_rec_name_prefix, major)
             }
         };

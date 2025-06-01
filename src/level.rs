@@ -52,9 +52,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    pub fn simplify(&mut self, l: LevelPtr<'t>) -> LevelPtr<'t> {
-        match self.read_level(l) {
-            Zero | Param(..) => l,
+    pub fn simplify(&mut self, ptr: LevelPtr<'t>) -> LevelPtr<'t> {
+        match self.read_level(ptr) {
+            Zero | Param(..) => ptr,
             Succ(val, ..) => {
                 let val = self.simplify(val);
                 self.succ(val)
@@ -65,17 +65,16 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 self.combining(l, r)
             }
             IMax(l, r, ..) => {
+                let l_simp = self.simplify(l);
                 let r_simp = self.simplify(r);
-                match self.read_level(r_simp) {
-                    Zero => r_simp,
-                    Succ { .. } => {
-                        let l_simp = self.simplify(l);
-                        self.combining(l_simp, r_simp)
-                    }
-                    _ => {
-                        let l_simp = self.simplify(l);
-                        self.imax(l_simp, r_simp)
-                    }
+                if self.is_zero(l_simp) || self.is_one(l_simp) {
+                    r_simp
+                } else {
+                  match self.read_level(r_simp) {
+                      Zero => r_simp,
+                      Succ(..) => self.combining(l_simp, r_simp),
+                      _ => self.imax(l_simp, r_simp)
+                  }
                 }
             }
         }
@@ -160,20 +159,20 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// a parameter `p` is zero or non-zero.
     fn leq_imax_by_cases(&mut self, param: LevelPtr<'t>, lhs: LevelPtr<'t>, rhs: LevelPtr<'t>, diff: isize) -> bool {
         let zero = self.zero();
-        let one = self.succ(zero);
+        let succ_param = self.succ(param);
         let zero_slice = self.alloc_levels_slice(&[zero]);
-        let one_slice = self.alloc_levels_slice(&[one]);
+        let succ_param_slice = self.alloc_levels_slice(&[succ_param]);
         let param_slice = self.alloc_levels_slice(&[param]);
 
         let lhs_0 = self.subst_simp(lhs, param_slice, zero_slice);
         let rhs_0 = self.subst_simp(rhs, param_slice, zero_slice);
-        let lhs_s = self.subst_simp(lhs, param_slice, one_slice);
-        let rhs_s = self.subst_simp(rhs, param_slice, one_slice);
+        let lhs_s = self.subst_simp(lhs, param_slice, succ_param_slice);
+        let rhs_s = self.subst_simp(rhs, param_slice, succ_param_slice);
 
         self.leq_core(lhs_0, rhs_0, diff) && self.leq_core(lhs_s, rhs_s, diff)
     }
 
-    // The more positive it is, the more have been applied ot the right side compared to the left side.
+    // The more positive it is, the more have been applied to the right side compared to the left side.
     fn leq_core(&mut self, l_in: LevelPtr<'t>, r_in: LevelPtr<'t>, diff: isize) -> bool {
         match self.read_level_pair(l_in, r_in) {
             (Zero, _) if diff >= 0 => true,
@@ -252,6 +251,13 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             Param(n, ..) => n == candidate,
             _ => false,
         })
+    }
+    
+    fn is_one(&mut self, l: LevelPtr<'t>) -> bool {
+        match self.read_level(l) {
+            Level::Succ(pred, _) => self.is_zero(pred),
+            _ => false
+        }
     }
 
     /// l <= 0 -> is_zero(l)
