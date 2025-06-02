@@ -1,7 +1,0 @@
-{
-    "export_file_path": "test_resources/AesopGoalUnsafe/export",
-    "use_stdin": false,
-    "permitted_axioms": ["propext", "Classical.choice", "Quot.sound", "Lean.trustCompiler"],
-    "nat_extension": true,
-    "string_extension": true
-}

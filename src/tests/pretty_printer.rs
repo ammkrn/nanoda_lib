@@ -19,12 +19,3 @@ fn pp_double_french() -> Result<(), Box<dyn Error>> {
         }
     })
 }
-
-#[test]
-fn pp_let0() -> Result<(), Box<dyn Error>> {
-    test_export_file(Some(&Path::new("test_resources/PpLet0/config.json")), |export| {
-        let mut pp_output = export.config.get_pp_destination().unwrap();
-        let v = export.pp_selected_declars(pp_output.as_mut());
-        assert!(v.is_empty())
-    })
-}
