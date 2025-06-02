@@ -19,7 +19,7 @@ use std::sync::{atomic::AtomicBool, Arc};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Semver(u16, u16, u16);
 
-pub(crate) const MIN_SUPPORTED_SEMVER: Semver = Semver(0, 1, 2);
+pub(crate) const MIN_SUPPORTED_SEMVER: Semver = Semver(2, 0, 0);
 
 pub struct Parser<'a, R: BufRead> {
     buf_reader: R,
@@ -50,7 +50,7 @@ pub(crate) fn parse_export_file<'p, R: BufRead>(
     if semver < MIN_SUPPORTED_SEMVER {
         return Err(Box::from(format!(
             "parsed semver is less than the minimum supported export version. Found {:?}, min supported is {:?}",
-            MIN_SUPPORTED_SEMVER, semver
+            semver, MIN_SUPPORTED_SEMVER
         )))
     }
     loop {
@@ -543,8 +543,9 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn parse_inductive(&mut self, ws: &mut SplitWhitespace) {
         let name = self.parse_name_ptr(ws);
         let ty = self.parse_expr_ptr(ws);
-        let is_recursive = parse_bool(ws);
-        let is_nested = parse_bool(ws);
+        let _is_reflexive = parse_nat_as_bool(ws);
+        let is_recursive = parse_nat_as_bool(ws);
+        let is_nested = parse_nat_as_bool(ws);
         let num_params = parse_u16(ws);
         let num_indices = parse_u16(ws);
         let num_inductives = parse_u16(ws);
@@ -611,7 +612,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
             let rr = self.rec_rules[idx];
             rec_rules.push(rr);
         }
-        let is_k = parse_bool(ws);
+        let is_k = parse_nat_as_bool(ws);
         let uparams = self.parse_uparams(ws, None);
         let info = DeclarInfo { name, ty, uparams };
         let recursor = Declar::Recursor(RecursorData {
@@ -645,10 +646,10 @@ fn parse_usize(ws: &mut SplitWhitespace) -> usize {
     ws.next().expect("parser::parse_usize::next()").parse::<usize>().expect("parser::parse_usize::and_then")
 }
 
-fn parse_bool(ws: &mut SplitWhitespace) -> bool {
+fn parse_nat_as_bool(ws: &mut SplitWhitespace) -> bool {
     match ws.next() {
-        Some("1") => true,
         Some("0") => false,
+        Some(s) if s.chars().all(|c| c.is_ascii_digit()) => true,
         owise => panic!("Parse bool expected 1 or 0, got {:?}", owise),
     }
 }

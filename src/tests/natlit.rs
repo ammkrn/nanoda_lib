@@ -59,6 +59,177 @@ fn nat_div_eq() {
 }
 
 #[test]
+fn nat_shr_eq() {
+    use crate::util::nat_shr;
+    assert_eq!(nat_shr(BigUint::from(4u8), BigUint::from(2u8)), BigUint::one());
+    assert_eq!(nat_shr(BigUint::from(8u8), BigUint::from(2u8)), BigUint::from(2u8));
+    assert_eq!(nat_shr(BigUint::from(8u8), BigUint::from(3u8)), BigUint::one());
+    assert_eq!(nat_shr(BigUint::from(0u8), BigUint::from(3u8)), BigUint::zero());
+    //def shiftRight : @& Nat → @& Nat → Nat
+    //  | n, 0 => n
+    //  | n, succ m => shiftRight n m / 2
+    // m >>> n = m / 2 ^ n
+    fn nat_shr_eq_f(x: BigUint, y: BigUint) -> BigUint {
+        if y.is_zero() {
+            x
+        } else {
+            nat_shr_eq_f(x, y - BigUint::one()) / BigUint::from(2u8)
+        }
+    }
+    let mut rng = rand::thread_rng();
+    for size in 0..8 {
+        for _ in 0..32 {
+            let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size % 6));
+            assert_eq!(nat_shr_eq_f(x.clone(), y.clone()), nat_shr(x, y))
+        }
+    }
+}
+
+#[test]
+fn nat_shl_eq() {
+    use crate::util::nat_shl;
+    assert_eq!(nat_shl(BigUint::one(), BigUint::from(2u8)), BigUint::from(4u8));
+    assert_eq!(nat_shl(BigUint::one(), BigUint::from(3u8)), BigUint::from(8u8));
+    assert_eq!(nat_shl(BigUint::zero(), BigUint::from(3u8)), BigUint::zero());
+    assert_eq!(nat_shl(BigUint::from(0xf1 as u32), BigUint::from(4u8)), BigUint::from(0xf10 as u32));
+    // def shiftLeft : @& Nat → @& Nat → Nat
+    //   | n, 0 => n
+    //   | n, succ m => shiftLeft (2*n) m
+    // a <<< b = a * 2 ^ b
+    fn nat_shl_eq_f(x: BigUint, y: BigUint) -> BigUint {
+        if y.is_zero() {
+            x
+        } else {
+            nat_shl_eq_f(BigUint::from(2u8) * x, y - BigUint::one())
+        }
+    }
+
+    let mut rng = rand::thread_rng();
+    for size in 0..8 {
+        for _ in 0..32 {
+            let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size % 6));
+            assert_eq!(nat_shl_eq_f(x.clone(), y.clone()), nat_shl(x, y))
+        }
+    }
+}
+
+#[test]
+fn nat_gcd_eq() {
+    use crate::util::nat_gcd;
+    assert_eq!(nat_gcd(&BigUint::from(10u8), &BigUint::from(15u8)), BigUint::from(5u8));
+    assert_eq!(nat_gcd(&BigUint::zero(), &BigUint::from(5u8)), BigUint::from(5u8));
+    assert_eq!(nat_gcd(&BigUint::from(7u8), &BigUint::zero()), BigUint::from(7u8));
+    assert_eq!(nat_gcd(&BigUint::from(1u8), &BigUint::zero()), BigUint::from(1u8));
+    //def gcd (m n : @& Nat) : Nat :=
+    //  if m = 0 then
+    //    n
+    //  else
+    //    gcd (n % m) m
+    fn nat_gcd_eq_f(m: BigUint, n: BigUint) -> BigUint {
+        if m.is_zero() {
+            n
+        } else {
+            nat_gcd_eq_f(n % m.clone(), m)
+        }
+    }
+
+    let mut rng = rand::thread_rng();
+    for size in 0..8 {
+        for _ in 0..32 {
+            let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size));
+            let gcd = nat_gcd(&x, &y);
+            assert_eq!(nat_gcd_eq_f(x, y), gcd)
+        }
+    }
+}
+
+fn bitwise(f: fn(bool, bool) -> bool, n : BigUint, m: BigUint) -> BigUint {
+    if n.is_zero() {
+        if f(false, true) {
+            m
+        } else {
+            BigUint::zero()
+        }
+    } else if m.is_zero() {
+        if f(true, false) {
+            n
+        } else {
+            BigUint::zero()
+        }
+    } else {
+        let nprime = n.clone() / BigUint::from(2u8);
+        let mprime = m.clone() / BigUint::from(2u8);
+        let b1 = n % BigUint::from(2u8) == BigUint::one();
+        let b2 = m % BigUint::from(2u8) == BigUint::one();
+        let r = bitwise(f, nprime, mprime);
+        if f(b1, b2) {
+            r.clone() + r + BigUint::one()
+        } else {
+            r.clone() + r
+        }
+    }
+}
+
+#[test]
+fn nat_xor_eq() {
+    fn spec_xor(x: BigUint, y: BigUint) -> BigUint {
+      fn bool_xor(x: bool, y: bool) -> bool {
+          x ^ y
+      }
+      bitwise(bool_xor, x, y)
+    }
+
+    use crate::util::nat_xor;
+    let mut rng = rand::thread_rng();
+    for size in 0..5 {
+        for _ in 0..32 {
+            let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size));
+            let rhs = nat_xor(&x, &y);
+            eprintln!("{:?} ^ {:?} := {:?}", x, y, rhs);
+            assert_eq!(spec_xor(x, y), rhs)
+        }
+    }
+}
+
+#[test]
+fn nat_lor_eq() {
+    fn spec_lor(x: BigUint, y: BigUint) -> BigUint {
+      fn bool_or(x: bool, y: bool) -> bool {
+          x || y
+      }
+      bitwise(bool_or, x, y)
+    }
+
+    use crate::util::nat_lor;
+    let mut rng = rand::thread_rng();
+    for size in 0..5 {
+        for _ in 0..32 {
+            let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size));
+            assert_eq!(spec_lor(x.clone(), y.clone()), nat_lor(x, y))
+        }
+    }
+}
+
+#[test]
+fn nat_land_eq() {
+    fn spec_land(x: BigUint, y: BigUint) -> BigUint {
+        fn bool_and(x: bool, y: bool) -> bool {
+            x && y
+        }
+        bitwise(bool_and, x, y)
+    }
+
+    use crate::util::nat_land;
+    let mut rng = rand::thread_rng();
+    for size in 0..5 {
+        for _ in 0..32 {
+            let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size));
+            assert_eq!(spec_land(x.clone(), y.clone()), nat_land(x, y))
+        }
+    }
+}
+
+#[test]
 fn nat_add_eq() {
     fn nat_add_eq_f(x: BigUint, y: BigUint) -> BigUint {
         if BigUint::zero() == y {
@@ -572,6 +743,12 @@ impl<'t, 'p> TcCtx<'t, 'p> {
             NatBinOp::Div => self.export_file.name_cache.nat_div.unwrap(),
             NatBinOp::Beq => self.export_file.name_cache.nat_beq.unwrap(),
             NatBinOp::Ble => self.export_file.name_cache.nat_ble.unwrap(),
+            NatBinOp::Gcd => self.export_file.name_cache.nat_gcd.unwrap(),
+            NatBinOp::Shl => self.export_file.name_cache.nat_shl.unwrap(),
+            NatBinOp::Shr => self.export_file.name_cache.nat_shr.unwrap(),
+            NatBinOp::XOr => self.export_file.name_cache.nat_xor.unwrap(),
+            NatBinOp::LAnd => self.export_file.name_cache.nat_land.unwrap(),
+            NatBinOp::LOr => self.export_file.name_cache.nat_lor.unwrap(),
         };
         let levels = self.alloc_levels_slice(&[]);
         let c_op = self.mk_const(op_name, levels);

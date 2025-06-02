@@ -1,15 +1,35 @@
-0.1.2
-1 #NS 0 False
-0 #ES 0
-#IND 1 0 0 0 0 0 1 1 0  
-2 #NS 0 a
+2.0.0
+1 #NS 0 a
+2 #NS 0 MyFalse
 3 #NS 0 u_1
 1 #UP 3
-1 #ES 1
-2 #EV 0
-4 #NS 0 MyFalse
-3 #EP #BI 4 1 2
-4 #EC 2 1
-5 #EA 4 2
-6 #EL #BI 4 1 5
-#DEF 2 3 6 O 3
+0 #ES 1
+1 #EV 0
+2 #EP #BI 2 0 1
+3 #EC 1 1
+4 #EA 3 1
+5 #EL #BI 2 0 4
+#DEF 1 2 5 O 3
+4 #NS 0 False
+6 #ES 0
+#IND 4 6 0 0 0 0 0 1 4 0  
+5 #NS 4 rec
+6 #NS 0 motive
+7 #NS 0 t
+7 #EC 4 
+8 #NS 0 u
+2 #UP 8
+8 #ES 2
+9 #EP #BD 7 7 8
+10 #EV 1
+11 #EA 10 1
+12 #EP #BD 7 7 11
+13 #EP #BD 6 9 12
+#REC 5 13 1 4 0 0 1 0 0  0 8
+9 #NS 4 recOn
+14 #EC 5 2
+15 #EA 14 10
+16 #EA 15 1
+17 #EL #BD 7 7 16
+18 #EL #BD 6 9 17
+#DEF 9 13 18 A 8

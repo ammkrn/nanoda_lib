@@ -8,7 +8,8 @@ use crate::union_find::UnionFind;
 use crate::unique_hasher::UniqueHasher;
 use indexmap::{IndexMap, IndexSet};
 use num_bigint::BigUint;
-use num_traits::identities::Zero;
+use num_traits::{ Pow, identities::Zero };
+use num_integer::Integer;
 use rustc_hash::FxHasher;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
@@ -145,6 +146,29 @@ pub(crate) fn nat_mod(x: BigUint, y: BigUint) -> BigUint {
     }
 }
 
+pub(crate) fn nat_gcd(x: &BigUint, y: &BigUint) -> BigUint {
+    x.gcd(y)
+}
+
+pub(crate) fn nat_xor(x: &BigUint, y: &BigUint) -> BigUint {
+    x ^ y
+}
+
+pub(crate) fn nat_shl(x: BigUint, y: BigUint) -> BigUint {
+    x * BigUint::from(2u8).pow(y)
+}
+
+pub(crate) fn nat_shr(x: BigUint, y: BigUint) -> BigUint {
+    x / BigUint::from(2u8).pow(y)
+}
+
+pub(crate) fn nat_land(x: BigUint, y: BigUint) -> BigUint {
+    x & y
+}
+pub(crate) fn nat_lor(x: BigUint, y: BigUint) -> BigUint {
+    x | y
+}
+
 pub struct ExprCache<'t> {
     /// Caches (e, offset) |-> output for instantiation. This cache is reset
     /// before every new call to `inst`, so there's no need to cache the sequence
@@ -160,6 +184,7 @@ pub struct ExprCache<'t> {
     /// A cache for (expr, starting deBruijn level, current deBruijn level)
     pub(crate) abstr_cache_levels: FxHashMap<(ExprPtr<'t>, u16, u16), ExprPtr<'t>>,
 }
+
 impl<'t> ExprCache<'t> {
     fn new() -> Self {
         Self {
@@ -867,6 +892,12 @@ impl<'a> LeanDag<'a> {
             nat_div: self.find_name("Nat.div"),
             nat_beq: self.find_name("Nat.beq"),
             nat_ble: self.find_name("Nat.ble"),
+            nat_gcd: self.find_name("Nat.gcd"),
+            nat_xor: self.find_name("Nat.xor"),
+            nat_land: self.find_name("Nat.land"),
+            nat_lor: self.find_name("Nat.lor"),
+            nat_shl: self.find_name("Nat.shiftLeft"),
+            nat_shr: self.find_name("Nat.shiftRight"),
             bool_true: self.find_name("Bool.true"),
             bool_false: self.find_name("Bool.false"),
             char: self.find_name("Char"),
@@ -897,6 +928,12 @@ pub struct NameCache<'p> {
     pub(crate) nat_div: Option<NamePtr<'p>>,
     pub(crate) nat_beq: Option<NamePtr<'p>>,
     pub(crate) nat_ble: Option<NamePtr<'p>>,
+    pub(crate) nat_gcd: Option<NamePtr<'p>>,
+    pub(crate) nat_xor: Option<NamePtr<'p>>,
+    pub(crate) nat_land: Option<NamePtr<'p>>,
+    pub(crate) nat_lor: Option<NamePtr<'p>>,
+    pub(crate) nat_shr: Option<NamePtr<'p>>,
+    pub(crate) nat_shl: Option<NamePtr<'p>>,
     pub(crate) string: Option<NamePtr<'p>>,
     pub(crate) string_mk: Option<NamePtr<'p>>,
     pub(crate) bool_false: Option<NamePtr<'p>>,
@@ -1026,7 +1063,7 @@ impl TryFrom<&Path> for Config {
     }
 }
 
-const CONFIG_OPTIONS: [&str; 19] = [
+const CONFIG_OPTIONS: [&str; 20] = [
     "export_file_path",
     "use_stdin",
     "permitted_axioms",
@@ -1046,6 +1083,7 @@ const CONFIG_OPTIONS: [&str; 19] = [
     "width",
     "declar_sep",
     "unpermitted_axiom_hard_error",
+    "proofs"
 ];
 
 fn keys_recognized(j: &JsonValue) -> Result<(), Box<dyn Error>> {
