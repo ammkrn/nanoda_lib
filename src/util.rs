@@ -212,7 +212,7 @@ pub struct ExportFile<'p> {
 }
 
 impl<'p> ExportFile<'p> {
-    pub fn new_env(&self) -> Env { Env::new_plus(&self.declars, None, &self.notations) }
+    pub fn new_env(&self) -> Env<'_, '_> { Env::new_plus(&self.declars, None, &self.notations) }
 
     pub fn with_ctx<F, A>(&self, f: F) -> A
     where
