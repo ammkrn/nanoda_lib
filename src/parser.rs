@@ -77,7 +77,15 @@ pub(crate) fn parse_export_file<'p, R: BufRead>(
                     "#REC" => parser.parse_recursor(&mut line_rem_toks),
                     // otherwise, the parsed line is some non-declaration primitive
                     // (Name, Level, Expr) which should be prefixed by its index.
-                    leading_idx => parser.parse_primitive(leading_idx.parse::<u32>()?, &mut line_rem_toks)?,
+                    leading_idx => 
+                      match parser.parse_primitive(leading_idx.parse::<u32>()?, &mut line_rem_toks) {
+                        Ok(_) => (),
+                        Err(e) => {
+                            return Err(Box::<dyn Error>::from(
+                                format!("line buffer := {}\n\n err := {}", line_buffer, e)
+                            ))
+                        }
+                      }
                 }
             }
         }
@@ -111,28 +119,35 @@ impl<'a, R: BufRead> Parser<'a, R> {
         }
     }
 
-    fn parse_rest_cowstr(&self, ws: &mut SplitWhitespace) -> crate::util::CowStr<'a> {
+    fn parse_rest_cowstr(&self, ws: &mut SplitWhitespace) -> Result<crate::util::CowStr<'a>, Box<dyn Error>> {
         let s = ws.next().unwrap();
-        assert!(ws.next().is_none());
-        std::borrow::Cow::Owned(s.to_owned())
+        match ws.next() {
+            None => Ok(std::borrow::Cow::Owned(s.to_owned())),
+            Some(ss) => {
+              return Err(Box::<dyn Error>::from(
+                  format!("Expected iterator to end, got {}", ss)
+              ))
+            }
+        }
     }
 
     /// Allocate a parsed string as a DAG item.
-    fn parse_insert_string(&mut self, ws: &mut SplitWhitespace) -> StringPtr<'a> {
-        let s = self.parse_rest_cowstr(ws);
-        StringPtr::from(DagMarker::ExportFile, self.dag.strings.insert_full(s).0)
+    fn parse_insert_string(&mut self, ws: &mut SplitWhitespace) -> Result<StringPtr<'a>, Box<dyn Error>> {
+        let s = self.parse_rest_cowstr(ws)?;
+        Ok(StringPtr::from(DagMarker::ExportFile, self.dag.strings.insert_full(s).0))
     }
 
     /// Parse a `#NS` row and add it to the dag. The leading index and discriminator
     /// have already been found, and the leading index is passed as `idx`.
-    fn parse_name_str_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
+    fn parse_name_str_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) -> Result<(), Box<dyn Error>> {
         let pfx = self.parse_name_ptr(ws);
-        let sfx = self.parse_insert_string(ws);
+        let sfx = self.parse_insert_string(ws)?;
         let insert_result = {
             let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
             self.dag.names.insert_full(Name::Str(pfx, sfx, hash))
         };
         assert_eq!((assigned_idx as usize, true), insert_result);
+        Ok(())
     }
 
     /// Parse a `#NI` row and add it to the dag. The leading index and discriminator
@@ -420,7 +435,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
         let discrim = ws.next().expect("Parse primitive");
         match discrim {
             "#RR" => self.parse_rec_rule(assigned_idx, ws),
-            "#NS" => self.parse_name_str_row(assigned_idx, ws),
+            "#NS" => self.parse_name_str_row(assigned_idx, ws)?,
             "#NI" => self.parse_name_num_row(assigned_idx, ws),
             "#US" => self.parse_level_succ_row(assigned_idx, ws),
             "#UM" => self.parse_level_max_row(assigned_idx, ws),
