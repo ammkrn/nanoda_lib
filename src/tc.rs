@@ -3,7 +3,7 @@ use crate::env::{ConstructorData, Declar, DeclarInfo, Env, InductiveData, RecRul
 use crate::expr::Expr;
 use crate::level::Level;
 use crate::name::Name;
-use crate::util::{nat_div, nat_mod, nat_sub, nat_gcd, nat_land, nat_lor, nat_xor, nat_shr, nat_shl, ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, TcCache, TcCtx};
+use crate::util::{nat_div, nat_mod, nat_sub, nat_gcd, nat_land, nat_lor, nat_xor, nat_shr, nat_shl, ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, TcCache, TcCtx, StringPtr};
 use num_traits::pow::Pow;
 
 use DeltaResult::*;
@@ -278,12 +278,16 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         None
     }
 
+    fn str_lit_to_ctor_reducing(&mut self, x: StringPtr<'t>) -> Option<ExprPtr<'t>> {
+        self.ctx.str_lit_to_constructor(x).map(|x| self.whnf(x))
+    }
+
     fn try_string_lit_expansion_aux(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> Option<bool> {
         if let (StringLit { ptr, .. }, App { fun, .. }) = self.ctx.read_expr_pair(x, y) {
             if let Some((name, _levels)) = self.ctx.try_const_info(fun) {
                 if name == self.ctx.export_file.name_cache.string_mk? {
                     // levels should be empty
-                    let lhs = self.ctx.str_lit_to_constructor(ptr)?;
+                    let lhs = self.str_lit_to_ctor_reducing(ptr)?;
                     return Some(self.def_eq(lhs, y))
                 }
             }
@@ -398,7 +402,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn reduce_proj(&mut self, idx: usize, structure: ExprPtr<'t>, cheap: bool) -> Option<ExprPtr<'t>> {
         let mut structure = if cheap { self.whnf_no_unfolding_cheap_proj(structure) } else { self.whnf(structure) };
         if let StringLit { ptr, .. } = self.ctx.read_expr(structure) {
-            if let Some(s) = self.ctx.str_lit_to_constructor(ptr) {
+            if let Some(s) = self.str_lit_to_ctor_reducing(ptr) {
                 structure = s;
             }
         }
@@ -948,7 +952,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let major = self.whnf(major);
         let major = match self.ctx.read_expr(major) {
             NatLit { ptr, .. } => self.ctx.nat_lit_to_constructor(ptr),
-            StringLit { ptr, .. } => self.ctx.str_lit_to_constructor(ptr)?,
+            StringLit { ptr, .. } => self.str_lit_to_ctor_reducing(ptr)?,
             _ => {
                 let ind_rec_name_prefix = self.get_major_induct_aux(rec.info.ty, rec.major_idx());
                 self.iota_try_eta_struct(ind_rec_name_prefix, major)
