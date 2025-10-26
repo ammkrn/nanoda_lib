@@ -794,7 +794,14 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         true
     }
 
-    pub fn assert_def_eq(&mut self, u: ExprPtr<'t>, v: ExprPtr<'t>) { assert!(self.def_eq(u, v)) }
+    pub fn assert_def_eq(&mut self, u: ExprPtr<'t>, v: ExprPtr<'t>) { 
+        if !self.def_eq(u, v) {
+            let declar_name = self.ctx.debug_print(self.declar_info.unwrap().name);
+            let u = format!("{:#?}", self.ctx.debug_print(u)).chars().take(140).collect::<String>();
+            let v = format!("{:#?}", self.ctx.debug_print(v)).chars().take(140).collect::<String>();
+            panic!("failed decl name := {:?}\n\nu := {}\n\nv := {}", declar_name, u, v)
+        }
+    }
 
     pub fn def_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
         if let Some(easy) = self.def_eq_quick_check(x, y) {

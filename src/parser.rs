@@ -120,15 +120,23 @@ impl<'a, R: BufRead> Parser<'a, R> {
     }
 
     fn parse_rest_cowstr(&self, ws: &mut SplitWhitespace) -> Result<crate::util::CowStr<'a>, Box<dyn Error>> {
-        let s = ws.next().unwrap();
-        match ws.next() {
-            None => Ok(std::borrow::Cow::Owned(s.to_owned())),
-            Some(ss) => {
-              return Err(Box::<dyn Error>::from(
-                  format!("Expected iterator to end, got {}", ss)
-              ))
-            }
+        let mut s = String::new();
+        for x in ws {
+            s.push_str(x);
+            s.push(' ');
         }
+        if s.ends_with(" ") {
+            s.pop();
+        }
+        Ok(std::borrow::Cow::Owned(s.to_owned()))
+        //match ws.next() {
+        //    None => Ok(std::borrow::Cow::Owned(s.to_owned())),
+        //    Some(ss) => {
+        //      return Err(Box::<dyn Error>::from(
+        //          format!("Expected iterator to end, got {}", ss)
+        //      ))
+        //    }
+        //}
     }
 
     /// Allocate a parsed string as a DAG item.
