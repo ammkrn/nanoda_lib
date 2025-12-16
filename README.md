@@ -1,3 +1,9 @@
+# Temporary Warning (Dec 2025)
+
+*This repository is temporarily broken for versions of lean 4 released after the upstream kernel changes to `String.mk`, and versions of mathlib after the introduction of `library_note2`. lean4export is also currently broken for mathlib due to `library_note2`.* 
+
+Please see [this](https://leanprover.zulipchat.com/#narrow/channel/113488-general/topic/docs.20for.20kernel.20type.20checking.20rules.20for.20Lean.2EExpr/near/562812252) and [this](https://github.com/leanprover/lean4export/issues/3) for more context. A fix for the `String` and reflection kernel changes is implemented in the `debug` branch of this repository, and a first pass at JSON export (to fix lean4export) can be found [here](https://github.com/ammkrn/lean4export/tree/json_output). I am working on coordinating both ends of this fix as I get time. As of 16 December, the remaining tasks are to update the rust parser, then test the new exporter against that.
+
 # About
 
 This is an external type checker for the [Lean 4](https://lean-lang.org/) programming language and theorem prover. You can read more about what an external type checker is and why you might want to use one in [this book](https://ammkrn.github.io/type_checking_in_lean4/).
