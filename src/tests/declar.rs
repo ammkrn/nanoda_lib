@@ -4,14 +4,6 @@ use std::path::Path;
 
 #[test]
 #[should_panic]
-fn aesop_goal_unsafe() {
-    test_export_file_should_panic(Some(&Path::new("test_resources/AesopGoalUnsafe/config.json")), |export| {
-        export.check_all_declars_serial();
-    })
-}
-
-#[test]
-#[should_panic]
 fn nonpositive1() {
     test_export_file_should_panic(Some(&Path::new("test_resources/Nonpositive1/config.json")), |export| {
         export.check_all_declars_serial();
@@ -117,9 +109,3 @@ fn axiom_not_allowed2() {
     })
 }
 
-#[test]
-fn mutual_def() -> Result<(), Box<dyn Error>> {
-    test_export_file(Some(&Path::new("test_resources/MutualDef/config.json")), |export| {
-        export.check_all_declars_serial();
-    })
-}

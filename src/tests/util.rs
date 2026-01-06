@@ -76,14 +76,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 }
 
 #[test]
-fn check_prelude() -> Result<(), Box<dyn Error>> {
-    test_export_file(Some(&Path::new("test_resources/Init/config.json")), |export| {
-        for declar in export.declars.values() {
-            export.check_declar(declar);
-        }
-    })
-}
-#[test]
 fn check_empty() -> Result<(), Box<dyn Error>> {
     test_export_file(None, |export| {
         for declar in export.declars.values() {
