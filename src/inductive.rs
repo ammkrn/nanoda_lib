@@ -621,11 +621,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     let body = self.replace_all_nested(body, st, outgoing_params);
                     self.ctx.mk_lambda(binder_name, binder_style, binder_type, body)
                 }
-                Let { binder_name, binder_type, val, body, .. } => {
+                Let { binder_name, binder_type, val, body, nondep, .. } => {
                     let binder_type = self.replace_all_nested(binder_type, st, outgoing_params);
                     let val = self.replace_all_nested(val, st, outgoing_params);
                     let body = self.replace_all_nested(body, st, outgoing_params);
-                    self.ctx.mk_let(binder_name, binder_type, val, body)
+                    self.ctx.mk_let(binder_name, binder_type, val, body, nondep)
                 }
                 App { fun, arg, .. } => {
                     let fun = self.replace_all_nested(fun, st, outgoing_params);
@@ -1379,7 +1379,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                         self.restore_replace(body, local_params, st, specialized_rec_names_to_unspecialized_rec_names);
                     self.ctx.mk_pi(binder_name, binder_style, binder_type, body)
                 }
-                Let { binder_name, binder_type, val, body, .. } => {
+                Let { binder_name, binder_type, val, body, nondep, .. } => {
                     let binder_type = self.restore_replace(
                         binder_type,
                         local_params,
@@ -1390,7 +1390,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                         self.restore_replace(val, local_params, st, specialized_rec_names_to_unspecialized_rec_names);
                     let body =
                         self.restore_replace(body, local_params, st, specialized_rec_names_to_unspecialized_rec_names);
-                    self.ctx.mk_let(binder_name, binder_type, val, body)
+                    self.ctx.mk_let(binder_name, binder_type, val, body, nondep)
                 }
                 Proj { ty_name, idx, structure, .. } => {
                     let structure = self.restore_replace(

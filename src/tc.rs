@@ -3,7 +3,7 @@ use crate::env::{ConstructorData, Declar, DeclarInfo, Env, InductiveData, RecRul
 use crate::expr::Expr;
 use crate::level::Level;
 use crate::name::Name;
-use crate::util::{nat_div, nat_mod, nat_sub, nat_gcd, nat_land, nat_lor, nat_xor, nat_shr, nat_shl, ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, TcCache, TcCtx};
+use crate::util::{nat_div, nat_mod, nat_sub, nat_gcd, nat_land, nat_lor, nat_xor, nat_shr, nat_shl, ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, TcCache, TcCtx, StringPtr};
 use num_traits::pow::Pow;
 
 use DeltaResult::*;
@@ -53,6 +53,7 @@ pub(crate) enum InferFlag {
 }
 
 pub struct TypeChecker<'x, 't, 'p> {
+    pub(crate) cur: Option<NamePtr<'t>>,
     pub(crate) ctx: &'x mut TcCtx<'t, 'p>,
     /// An immutable reference to an environment, which contains declarations and notation.
     /// To accommodate the temporary declarations created while checking nested inductives,
@@ -152,7 +153,7 @@ impl<'p> ExportFile<'p> {
 impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     pub fn new(dag: &'x mut TcCtx<'t, 'p>, env: &'x Env<'x, 't>, declar_info: Option<DeclarInfo<'t>>) -> Self {
         assert_eq!(dag.dbj_level_counter, 0);
-        Self { ctx: dag, env, tc_cache: TcCache::new(), declar_info }
+        Self { cur: declar_info.map(|x| x.name), ctx: dag, env, tc_cache: TcCache::new(), declar_info }
     }
 
     /// Conduct the preliminary checks done on all declarations; a declaration
@@ -278,12 +279,16 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         None
     }
 
+    fn str_lit_to_ctor_reducing(&mut self, x: StringPtr<'t>) -> Option<ExprPtr<'t>> {
+        self.ctx.str_lit_to_constructor(x).map(|x| self.whnf(x))
+    }
+
     fn try_string_lit_expansion_aux(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> Option<bool> {
         if let (StringLit { ptr, .. }, App { fun, .. }) = self.ctx.read_expr_pair(x, y) {
             if let Some((name, _levels)) = self.ctx.try_const_info(fun) {
-                if name == self.ctx.export_file.name_cache.string_mk? {
+                if name == self.ctx.export_file.name_cache.string_of_list? {
                     // levels should be empty
-                    let lhs = self.ctx.str_lit_to_constructor(ptr)?;
+                    let lhs = self.str_lit_to_ctor_reducing(ptr)?;
                     return Some(self.def_eq(lhs, y))
                 }
             }
@@ -398,7 +403,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn reduce_proj(&mut self, idx: usize, structure: ExprPtr<'t>, cheap: bool) -> Option<ExprPtr<'t>> {
         let mut structure = if cheap { self.whnf_no_unfolding_cheap_proj(structure) } else { self.whnf(structure) };
         if let StringLit { ptr, .. } = self.ctx.read_expr(structure) {
-            if let Some(s) = self.ctx.str_lit_to_constructor(ptr) {
+            if let Some(s) = self.str_lit_to_ctor_reducing(ptr) {
                 structure = s;
             }
         }
@@ -515,7 +520,15 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     if flag == Check {
                         let arg_type = self.infer(arg, flag);
                         let binder_type = self.ctx.inst(binder_type, ctx.as_slice());
-                        self.assert_def_eq(binder_type, arg_type);
+                        let outer_scope_eager_setting = self.ctx.eager_mode;
+                        if self.ctx.is_eager_reduce_app(arg) {
+                            self.ctx.eager_mode = true;
+                        }
+                        // `arg_type` and `binder_type` get swapped here to accommodate the 
+                        // eager reduction branch in `def_eq` being focused on reducing the lhs.
+                        self.assert_def_eq(arg_type, binder_type);
+                        // replace the outer scope's setting before next iteration
+                        self.ctx.eager_mode = outer_scope_eager_setting;
                     }
                     ctx.push(arg);
                     fun = body;
@@ -804,7 +817,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let x_n = self.whnf_no_unfolding_cheap_proj(x);
         let y_n = self.whnf_no_unfolding_cheap_proj(y);
 
-        if !self.ctx.has_fvars(x_n) && Some(y_n) == self.ctx.c_bool_true() {
+        if ((!self.ctx.has_fvars(x_n)) || self.ctx.eager_mode) && Some(y_n) == self.ctx.c_bool_true() {
             let x_nn = self.whnf(x_n);
             if Some(x_nn) == self.ctx.c_bool_true() {
                 return true
@@ -941,7 +954,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let major = self.whnf(major);
         let major = match self.ctx.read_expr(major) {
             NatLit { ptr, .. } => self.ctx.nat_lit_to_constructor(ptr),
-            StringLit { ptr, .. } => self.ctx.str_lit_to_constructor(ptr)?,
+            StringLit { ptr, .. } => self.str_lit_to_ctor_reducing(ptr)?,
             _ => {
                 let ind_rec_name_prefix = self.get_major_induct_aux(rec.info.ty, rec.major_idx());
                 self.iota_try_eta_struct(ind_rec_name_prefix, major)
@@ -1108,7 +1121,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         if let Some(short) = self.def_eq_nat(x, y) {
             return Some(DeltaResult::FoundEqResult(short))
         }
-        if !self.ctx.has_fvars(x) && !self.ctx.has_fvars(y) {
+        if (!self.ctx.has_fvars(x) && !self.ctx.has_fvars(y)) || self.ctx.eager_mode {
             if let Some(xprime) = self.try_reduce_nat(x) {
                 return Some(DeltaResult::FoundEqResult(self.def_eq(xprime, y)))
             } else if let Some(yprime) = self.try_reduce_nat(y) {

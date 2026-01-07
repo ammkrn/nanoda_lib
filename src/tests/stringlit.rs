@@ -16,7 +16,7 @@ fn string_lit_tests() -> Result<(), Box<dyn Error>> {
     })
 }
 
-/// Converting a string literal to `String.mk (List.cons (Char.ofNat N) ... List.nil)`
+/// Converting a string literal to `String.ofList (List.cons (Char.ofNat N) ... List.nil)`
 /// and converting that back to a string literal returns the original string literal.
 fn string_lit_conversion0(export_file: &ExportFile, rng: &mut ThreadRng) {
     export_file.with_tc(|tc| {
@@ -30,7 +30,7 @@ fn string_lit_conversion0(export_file: &ExportFile, rng: &mut ThreadRng) {
     })
 }
 
-/// Converting a string literal to `String.mk (List.cons (Char.ofNat N) ... List.nil)`
+/// Converting a string literal to `String.ofList (List.cons (Char.ofNat N) ... List.nil)`
 /// creates an expression that is definitionally equal to the string literal.
 fn string_lit_def_eq_apps(export_file: &ExportFile, rng: &mut ThreadRng) {
     export_file.with_tc(|tc| {
@@ -135,7 +135,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     fn str_lit_from_app_str(&mut self, e: ExprPtr<'t>) -> Option<StringPtr<'t>> {
         let fs = self.unfold_apps_r(e);
         match fs.as_slice() {
-            [string_mk, char_conses @ .., nil_f, char_arg] => {
+            [string_of_list, char_conses @ .., nil_f, char_arg] => {
                 let zero = self.zero();
                 let empty_levels = self.alloc_levels_slice(&[]);
                 let tyzero_levels = self.alloc_levels_slice(&[zero]);
@@ -143,9 +143,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
                 // @List.nil.{0}
                 let list_nil = self.mk_const(self.export_file.name_cache.list_nil?, tyzero_levels);
-                let string_mk_const = self.mk_const(self.export_file.name_cache.string_mk?, empty_levels);
-                // The top must be an application of `String.mk`
-                if *string_mk != string_mk_const {
+                let string_of_list_const = self.mk_const(self.export_file.name_cache.string_of_list?, empty_levels);
+                // The top must be an application of `String.ofList`
+                if *string_of_list != string_of_list_const {
                     return None
                 }
                 // The end of the spine must be `App(List.nil, Char)`

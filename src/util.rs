@@ -386,7 +386,7 @@ impl<'p> CycleCheckState<'p> {
             self.unique_names.insert(self.name_cache.list_nil.unwrap());
             self.unique_names.insert(self.name_cache.list_cons.unwrap());
             self.unique_names.insert(self.name_cache.string.unwrap());
-            self.unique_names.insert(self.name_cache.string_mk.unwrap());
+            self.unique_names.insert(self.name_cache.string_of_list.unwrap());
             self.unique_names.insert(self.name_cache.char.unwrap());
             self.unique_names.insert(self.name_cache.char_of_nat.unwrap());
             self.string = true;
@@ -413,11 +413,19 @@ pub struct TcCtx<'t, 'p> {
     pub(crate) unique_counter: u32,
     /// A cache for instantiation, free variable abstraction, and level substitution
     pub(crate) expr_cache: ExprCache<'t>,
+    pub(crate) eager_mode: bool
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub fn new(export_file: &'t ExportFile<'p>, tdag: &'t mut LeanDag<'t>) -> Self {
-        Self { export_file, dag: tdag, dbj_level_counter: 0u16, unique_counter: 0u32, expr_cache: ExprCache::new() }
+        Self { 
+            export_file,
+            dag: tdag,
+            dbj_level_counter: 0u16,
+            unique_counter: 0u32,
+            expr_cache: ExprCache::new(),
+            eager_mode: false
+        }
     }
 
     pub fn with_tc<F, A>(&mut self, f: F) -> A
@@ -693,13 +701,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         binder_type: ExprPtr<'t>,
         val: ExprPtr<'t>,
         body: ExprPtr<'t>,
+        nondep: bool
     ) -> ExprPtr<'t> {
-        let hash = hash64!(crate::expr::LET_HASH, binder_name, binder_type, val, body);
+        let hash = hash64!(crate::expr::LET_HASH, binder_name, binder_type, val, body, nondep);
         let num_loose_bvars = self
             .num_loose_bvars(binder_type)
             .max(self.num_loose_bvars(val).max(self.num_loose_bvars(body).saturating_sub(1)));
         let has_fvars = self.has_fvars(binder_type) || self.has_fvars(val) || self.has_fvars(body);
-        self.alloc_expr(Expr::Let { binder_name, binder_type, val, body, num_loose_bvars, has_fvars, hash })
+        self.alloc_expr(Expr::Let { binder_name, binder_type, val, body, num_loose_bvars, has_fvars, hash, nondep })
     }
 
     pub fn mk_proj(&mut self, ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>) -> ExprPtr<'t> {
@@ -875,12 +884,13 @@ impl<'a> LeanDag<'a> {
     /// them since we need to retrieve them quite frequently.
     pub(crate) fn mk_name_cache(&self) -> NameCache<'a> {
         NameCache {
+            eager_reduce: self.find_name("eagerReduce"),
             quot: self.find_name("Quot"),
             quot_mk: self.find_name("Quot.mk"),
             quot_lift: self.find_name("Quot.lift"),
             quot_ind: self.find_name("Quot.ind"),
             string: self.find_name("String"),
-            string_mk: self.find_name("String.mk"),
+            string_of_list: self.find_name("String.ofList"),
             nat: self.find_name("Nat"),
             nat_zero: self.find_name("Nat.zero"),
             nat_succ: self.find_name("Nat.succ"),
@@ -913,6 +923,7 @@ impl<'a> LeanDag<'a> {
 /// is present in the export file, otherwise they're `None`.
 #[derive(Debug, Clone, Copy)]
 pub struct NameCache<'p> {
+    pub(crate) eager_reduce: Option<NamePtr<'p>>,
     pub(crate) quot: Option<NamePtr<'p>>,
     pub(crate) quot_mk: Option<NamePtr<'p>>,
     pub(crate) quot_lift: Option<NamePtr<'p>>,
@@ -935,7 +946,7 @@ pub struct NameCache<'p> {
     pub(crate) nat_shr: Option<NamePtr<'p>>,
     pub(crate) nat_shl: Option<NamePtr<'p>>,
     pub(crate) string: Option<NamePtr<'p>>,
-    pub(crate) string_mk: Option<NamePtr<'p>>,
+    pub(crate) string_of_list: Option<NamePtr<'p>>,
     pub(crate) bool_false: Option<NamePtr<'p>>,
     pub(crate) bool_true: Option<NamePtr<'p>>,
     pub(crate) char: Option<NamePtr<'p>>,

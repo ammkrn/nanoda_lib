@@ -1,12 +1,16 @@
 use crate::util::{ExprPtr, FxHashMap, FxIndexMap, LevelsPtr, NamePtr};
 use std::sync::Arc;
+use serde::Deserialize;
 
 /// Reducibility hints accompany definitions; used to determine how
 /// to unfold expressions in order to most efficiently proceed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 pub enum ReducibilityHint {
+    #[serde(rename = "opaque")]
     Opaque,
+    #[serde(rename = "regular")]
     Regular(u16),
+    #[serde(rename = "abbrev")]
     Abbrev,
 }
 
