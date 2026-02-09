@@ -488,7 +488,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             _ => unreachable!("Cannot apply lambda with non-local domain type"),
         }
     }
-
+    
     pub(crate) fn is_nat_zero(&mut self, e: ExprPtr<'t>) -> bool {
         match self.read_expr(e) {
             Const { .. } => e == self.c_nat_zero(),
@@ -700,6 +700,34 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     /// Is this expression `Sort(Level::Zero)`?
     pub(crate) fn prop(&mut self) -> ExprPtr<'t> { self.mk_sort(self.zero()) }
+
+    pub fn get_nth_pi_binder(&self, mut e: ExprPtr<'t>, n: usize) -> Option<ExprPtr<'t>> {
+        for _ in 0.. n {
+            match self.read_expr(e) {
+                Pi {body, ..} => { e = body; },
+                _ => return None
+            }
+        }
+        match self.read_expr(e) {
+            Pi {binder_type, ..} => Some(binder_type),
+            _ => None
+        }
+    }
+
+    /// Get the name of the inductive type which is the major premise for this recursor
+    /// by finding the correct binder in the recursor's type.
+    pub fn get_major_induct(&self, rec: &crate::env::RecursorData<'t>) -> Option<NamePtr<'t>> {
+        match self.get_nth_pi_binder(rec.info.ty, rec.major_idx()).map(|x| self.read_expr(self.unfold_apps_fun(x))) {
+            Some(Const {name, ..}) => Some(name),
+            _ => None
+        }
+    }
+    
+    /// The number of "loose" bound variables, which is the number of bound variables
+    /// in an expression which are boudn by something above it.
+    pub(crate) fn num_loose_bvars(&self, e: ExprPtr<'t>) -> u16 { self.read_expr(e).num_loose_bvars() }
+
+    pub(crate) fn has_fvars(&self, e: ExprPtr<'t>) -> bool { self.read_expr(e).has_fvars() }
 }
 
 impl<'t> Expr<'t> {
@@ -729,10 +757,4 @@ impl<'t> Expr<'t> {
         }
     }
 }
-impl<'t, 'p: 't> TcCtx<'t, 'p> {
-    /// The number of "loose" bound variables, which is the number of bound variables
-    /// in an expression which are boudn by something above it.
-    pub(crate) fn num_loose_bvars(&self, e: ExprPtr<'t>) -> u16 { self.read_expr(e).num_loose_bvars() }
 
-    pub(crate) fn has_fvars(&self, e: ExprPtr<'t>) -> bool { self.read_expr(e).has_fvars() }
-}

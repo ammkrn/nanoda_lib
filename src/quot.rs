@@ -1,6 +1,6 @@
 //! Construction of quotient types
 
-use crate::env::{ConstructorData, Declar, DeclarInfo, InductiveData};
+use crate::env::{ConstructorData, Declar, DeclarInfo, InductiveData, EnvLimit};
 use crate::expr::{BinderStyle, BinderStyle::*};
 use crate::tc::TypeChecker;
 use crate::util::TcCtx;
@@ -64,14 +64,14 @@ macro_rules! pi_telescope {
 /// The `Quot` declarations rely on `Eq` being defined as it is in
 /// the prelude, so a prereq for checking the `Quot` declarations is asserting
 /// that a propery constructed `Eq` and `Eq.refl`
-pub fn check_eq<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>) {
+pub fn check_eq<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Declar<'p>) {
     use crate::expr::BinderStyle::*;
     let name = ctx.str1("Eq");
     let cname = ctx.str2("Eq", "refl");
     let alpha_name = ctx.str1("α");
     let a_name = ctx.str1("a");
     let prop = ctx.prop();
-    let env = ctx.export_file.new_env();
+    let env = ctx.export_file.new_env(EnvLimit::ByName(declar.info().name));
     match env.get_inductive(&name).cloned() {
         // The `Eq` declaration offered up by the export file;
         Some(InductiveData { info, num_params, all_ctor_names, .. }) => {
@@ -115,14 +115,13 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>) {
                 ),
             }
         }
-        None => panic!("cannot add Quot; improperly formed `Eq` type"),
+        None => panic!("cannot add Quot; improperly formed `Eq` type := {:?} ", ctx.debug_print(declar.info().name)),
     }
 }
 
 #[allow(non_snake_case)]
-pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>) {
+pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Declar<'p>) {
     // `Eq` matching expectations is a prerequisite for checking `Quot`.
-    check_eq(ctx);
     let prop = ctx.prop();
     let u_name = ctx.str1("u");
     let v_name = ctx.str1("v");
@@ -137,8 +136,7 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>) {
     let levels_uv = ctx.alloc_levels_slice(&[u_level, v_level]);
     let quot_name = ctx.export_file.name_cache.quot.unwrap();
     let quot_mk_name = ctx.export_file.name_cache.quot_mk.unwrap();
-    let quot_lift_name = ctx.export_file.name_cache.quot_lift.unwrap();
-    let quot_ind_name = ctx.export_file.name_cache.quot_ind.unwrap();
+
     let A_name = ctx.str1("A");
     let B_name = ctx.str1("B");
     let r_name = ctx.str1("r");
@@ -204,71 +202,73 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>) {
         }
     };
 
-    // Quot.lift : Π {A : Sort u} {r : A → A → Prop} {B : Sort v} (f : A → B),
-    //   (∀ (a b : A), r a b → f a = f b) → @Quot A r → B
-    let expected_quot_lift = Declar::Quot {
-        info: DeclarInfo {
-            name: quot_lift_name,
-            uparams: levels_uv,
-            ty: pi_telescope! {
-                in ctx;
-                A,
-                r,
-                B,
-                f,
-                arrow! {
+    if declar.info().name == ctx.str1("Quot") {
+        let env = ctx.export_file.new_env(EnvLimit::ByName(quot_name));
+        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
+        tc.assert_def_eq(declar.info().ty, expected_quot.info().ty);
+    } else if declar.info().name == ctx.str2("Quot", "mk") {
+        let env = ctx.export_file.new_env(EnvLimit::ByName(quot_mk_name));
+        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
+        tc.assert_def_eq(declar.info().ty, expected_quot_mk.info().ty);
+    } else if declar.info().name == ctx.str2("Quot", "lift") {
+        check_eq(ctx, declar);
+        // Quot.lift : Π {A : Sort u} {r : A → A → Prop} {B : Sort v} (f : A → B),
+        //   (∀ (a b : A), r a b → f a = f b) → @Quot A r → B
+        let expected_quot_lift = Declar::Quot {
+            info: DeclarInfo {
+                name: declar.info().name,
+                uparams: levels_uv,
+                ty: pi_telescope! {
                     in ctx;
-                    lift_inner,
-                    quot_A_r,
-                    B
-                }
+                    A,
+                    r,
+                    B,
+                    f,
+                    arrow! {
+                        in ctx;
+                        lift_inner,
+                        quot_A_r,
+                        B
+                    }
+                },
             },
-        },
-    };
+        };
+        let env = ctx.export_file.new_env(EnvLimit::ByName(declar.info().name));
+        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
+        tc.assert_def_eq(declar.info().ty, expected_quot_lift.info().ty);
+        return
+    } else if declar.info().name == ctx.str2("Quot", "ind") {
+        // {B : @Quot A r → Prop}
+        let quot_A_r_prop = arrow!(in ctx; quot_A_r, prop);
 
-    // {B : @Quot A r → Prop}
-    let quot_A_r_prop = arrow!(in ctx; quot_A_r, prop);
+        let B_local = ctx.mk_unique(B_name, Implicit, quot_A_r_prop);
 
-    let B_local = ctx.mk_unique(B_name, Implicit, quot_A_r_prop);
+        // (q : @Quot A r)
+        let q_local = ctx.mk_unique(q_name, Default, quot_A_r);
 
-    // (q : @Quot A r)
-    let q_local = ctx.mk_unique(q_name, Default, quot_A_r);
+        // @Quot.mk A r a
+        let quot_mk_app = app!(in ctx; quot_mk_const, A, r, a);
 
-    // @Quot.mk A r a
-    let quot_mk_app = app!(in ctx; quot_mk_const, A, r, a);
+        // (∀ (a : A), B (@Quot.mk A r a))
+        let lhs = pi_telescope!(in ctx; a, app!(in ctx; B_local, quot_mk_app));
+        //  ∀ (q : @Quot A r), B q
+        let rhs = pi_telescope!(in ctx; q_local, app!(in ctx; B_local, q_local));
 
-    // (∀ (a : A), B (@Quot.mk A r a))
-    let lhs = pi_telescope!(in ctx; a, app!(in ctx; B_local, quot_mk_app));
-    //  ∀ (q : @Quot A r), B q
-    let rhs = pi_telescope!(in ctx; q_local, app!(in ctx; B_local, q_local));
+        // Quot.ind : ∀ {A : Sort u} {r : A → A → Prop} {B : @Quot A r → Prop},
+        //           (∀ (a : A), B (@Quot.mk A r a)) → ∀ (q : @Quot A r), B q
+        let expected_quot_ind = Declar::Quot {
+            info: DeclarInfo {
+                name: declar.info().name,
+                uparams: levels_u,
+                ty: pi_telescope!(in ctx; A, r, B_local, arrow!(in ctx; lhs, rhs)),
+            },
+        };
 
-    // Quot.ind : ∀ {A : Sort u} {r : A → A → Prop} {B : @Quot A r → Prop},
-    //           (∀ (a : A), B (@Quot.mk A r a)) → ∀ (q : @Quot A r), B q
-    let expected_quot_ind = Declar::Quot {
-        info: DeclarInfo {
-            name: quot_ind_name,
-            uparams: levels_u,
-            ty: pi_telescope!(in ctx; A, r, B_local, arrow!(in ctx; lhs, rhs)),
-        },
-    };
-
-    let env = ctx.export_file.new_env();
-    let found_quot = env.get_declar(&quot_name).cloned().unwrap();
-    let found_quot_mk = env.get_declar(&quot_mk_name).cloned().unwrap();
-    let found_quot_lift = env.get_declar(&quot_lift_name).cloned().unwrap();
-    let found_quot_ind = env.get_declar(&quot_ind_name).cloned().unwrap();
-
-    let mut tc = TypeChecker::new(ctx, &env, Some(*found_quot.info()));
-    tc.assert_def_eq(found_quot.info().ty, expected_quot.info().ty);
-
-    let mut tc = TypeChecker::new(ctx, &env, Some(*found_quot_mk.info()));
-    tc.assert_def_eq(found_quot_mk.info().ty, expected_quot_mk.info().ty);
-
-    let mut tc = TypeChecker::new(ctx, &env, Some(*found_quot_lift.info()));
-    tc.assert_def_eq(found_quot_lift.info().ty, expected_quot_lift.info().ty);
-
-    let mut tc = TypeChecker::new(ctx, &env, Some(*found_quot_ind.info()));
-    tc.assert_def_eq(found_quot_ind.info().ty, expected_quot_ind.info().ty);
-    // set a flag in the export file marking the quotient declarations as checked.
-    ctx.export_file.quot_checked.store(true, std::sync::atomic::Ordering::Relaxed);
+        let env = ctx.export_file.new_env(EnvLimit::ByName(declar.info().name));
+        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
+        tc.assert_def_eq(declar.info().ty, expected_quot_ind.info().ty);
+        return
+    } else {
+        panic!("invalid quotient declaration {:?}", ctx.debug_print(declar.info().name))
+    }
 }

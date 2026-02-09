@@ -1,4 +1,0 @@
-prelude
-inductive False : Prop
-
-unsafe opaque a : MyFalse := a

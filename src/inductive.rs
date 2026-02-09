@@ -5,27 +5,34 @@ use crate::util::{ExportFile, ExprPtr, FxIndexMap, LevelPtr, LevelsPtr, NamePtr,
 use std::sync::Arc;
 
 impl<'t, 'p: 't> ExportFile<'p> {
-    pub(crate) fn check_inductive_declar(&self, ind: &InductiveData<'t>) {
+    pub(crate) fn check_inductive_declar(&self, d: &Declar<'t>) {
+        let (ind, env_limit) = match d {
+            Declar::Inductive(ind) => {
+                let (start, size) = self.mutual_block_sizes.get(&ind.info.name).unwrap();
+                (ind, crate::env::EnvLimit::ByIndex(start + size))
+            }
+            _ => panic!("expected inductive")
+        };
         self.with_ctx(|ctx| {
             // The **unmodified** types and constructors for all of the types in this mutual block.
-            let unmodified_tys_ctors = ctx.with_tc(|tc| {
-                tc.check_declar_info(&ind.info);
+            let unmodified_tys_ctors = ctx.with_tc(env_limit, |tc| {
+                tc.check_declar_info(d).unwrap();
                 tc.collect_unmodified_mutuals(ind)
             });
 
             // Initialize the big chunk of state used throughout the process of checking
             // this inductive declaration.
-            let mut st = ctx.with_tc(|tc| tc.specialize_nested(ind, unmodified_tys_ctors.clone()));
+            let mut st = ctx.with_tc(env_limit, |tc| tc.specialize_nested(ind, unmodified_tys_ctors.clone()));
 
             // Check the (potentially modified) inductive specs against the base environment.
-            ctx.with_tc(|tc| tc.check_inductive_specs(&mut st));
+            ctx.with_tc(env_limit, |tc| tc.check_inductive_specs(&mut st));
 
             // The first temporary environment extension, containing any specialized
             // types to deal with nested inductives.
             let ind_ty_ext1 = ctx.mk_ind_tys_env_ext(&st);
 
             // Check the constructors against the environment with the base extension.
-            ctx.with_tc_and_env_ext(&ind_ty_ext1, |tc| {
+            ctx.with_tc_and_env_ext(&ind_ty_ext1, env_limit, |tc| {
                 for ind in st.all_inductives_incl_specialized.iter() {
                     for ctor in ind.ctors.iter() {
                         tc.check_ctor(&st, ind.name, ctor.ty)
@@ -37,7 +44,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
             let ctor_extension = ctx.mk_ctors_env_ext(&st, ind_ty_ext1);
 
             // The constructed recursors and rec rules
-            let recursors = ctx.with_tc_and_env_ext(&ctor_extension, |tc| {
+            let recursors = ctx.with_tc_and_env_ext(&ctor_extension, env_limit, |tc| {
                 tc.mk_elim_level(&mut st);
                 tc.init_k_target(&mut st);
                 tc.mk_majors(&mut st);
@@ -55,7 +62,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
                 out
             };
 
-            ctx.with_tc_and_env_ext(&recursor_extension, |tc| {
+            ctx.with_tc_and_env_ext(&recursor_extension, env_limit, |tc| {
                 if st.is_nested() {
                     tc.restore_and_check(&st, &unmodified_tys_ctors, &ind.all_ind_names);
                 } else {
@@ -489,7 +496,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn mk_unique_name(&mut self, n: NamePtr<'t>, st: &mut InductiveCheckState<'t>) -> NamePtr<'t> {
         for idx in st.next_ngen_idx..u64::MAX {
             let tester = self.ctx.append_index_after(n, idx);
-            if !self.env.declars.contains_key(&tester) {
+            if !self.env.get_old_declar(&tester).is_some() {
                 st.next_ngen_idx = idx + 1;
                 return tester
             }
@@ -1018,7 +1025,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut out = Vec::new();
         for (i, rec_arg) in rec_args.iter().copied().enumerate() {
             self.tc_cache.clear();
-            let u_i_ty = self.whnf_after_infer(rec_arg, crate::tc::InferFlag::InferOnly);
+            let u_i_ty = self.infer_then_whnf(rec_arg, crate::tc::InferFlag::InferOnly);
             let (arg_ty, xs) = self.handle_rec_args_aux(u_i_ty);
             let (ind_ty_idx, applied_indices) = self.get_i_indices(st, arg_ty);
             let motive = st.motives.get(ind_ty_idx).copied().expect("Failed to get specified motive");
@@ -1088,7 +1095,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let flat_mapped_minors = st.minors.iter().flat_map(|v| v.iter().copied()).collect::<Vec<ExprPtr>>();
         for rec_ctor_arg in rec_ctor_args.iter().copied() {
             self.tc_cache.clear();
-            let u_i_ty = self.whnf_after_infer(rec_ctor_arg, InferFlag::InferOnly);
+            let u_i_ty = self.infer_then_whnf(rec_ctor_arg, InferFlag::InferOnly);
             let (u_i_ty, xs) = self.handle_rec_args_aux(u_i_ty);
             let (it_idx, applied_indices) = self.get_i_indices(st, u_i_ty);
             let it_name = st.all_inductives_incl_specialized.get(it_idx).map(|x| x.name).unwrap();

@@ -2,8 +2,12 @@ use crate::env::ReducibilityHint;
 use crate::env::{ConstructorData, Declar, DeclarInfo, Env, InductiveData, RecRule, RecursorData};
 use crate::expr::Expr;
 use crate::level::Level;
-use crate::name::Name;
-use crate::util::{nat_div, nat_mod, nat_sub, nat_gcd, nat_land, nat_lor, nat_xor, nat_shr, nat_shl, ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, TcCache, TcCtx, StringPtr};
+use crate::util::{
+    nat_div, nat_mod, nat_sub, nat_gcd, nat_land, nat_lor, 
+    nat_xor, nat_shr, nat_shl, ExportFile, ExprPtr, LevelPtr, 
+    LevelsPtr, NamePtr, TcCache, TcCtx, StringPtr
+};
+use std::error::Error;
 use num_traits::pow::Pow;
 
 use DeltaResult::*;
@@ -53,7 +57,6 @@ pub(crate) enum InferFlag {
 }
 
 pub struct TypeChecker<'x, 't, 'p> {
-    pub(crate) cur: Option<NamePtr<'t>>,
     pub(crate) ctx: &'x mut TcCtx<'t, 'p>,
     /// An immutable reference to an environment, which contains declarations and notation.
     /// To accommodate the temporary declarations created while checking nested inductives,
@@ -80,21 +83,21 @@ impl<'p> ExportFile<'p> {
     pub fn check_declar(&self, d: &Declar<'p>) {
         use Declar::*;
         match d {
-            Axiom { .. } => self.with_tc_and_declar(*d.info(), |tc| tc.check_declar_info(d.info())),
-            Inductive(ind) => self.check_inductive_declar(ind),
-            Quot { .. } => self.with_ctx(|ctx| crate::quot::check_quot(ctx)),
+            Axiom { .. } => self.with_tc_and_declar(*d.info(), |tc| tc.check_declar_info(d).unwrap()),
+            Inductive(..) => self.check_inductive_declar(d),
+            Quot { .. } => self.with_ctx(|ctx| crate::quot::check_quot(ctx, d)),
             Definition { val, .. } | Theorem { val, .. } | Opaque { val, .. } =>
                 self.with_tc_and_declar(*d.info(), |tc| {
-                    tc.check_declar_info(d.info());
+                    tc.check_declar_info(d).unwrap();
                     let inferred_type = tc.infer(*val, crate::tc::InferFlag::Check);
                     tc.assert_def_eq(inferred_type, d.info().ty);
                 }),
             Constructor(ctor_data) => {
-                self.with_tc_and_declar(*d.info(), |tc| tc.check_declar_info(d.info()));
+                self.with_tc_and_declar(*d.info(), |tc| tc.check_declar_info(d).unwrap());
                 assert!(self.declars.get(&ctor_data.inductive_name).is_some());
             }
             Recursor(recursor_data) => {
-                self.with_tc_and_declar(*d.info(), |tc| tc.check_declar_info(d.info()));
+                self.with_tc_and_declar(*d.info(), |tc| tc.check_declar_info(d).unwrap());
                 for ind_name in recursor_data.all_inductives.iter() {
                     assert!(self.declars.get(ind_name).is_some())
                 }
@@ -153,18 +156,31 @@ impl<'p> ExportFile<'p> {
 impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     pub fn new(dag: &'x mut TcCtx<'t, 'p>, env: &'x Env<'x, 't>, declar_info: Option<DeclarInfo<'t>>) -> Self {
         assert_eq!(dag.dbj_level_counter, 0);
-        Self { cur: declar_info.map(|x| x.name), ctx: dag, env, tc_cache: TcCache::new(), declar_info }
+        Self { ctx: dag, env, tc_cache: TcCache::new(), declar_info } 
     }
 
     /// Conduct the preliminary checks done on all declarations; a declaration
     /// must not contain duplicate universe parameters, mut not have free variables,
     /// and must have an ascribed type that is actually a type (`infer declaration.type` must
     /// be a sort).
-    pub(crate) fn check_declar_info(&mut self, info: &DeclarInfo<'t>) {
+    pub(crate) fn check_declar_info(&mut self, d: &Declar<'t>) -> Result<(), Box<dyn Error>> {
+        let info = d.info();
         assert!(self.ctx.no_dupes_all_params(info.uparams));
         assert!(!self.ctx.has_fvars(info.ty));
         let inferred_type = self.infer(info.ty, Check);
-        self.ensure_sort(inferred_type);
+        let sort = self.ensure_sort(inferred_type);
+
+        // This is sort of a "soft" check in terms of soundness, but for theorems, ensure 
+        // that they're propositions.
+        if let Declar::Theorem {..} = d {
+            if !self.ctx.is_zero(sort) {
+                return Err(Box::<dyn Error>::from(format!("Theorem type for {:?} must be `Prop` (sort 0); found type {:?}",
+                    self.ctx.debug_print(info.name),
+                    self.ctx.debug_print(sort)
+                )))
+            }
+        } 
+        Ok(())
     }
 
     /// Infer a `Const` by retrieving its type from the environment, then substituting
@@ -249,7 +265,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
 
     pub(crate) fn infer_sort_of(&mut self, e: ExprPtr<'t>, flag: InferFlag) -> LevelPtr<'t> {
-        let whnfd = self.whnf_after_infer(e, flag);
+        let whnfd = self.infer_then_whnf(e, flag);
         match self.ctx.read_expr(whnfd) {
             Sort { level, .. } => level,
             _ => panic!("infer_sort_of could not infer a sort"),
@@ -306,7 +322,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     // For structures that carry no additional information, elements with the same type are def_eq.
     fn def_eq_unit(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> Option<bool> {
-        let x_ty = self.whnf_after_infer(x, InferOnly);
+        let x_ty = self.infer_then_whnf(x, InferOnly);
         let (_, name, _levels, _) = self.ctx.unfold_const_apps(x_ty)?;
         let InductiveData { num_indices, all_ctor_names, .. } = self.env.get_inductive(&name)?;
         if all_ctor_names.len() != 1 || *num_indices != 0 {
@@ -342,7 +358,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             Ble => self.ctx.bool_to_expr(arg1 <= arg2)?,
         })
     }
-
+    
     /// Try to reduce an expression `e` which is an application of `Nat.succ`,
     /// or an application of a supported binary operation. `e` must have no free
     /// variables.
@@ -355,40 +371,40 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
         let (f, args) = self.ctx.unfold_apps(e);
         let out = match (self.ctx.read_expr(f), args.as_slice()) {
-            (Const { name, .. }, [arg]) if name == self.ctx.export_file.name_cache.nat_succ? => {
+            (Const { name, .. }, [arg]) if Some(name) == self.ctx.export_file.name_cache.nat_succ => {
                 let v_expr = self.whnf(*arg);
                 let v_biguint = self.ctx.get_bignum_from_expr(v_expr)?;
                 let bignum = self.ctx.mk_nat_lit_quick(v_biguint + 1usize);
                 Some(bignum)
             }
             (Const { name, .. }, [arg1, arg2]) => {
-                let op = if name == self.ctx.export_file.name_cache.nat_add? {
+                let op = if Some(name) == self.ctx.export_file.name_cache.nat_add {
                     NatBinOp::Add
-                } else if name == self.ctx.export_file.name_cache.nat_sub? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_sub {
                     NatBinOp::Sub
-                } else if name == self.ctx.export_file.name_cache.nat_mul? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_mul {
                     NatBinOp::Mul
-                } else if name == self.ctx.export_file.name_cache.nat_pow? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_pow {
                     NatBinOp::Pow
-                } else if name == self.ctx.export_file.name_cache.nat_mod? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_mod {
                     NatBinOp::Mod
-                } else if name == self.ctx.export_file.name_cache.nat_div? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_div {
                     NatBinOp::Div
-                } else if name == self.ctx.export_file.name_cache.nat_beq? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_beq {
                     NatBinOp::Beq
-                } else if name == self.ctx.export_file.name_cache.nat_ble? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_ble {
                     NatBinOp::Ble
-                } else if name == self.ctx.export_file.name_cache.nat_land? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_land {
                     NatBinOp::LAnd
-                } else if name == self.ctx.export_file.name_cache.nat_lor? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_lor {
                     NatBinOp::LOr
-                } else if name == self.ctx.export_file.name_cache.nat_xor? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_xor {
                     NatBinOp::XOr
-                } else if name == self.ctx.export_file.name_cache.nat_gcd? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_gcd {
                     NatBinOp::Gcd
-                } else if name == self.ctx.export_file.name_cache.nat_shl? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_shl {
                     NatBinOp::Shl
-                } else if name == self.ctx.export_file.name_cache.nat_shr? {
+                } else if Some(name) == self.ctx.export_file.name_cache.nat_shr {
                     NatBinOp::Shr
                 } else {
                     return None
@@ -413,7 +429,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         Some(args.get(i).copied().unwrap())
     }
 
-    pub(crate) fn whnf_after_infer(&mut self, e: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
+    pub(crate) fn infer_then_whnf(&mut self, e: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
         let ty = self.infer(e, flag);
         self.whnf(ty)
     }
@@ -526,7 +542,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                         }
                         // `arg_type` and `binder_type` get swapped here to accommodate the 
                         // eager reduction branch in `def_eq` being focused on reducing the lhs.
-                        self.assert_def_eq(arg_type, binder_type);
+                        self.assert_def_eq(binder_type, arg_type);
                         // replace the outer scope's setting before next iteration
                         self.ctx.eager_mode = outer_scope_eager_setting;
                     }
@@ -549,6 +565,30 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
         self.ctx.inst(fun, ctx.as_slice())
     }
+
+    //fn infer_app(&mut self, e: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
+    //    match self.ctx.read_expr(e) {
+    //        App {fun, arg, ..} => {
+    //            let fun_ty = self.infer_then_whnf(fun, flag);
+    //            match self.ctx.read_expr(fun_ty) {
+    //                Pi {binder_type, body, ..} => {
+    //                    if flag == InferFlag::Check {
+    //                        let arg_ty = self.infer(arg, flag);
+    //                        let outer_scope_eager_setting = self.ctx.eager_mode;
+    //                        if self.ctx.is_eager_reduce_app(arg) {
+    //                            self.ctx.eager_mode = true;
+    //                        }
+    //                        self.assert_def_eq(binder_type, arg_ty);
+    //                        self.ctx.eager_mode = outer_scope_eager_setting;
+    //                    }
+    //                    self.ctx.inst(body, &[arg])
+    //                },
+    //                _ => panic!()
+    //            }
+    //        },
+    //        _ => panic!()
+    //    }
+    //}
 
     fn infer_lambda(&mut self, mut e: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
         let mut locals = Vec::new();
@@ -617,6 +657,76 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
         let body = self.ctx.inst(body, &[val]);
         self.infer(body, flag)
+    }
+    
+    // Not well tested, used for introspection/debugging.
+    #[allow(dead_code)]
+    pub(crate) fn strong_reduce(&mut self, e: ExprPtr<'t>, reduce_types: bool, reduce_proofs: bool) -> ExprPtr<'t> {
+        if (!reduce_types) || (!reduce_proofs) {
+            let ty = self.infer(e, InferOnly);
+            if !reduce_types && matches!(self.ctx.read_expr(ty), Sort {..}) {
+                return e
+            }
+            if !reduce_proofs && self.is_proposition(ty).0 {
+                return e
+            }
+        }
+        let e = self.whnf(e);
+        if let Some(cached) = self.tc_cache.strong_cache.get(&(e, reduce_types, reduce_proofs)).copied() {
+            return cached
+        }
+
+        let out = match self.ctx.read_expr(e) {
+            Expr::App {fun, arg, ..} => {
+                let f = self.strong_reduce(fun, reduce_types, reduce_proofs);
+                let arg = self.strong_reduce(arg, reduce_types, reduce_proofs);
+                self.ctx.mk_app(f, arg)
+            }
+            Expr::Lambda {binder_name, binder_style, binder_type, body, ..} => {
+                let start_pos = self.ctx.dbj_level_counter;
+                let local = self.ctx.mk_dbj_level(binder_name, binder_style, binder_type);
+                let instd = self.ctx.inst(body, &[local]);
+                let body = self.strong_reduce(instd, reduce_types, reduce_proofs);
+                let abstrd = self.ctx.abstr_levels(body, start_pos);
+                match self.ctx.read_expr(local) {
+                    Local {binder_name, binder_style, binder_type, ..} => {
+                        self.ctx.replace_dbj_level(local);
+                        let t = self.ctx.abstr_levels(binder_type, start_pos);
+                        self.ctx.mk_lambda(binder_name, binder_style, t, abstrd)
+                    },
+                    _ => panic!()
+                }
+            }
+            Expr::Pi {binder_name, binder_style, binder_type, body, ..} => {
+                let start_pos = self.ctx.dbj_level_counter;
+                let local = self.ctx.mk_dbj_level(binder_name, binder_style, binder_type);
+                let instd = self.ctx.inst(body, &[local]);
+                let body = self.strong_reduce(instd, reduce_types, reduce_proofs);
+                let abstrd = self.ctx.abstr_levels(body, start_pos);
+                match self.ctx.read_expr(local) {
+                    Local {binder_name, binder_style, binder_type, ..} => {
+                        self.ctx.replace_dbj_level(local);
+                        let t = self.ctx.abstr_levels(binder_type, start_pos);
+                        self.ctx.mk_pi(binder_name, binder_style, t, abstrd)
+                    },
+                    _ => panic!()
+                }
+            }
+            Expr::Proj {ty_name, idx, structure, ..} => {
+                let structure = self.strong_reduce(structure, reduce_types, reduce_proofs);
+                let x = self.ctx.mk_proj(ty_name, idx, structure);
+                let y = self.whnf(x);
+                if y != x {
+                    self.strong_reduce(y, reduce_types, reduce_proofs)
+                } else {
+                    x
+                }
+                
+            }
+            _ => e
+        };
+        self.tc_cache.strong_cache.insert((e, reduce_types, reduce_proofs), out);
+        out
     }
 
     pub fn whnf(&mut self, e: ExprPtr<'t>) -> ExprPtr<'t> {
@@ -870,21 +980,19 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn to_ctor_when_k(
         &mut self,
         major: ExprPtr<'t>,
-        rec_name: NamePtr<'t>,
-        rec_is_k: bool,
-        rec_num_params: usize,
+        rec: &RecursorData<'t>,
     ) -> Option<ExprPtr<'t>> {
-        if !rec_is_k {
+        if !rec.is_k {
             return None
         }
-        let app_type = self.whnf_after_infer(major, InferOnly);
-        let f = self.ctx.unfold_apps_fun(app_type);
-        match (self.ctx.read_expr(f), self.ctx.read_name(rec_name)) {
-            (Const { name, .. }, Name::Str(pfx, ..)) if name == pfx => {
-                let new_ctor_app = self.mk_nullary_ctor(app_type, rec_num_params)?;
+        let major_ty = self.infer_then_whnf(major, InferOnly);
+        let f = self.ctx.unfold_apps_fun(major_ty);
+        match (self.ctx.read_expr(f), self.ctx.get_major_induct(rec)) {
+            (Const { name, .. }, Some(n)) if name == n => {
+                let new_ctor_app = self.mk_nullary_ctor(major_ty, rec.num_params as usize)?;
                 // This sometimes has free variables.
                 let new_type = self.infer(new_ctor_app, InferOnly);
-                if self.def_eq(app_type, new_type) {
+                if self.def_eq(major_ty, new_type) {
                     Some(new_ctor_app)
                 } else {
                     None
@@ -907,11 +1015,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         if (!self.env.can_be_struct(&ind_name)) || self.is_ctor_app(e).is_some() {
             e
         } else {
-            let e_type = self.whnf_after_infer(e, InferOnly);
+            let e_type = self.infer_then_whnf(e, InferOnly);
             let e_type_f = self.ctx.unfold_apps_fun(e_type);
             match self.ctx.read_expr(e_type_f) {
                 Const { name, .. } if name == ind_name => {
-                    let e_sort = self.whnf_after_infer(e_type, InferOnly);
+                    let e_sort = self.infer_then_whnf(e_type, InferOnly);
                     // If it's a prop, return the original `e`
                     if e_sort == self.ctx.prop() {
                         e
@@ -925,38 +1033,22 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
     }
     
-    pub fn get_major_induct_aux(&self, mut ty: ExprPtr<'t>, idx: usize) -> NamePtr<'t> {
-        for i in 0..idx {
-            match self.ctx.read_expr(ty) {
-                Pi {body, ..} => { ty = body },
-                _ => panic!("exhausted telescope early in get_major_induct_aux {}/{}", i, idx)
-            }
-        }
-        match self.ctx.read_expr(ty) {
-            Pi {binder_type, ..} => {
-                let (_, name, _, _) = self.ctx.unfold_const_apps(binder_type).expect("major premise must be a const or const app");
-                name
-            },
-            _ => panic!("exhausted telescope early in get_major_induct_aux {}/{}", idx, idx)
-        }
-    }
-
     fn reduce_rec(
         &mut self,
         const_name: NamePtr<'t>,
         const_levels: LevelsPtr<'t>,
         args: &[ExprPtr<'t>],
     ) -> Option<ExprPtr<'t>> {
-        let rec @ RecursorData { info, rec_rules, num_params, num_motives, num_minors, is_k, .. } =
+        let rec @ RecursorData { info, rec_rules, num_params, num_motives, num_minors, .. } =
             self.env.get_recursor(&const_name)?;
         let major = args.get(rec.major_idx()).copied()?;
-        let major = self.to_ctor_when_k(major, info.name, *is_k, *num_params as usize).unwrap_or(major);
+        let major = self.to_ctor_when_k(major, rec).unwrap_or(major);
         let major = self.whnf(major);
         let major = match self.ctx.read_expr(major) {
             NatLit { ptr, .. } => self.ctx.nat_lit_to_constructor(ptr),
-            StringLit { ptr, .. } => self.str_lit_to_ctor_reducing(ptr)?,
+            StringLit { ptr, .. } => self.str_lit_to_ctor_reducing(ptr).unwrap_or(major),
             _ => {
-                let ind_rec_name_prefix = self.get_major_induct_aux(rec.info.ty, rec.major_idx());
+                let ind_rec_name_prefix = self.ctx.get_major_induct(rec).unwrap();
                 self.iota_try_eta_struct(ind_rec_name_prefix, major)
             }
         };
@@ -976,6 +1068,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
 
     pub fn reduce_quot(&mut self, c_name: NamePtr<'t>, args: &[ExprPtr<'t>]) -> Option<ExprPtr<'t>> {
+        if !matches!(self.env.get_declar(&c_name), Some(Declar::Quot {..})) {
+            return None
+        }
         let (qmk, rest_idx) = if c_name == self.ctx.export_file.name_cache.quot_lift? {
             let qmk = args.get(5).copied()?;
             (self.whnf(qmk), 6)
@@ -1211,7 +1306,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn try_eta_expansion_aux(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
         if let Lambda { .. } = self.ctx.read_expr(x) {
-            let y_ty = self.whnf_after_infer(y, InferOnly);
+            let y_ty = self.infer_then_whnf(y, InferOnly);
             if let Pi { binder_name, binder_type, binder_style, .. } = self.ctx.read_expr(y_ty) {
                 let v0 = self.ctx.mk_var(0);
                 let new_body = self.ctx.mk_app(y, v0);
