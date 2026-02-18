@@ -437,8 +437,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     #[allow(non_snake_case)]
     fn infer_proj(&mut self, _ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>) -> ExprPtr<'t> {
         let (structure_ty_is_prop, structure_ty) = {
-            let (is_prop, t) = self.is_proposition(structure);
-            (is_prop, self.whnf(t))
+            let (is_proof, t) = self.is_proof(structure);
+            (is_proof, self.whnf(t))
         };
         let (_, struct_ty_name, struct_ty_levels, struct_ty_args) = self.ctx.unfold_const_apps(structure_ty).unwrap();
 
