@@ -1,0 +1,7 @@
+{
+  "export_file_path": "test_resources/ProjFromProp/export",
+  "permitted_axioms": [],
+  "unpermitted_axiom_hard_error": true,
+  "print_success_message": true,
+  "pp_to_stdout": true
+}
