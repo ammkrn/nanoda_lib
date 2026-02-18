@@ -1,4 +1,4 @@
-use crate::env::{DeclarMap, Env, NotationMap};
+use crate::env::{DeclarMap, Env, NotationMap, EnvLimit};
 use crate::expr::{BinderStyle, Expr, FVarId};
 use crate::level::Level;
 use crate::name::Name;
@@ -11,7 +11,6 @@ use num_bigint::BigUint;
 use num_traits::{ Pow, identities::Zero };
 use num_integer::Integer;
 use rustc_hash::FxHasher;
-use serde_json::Value as JsonValue;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -22,8 +21,10 @@ use std::io::BufWriter;
 use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use serde::Deserialize;
+
+pub(crate) const fn default_true() -> bool { true }
 
 pub(crate) type UniqueIndexSet<A> = IndexSet<A, BuildHasherDefault<UniqueHasher>>;
 pub(crate) type FxIndexSet<A> = IndexSet<A, BuildHasherDefault<FxHasher>>;
@@ -200,8 +201,6 @@ impl<'t> ExprCache<'t> {
 pub struct ExportFile<'p> {
     /// The underlying storage for `Name`, `Level`, and `Expr` items (and Strings).
     pub(crate) dag: LeanDag<'p>,
-    /// Whether `Quot` has been checked.
-    pub quot_checked: AtomicBool,
     /// Declarations from the export file
     pub declars: DeclarMap<'p>,
     /// Notations from the export file
@@ -209,10 +208,12 @@ pub struct ExportFile<'p> {
     /// Cached names for convenience (`Quot`, `Nat`, etc.)
     pub name_cache: NameCache<'p>,
     pub config: Config,
+    // Information used for setting EnvLimit during inductive checking.
+    pub mutual_block_sizes: FxHashMap<NamePtr<'p>, (usize, usize)>
 }
 
 impl<'p> ExportFile<'p> {
-    pub fn new_env(&self) -> Env<'_, '_> { Env::new_plus(&self.declars, None, &self.notations) }
+    pub fn new_env(&self, env_limit: EnvLimit<'p>) -> Env<'_, '_> { Env::new(&self.declars, &self.notations, env_limit) }
 
     pub fn with_ctx<F, A>(&self, f: F) -> A
     where
@@ -222,12 +223,12 @@ impl<'p> ExportFile<'p> {
         f(&mut ctx)
     }
 
-    pub fn with_tc<F, A>(&self, f: F) -> A
+    pub fn with_tc<F, A>(&self, env_limit: EnvLimit, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
         let mut dag = LeanDag::empty();
         let mut ctx = TcCtx::new(self, &mut dag);
-        let env = self.new_env();
+        let env = self.new_env(env_limit);
         let mut tc = TypeChecker::new(&mut ctx, &env, None);
         f(&mut tc)
     }
@@ -237,7 +238,7 @@ impl<'p> ExportFile<'p> {
         F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
         let mut dag = LeanDag::empty();
         let mut ctx = TcCtx::new(self, &mut dag);
-        let env = self.new_env();
+        let env = self.new_env(EnvLimit::ByName(d.name));
         let mut tc = TypeChecker::new(&mut ctx, &env, Some(d));
         f(&mut tc)
     }
@@ -246,151 +247,6 @@ impl<'p> ExportFile<'p> {
     where
         F: FnOnce(&mut PrettyPrinter<'_, '_, 'p>) -> A, {
         self.with_ctx(|ctx| ctx.with_pp(f))
-    }
-
-    /// Make sure no declaration in the export file contains a reference cycle, either
-    /// directly or by unfolding.
-    ///
-    /// For a declaration `d`, traverses the type and value (if there's a value) ensuring
-    /// no `Const(n, _)` reachable by `d` (either directly or by unfolding) can be used to refer back to `d`.
-    pub(crate) fn check_no_cycles(&mut self) {
-        // This state needs to persist so that we don't unfold the same constants
-        let mut state = CycleCheckState::new(self.name_cache);
-        for declar_name in self.declars.values().map(|d| d.info().name) {
-            state.being_checked.insert(declar_name);
-            self.get_declar_unique_names(&mut state, declar_name);
-            assert!(!state.unique_names.contains(&declar_name));
-            state.checked_declars.insert(declar_name);
-            state.clear();
-        }
-    }
-
-    /// Gather the set of names reachable by `d`, so we can assert that `d` does not
-    /// appear therein.
-    fn get_declar_unique_names(&self, state: &mut CycleCheckState<'p>, declar_name: NamePtr<'p>) {
-        use crate::env::Declar::*;
-        let ty = match self.declars.get(&declar_name).map(|d| d.info().ty) {
-            None => {
-                self.with_ctx(|ctx| eprintln!("declaration {:?} not found", ctx.debug_print(declar_name)));
-                panic!()
-            }
-            Some(ty) => ty,
-        };
-        self.get_expr_unique_names(state, declar_name, ty);
-        match self.declars.get(&declar_name).unwrap() {
-            Theorem { val, .. } | Definition { val, .. } | Opaque { val, .. } =>
-                self.get_expr_unique_names(state, declar_name, *val),
-            Axiom { .. } | Quot { .. } | Inductive(..) | Constructor(..) | Recursor(..) => {}
-        };
-    }
-
-    /// Gather the names reachable by this expression, unfolding consts IFF they haven't already
-    /// been unfolded in a previous check.
-    fn get_expr_unique_names(&self, state: &mut CycleCheckState<'p>, declar_name: NamePtr<'p>, e: ExprPtr<'p>) {
-        use Expr::*;
-        if state.checked_exprs.contains(&e) {
-            return
-        }
-        match self.dag.exprs.get_index(e.idx()).copied().unwrap() {
-            Local { .. } => panic!("Export items cannot have free variables"),
-            Sort { .. } | Var { .. } => {}
-            // FIXME: the components of NatLit/StringLit eventually need to be checked.
-            NatLit { .. } => state.found_nat(),
-            StringLit { .. } => state.found_string(),
-            // If this is a declaration we've already seen and confirmed not to have
-            // any cycles, we don't need to unfold it.
-            Const { name, .. } if state.checked_declars.contains(&name) => {
-                state.unique_names.insert(name);
-            }
-            // If this is the name of a declaration we haven't already seen
-            // and determined to be acyclic, we need to unfold it and check
-            // that declaration, because this name might be used to produce a type
-            // during inference, or unfolded to produce a value.
-            Const { name, .. } => {
-                if name == declar_name || state.being_checked.contains(&name) {
-                    self.with_ctx(|ctx| eprintln!("Cycle detected in {:?}", ctx.debug_print(name)));
-                    panic!()
-                }
-                state.being_checked.insert(name);
-                self.get_declar_unique_names(state, name);
-                assert!(state.being_checked.remove(&name));
-            }
-            Proj { ty_name, structure, .. } => {
-                state.unique_names.insert(ty_name);
-                self.get_expr_unique_names(state, declar_name, structure);
-            }
-            App { fun, arg, .. } => {
-                self.get_expr_unique_names(state, declar_name, arg);
-                self.get_expr_unique_names(state, declar_name, fun);
-            }
-            Lambda { binder_type, body, .. } | Pi { binder_type, body, .. } => {
-                self.get_expr_unique_names(state, declar_name, binder_type);
-                self.get_expr_unique_names(state, declar_name, body);
-            }
-            Let { binder_type, val, body, .. } => {
-                self.get_expr_unique_names(state, declar_name, binder_type);
-                self.get_expr_unique_names(state, declar_name, val);
-                self.get_expr_unique_names(state, declar_name, body);
-            }
-        };
-        state.checked_exprs.insert(e);
-    }
-}
-
-struct CycleCheckState<'p> {
-    nat: bool,
-    string: bool,
-    name_cache: NameCache<'p>,
-    checked_declars: FxHashSet<NamePtr<'p>>,
-    checked_exprs: FxHashSet<ExprPtr<'p>>,
-    unique_names: FxHashSet<NamePtr<'p>>,
-    being_checked: FxHashSet<NamePtr<'p>>,
-}
-
-impl<'p> CycleCheckState<'p> {
-    fn new(name_cache: NameCache<'p>) -> Self {
-        Self {
-            nat: false,
-            string: false,
-            name_cache,
-            checked_declars: new_fx_hash_set(),
-            checked_exprs: new_fx_hash_set(),
-            unique_names: new_fx_hash_set(),
-            being_checked: new_fx_hash_set(),
-        }
-    }
-
-    fn clear(&mut self) {
-        self.nat = false;
-        self.string = false;
-        self.checked_exprs.clear();
-        self.unique_names.clear();
-        self.being_checked.clear();
-    }
-
-    fn found_nat(&mut self) {
-        if !self.nat {
-            self.unique_names.insert(self.name_cache.nat.unwrap());
-            self.unique_names.insert(self.name_cache.nat_zero.unwrap());
-            self.unique_names.insert(self.name_cache.nat_succ.unwrap());
-            self.nat = true;
-        }
-    }
-
-    fn found_string(&mut self) {
-        if !self.string {
-            self.unique_names.insert(self.name_cache.nat.unwrap());
-            self.unique_names.insert(self.name_cache.nat_zero.unwrap());
-            self.unique_names.insert(self.name_cache.nat_succ.unwrap());
-            self.unique_names.insert(self.name_cache.list.unwrap());
-            self.unique_names.insert(self.name_cache.list_nil.unwrap());
-            self.unique_names.insert(self.name_cache.list_cons.unwrap());
-            self.unique_names.insert(self.name_cache.string.unwrap());
-            self.unique_names.insert(self.name_cache.string_mk.unwrap());
-            self.unique_names.insert(self.name_cache.char.unwrap());
-            self.unique_names.insert(self.name_cache.char_of_nat.unwrap());
-            self.string = true;
-        }
     }
 }
 
@@ -413,32 +269,33 @@ pub struct TcCtx<'t, 'p> {
     pub(crate) unique_counter: u32,
     /// A cache for instantiation, free variable abstraction, and level substitution
     pub(crate) expr_cache: ExprCache<'t>,
+    pub(crate) eager_mode: bool
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub fn new(export_file: &'t ExportFile<'p>, tdag: &'t mut LeanDag<'t>) -> Self {
-        Self { export_file, dag: tdag, dbj_level_counter: 0u16, unique_counter: 0u32, expr_cache: ExprCache::new() }
+        Self { 
+            export_file,
+            dag: tdag,
+            dbj_level_counter: 0u16,
+            unique_counter: 0u32,
+            expr_cache: ExprCache::new(),
+            eager_mode: false
+        }
     }
 
-    pub fn with_tc<F, A>(&mut self, f: F) -> A
+    pub fn with_tc<F, A>(&mut self, env_limit: EnvLimit<'p>, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A, {
-        let env = self.export_file.new_env();
+        let env = self.export_file.new_env(env_limit);
         let mut tc = TypeChecker::new(self, &env, None);
         f(&mut tc)
     }
 
-    pub fn with_tc_and_env<'x, F, A>(&mut self, env: &'x Env<'x, 't>, f: F) -> A
+    pub fn with_tc_and_env_ext<'x, F, A>(&mut self, env_ext: &'x DeclarMap<'t>, env_limit: EnvLimit<'p>, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A, {
-        let mut tc = TypeChecker::new(self, env, None);
-        f(&mut tc)
-    }
-
-    pub fn with_tc_and_env_ext<'x, F, A>(&mut self, env_ext: &'x DeclarMap<'t>, f: F) -> A
-    where
-        F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A, {
-        let env = crate::env::Env::new_plus(&self.export_file.declars, Some(env_ext), &self.export_file.notations);
+        let env = crate::env::Env::new_w_temp_ext(&self.export_file.declars, Some(env_ext), &self.export_file.notations, env_limit);
         let mut tc = TypeChecker::new(self, &env, None);
         f(&mut tc)
     }
@@ -693,13 +550,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         binder_type: ExprPtr<'t>,
         val: ExprPtr<'t>,
         body: ExprPtr<'t>,
+        nondep: bool
     ) -> ExprPtr<'t> {
-        let hash = hash64!(crate::expr::LET_HASH, binder_name, binder_type, val, body);
+        let hash = hash64!(crate::expr::LET_HASH, binder_name, binder_type, val, body, nondep);
         let num_loose_bvars = self
             .num_loose_bvars(binder_type)
             .max(self.num_loose_bvars(val).max(self.num_loose_bvars(body).saturating_sub(1)));
         let has_fvars = self.has_fvars(binder_type) || self.has_fvars(val) || self.has_fvars(body);
-        self.alloc_expr(Expr::Let { binder_name, binder_type, val, body, num_loose_bvars, has_fvars, hash })
+        self.alloc_expr(Expr::Let { binder_name, binder_type, val, body, num_loose_bvars, has_fvars, hash, nondep })
     }
 
     pub fn mk_proj(&mut self, ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>) -> ExprPtr<'t> {
@@ -875,12 +733,13 @@ impl<'a> LeanDag<'a> {
     /// them since we need to retrieve them quite frequently.
     pub(crate) fn mk_name_cache(&self) -> NameCache<'a> {
         NameCache {
+            eager_reduce: self.find_name("eagerReduce"),
             quot: self.find_name("Quot"),
             quot_mk: self.find_name("Quot.mk"),
             quot_lift: self.find_name("Quot.lift"),
             quot_ind: self.find_name("Quot.ind"),
             string: self.find_name("String"),
-            string_mk: self.find_name("String.mk"),
+            string_of_list: self.find_name("String.ofList"),
             nat: self.find_name("Nat"),
             nat_zero: self.find_name("Nat.zero"),
             nat_succ: self.find_name("Nat.succ"),
@@ -913,6 +772,7 @@ impl<'a> LeanDag<'a> {
 /// is present in the export file, otherwise they're `None`.
 #[derive(Debug, Clone, Copy)]
 pub struct NameCache<'p> {
+    pub(crate) eager_reduce: Option<NamePtr<'p>>,
     pub(crate) quot: Option<NamePtr<'p>>,
     pub(crate) quot_mk: Option<NamePtr<'p>>,
     pub(crate) quot_lift: Option<NamePtr<'p>>,
@@ -935,11 +795,12 @@ pub struct NameCache<'p> {
     pub(crate) nat_shr: Option<NamePtr<'p>>,
     pub(crate) nat_shl: Option<NamePtr<'p>>,
     pub(crate) string: Option<NamePtr<'p>>,
-    pub(crate) string_mk: Option<NamePtr<'p>>,
+    pub(crate) string_of_list: Option<NamePtr<'p>>,
     pub(crate) bool_false: Option<NamePtr<'p>>,
     pub(crate) bool_true: Option<NamePtr<'p>>,
     pub(crate) char: Option<NamePtr<'p>>,
     pub(crate) char_of_nat: Option<NamePtr<'p>>,
+    #[allow(dead_code)]
     pub(crate) list: Option<NamePtr<'p>>,
     pub(crate) list_nil: Option<NamePtr<'p>>,
     pub(crate) list_cons: Option<NamePtr<'p>>,
@@ -953,6 +814,8 @@ pub(crate) struct TcCache<'t> {
     pub(crate) eq_cache: UnionFind<ExprPtr<'t>>,
     /// A cache of congruence failures during the lazy delta step procedure.
     pub(crate) failure_cache: FxHashSet<(ExprPtr<'t>, ExprPtr<'t>)>,
+    /// Strong reduction is not used during type-checking, this is more of a library/inspection feature.
+    pub(crate) strong_cache: UniqueHashMap<(ExprPtr<'t>, bool, bool), ExprPtr<'t>>,
 }
 
 impl<'t> TcCache<'t> {
@@ -964,6 +827,7 @@ impl<'t> TcCache<'t> {
             whnf_no_unfolding_cache: new_unique_hash_map(),
             eq_cache: UnionFind::new(),
             failure_cache: new_fx_hash_set(),
+            strong_cache: new_unique_hash_map(),
         }
     }
 
@@ -974,80 +838,72 @@ impl<'t> TcCache<'t> {
         self.whnf_no_unfolding_cache.clear();
         self.eq_cache.clear();
         self.failure_cache.clear();
+        self.strong_cache.clear();
     }
 }
 
-pub(crate) fn get_field<'a>(k: &str, j: &'a JsonValue) -> Option<&'a JsonValue> { j.get(k).filter(|v| !v.is_null()) }
-
-pub(crate) fn get_bool(k: &str, j: &JsonValue, default: bool) -> Result<bool, Box<dyn Error>> {
-    match get_field(k, j) {
-        None => Ok(default),
-        Some(b) =>
-            b.as_bool().ok_or_else(|| Box::<dyn Error>::from(format!("json field {} must be a bool; found {:?}", k, b))),
-    }
-}
-
-pub(crate) fn get_nat(k: &str, j: &JsonValue, default: usize) -> Result<usize, Box<dyn Error>> {
-    match get_field(k, j) {
-        None => Ok(default),
-        Some(b) => b
-            .as_u64()
-            .map(|n| n as usize)
-            .ok_or_else(|| Box::<dyn Error>::from(format!("json field {} must be a nat; found {:?}", k, b))),
-    }
-}
-
-pub(crate) fn get_path_buf(k: &str, j: &JsonValue) -> Result<Option<PathBuf>, Box<dyn Error>> {
-    match get_field(k, j) {
-        None => Ok(None),
-        Some(b) => b
-            .as_str()
-            .map(|s| Some(PathBuf::from(s)))
-            .ok_or_else(|| Box::<dyn Error>::from(format!("json field {} must be a path; found {:?}", k, b))),
-    }
-}
-
-pub(crate) fn get_string(k: &str, j: &JsonValue, default: String) -> Result<String, Box<dyn Error>> {
-    match get_field(k, j) {
-        None => Ok(default),
-        Some(b) => b
-            .as_str()
-            .map(|s| s.to_owned())
-            .ok_or_else(|| Box::<dyn Error>::from(format!("json field {} must be a string; found {:?}", k, b))),
-    }
-}
-
-pub(crate) fn get_list(k: &str, j: &JsonValue) -> Result<Vec<String>, Box<dyn Error>> {
-    match get_field(k, j) {
-        None => Ok(Vec::new()),
-        Some(b) => match b.as_array() {
-            None => Err(Box::<dyn Error>::from(format!("json field {} must be a list of strings; found {:?}", k, b))),
-            Some(vs) => {
-                let mut out = Vec::new();
-                for j in vs {
-                    out.push(j.as_str().map(|s| s.to_owned()).ok_or_else(|| {
-                        Box::<dyn Error>::from(format!("elemsnts of {} must be strings, found {:?}", k, j))
-                    })?);
-                }
-                Ok(out)
-            }
-        },
-    }
-}
-
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    /// The path to the export file to be checked (if `none`, users must specify `use_stdin: true`)
     pub export_file_path: Option<PathBuf>,
+
+    /// A value indicating whether the type checker should look to stdin to receive the export file.
+    #[serde(default)]
     pub use_stdin: bool,
-    pub permitted_axioms: Vec<String>,
+
+    /// A list of the whitelisted axioms the user wants to allow.
+    pub permitted_axioms: Option<Vec<String>>,
+
+    /// A boolean indicating what behavior the typechecker should exhibit when encountering
+    /// an axiom in an export file which has not explicitly been named in `permitted_axioms`.
+    /// if `unpermitted_axiom_hard_error: true`, the typechecker will fail with a hard error.
+    /// if `unpermitted_axiom_hard_error: false`, the typechecker will NOT add the axiom to the environment,
+    /// and will continue typechecking in an environment that does not contain the disallowed axiom.
+    #[serde(default = "default_true")]
     pub unpermitted_axiom_hard_error: bool,
+
+    /// Number of threads to use for type checking.
+    #[serde(default)]
     pub num_threads: usize,
+
+    #[serde(default)] 
     pub nat_extension: bool,
+    #[serde(default)] 
     pub string_extension: bool,
-    pub pp_declars: Vec<String>,
+
+    /// A list of declaration names the user wants to be pretty-printed back to them on termination.
+    pub pp_declars: Option<Vec<String>>,
+
+    /// Indicates what the typechecker should do when it's been asked to pretty-print a declaration
+    /// that is not actually in the environment. We give this option because that scenario is 
+    /// strongly indicative of a mismatch between what the user thinks is in the export file and
+    /// what is actually in the export file.
+    /// If `true`, the typechecker will fail with a hard error. 
+    /// If `false`, the typechecker will not fail just because of this.
+    #[serde(default = "default_true")]
+    pub unknown_pp_declar_hard_error: bool,
+
+    #[serde(default)]
     pub pp_options: PpOptions,
+
+    /// Optionally, a path to write the pretty-printer output to.
     pub pp_output_path: Option<PathBuf>,
+
+    #[serde(default)]
     pub pp_to_stdout: bool,
+
+    #[serde(default)]
     pub print_success_message: bool,
+
+    /// If `true`, the typechecker will print the axioms actually admitted to the environment
+    /// when typechecking is finished. 
+    #[serde(default = "default_true")]
+    pub print_axioms: bool,
+
+    /// If set to `true`, will allow all axioms to be admitted to the environment. 
+    /// This is checked so as to be mutually exclusive with any of the axiom allow list/whitelist features.
+    #[serde(default)]
+    pub unsafe_permit_all_axioms: bool,
 }
 
 impl TryFrom<&Path> for Config {
@@ -1056,78 +912,24 @@ impl TryFrom<&Path> for Config {
         match OpenOptions::new().read(true).truncate(false).open(p) {
             Err(e) => Err(Box::from(format!("failed to open configuration file: {:?}", e))),
             Ok(config_file) => {
-                let json: JsonValue = serde_json::from_reader(BufReader::new(config_file))?;
-                Config::try_from(&json)
-            }
-        }
-    }
-}
-
-const CONFIG_OPTIONS: [&str; 20] = [
-    "export_file_path",
-    "use_stdin",
-    "permitted_axioms",
-    "num_threads",
-    "pp_declars",
-    "nat_extension",
-    "string_extension",
-    "pp_output_path",
-    "pp_to_stdout",
-    "print_success_message",
-    "pp_options",
-    "all",
-    "explicit",
-    "universes",
-    "notation",
-    "indent",
-    "width",
-    "declar_sep",
-    "unpermitted_axiom_hard_error",
-    "proofs"
-];
-
-fn keys_recognized(j: &JsonValue) -> Result<(), Box<dyn Error>> {
-    fn keys_recognized_aux(j: &JsonValue, unrecognized_keys: &mut Vec<String>) {
-        if let Some(map) = j.as_object() {
-            for (k, v) in map.iter() {
-                if !CONFIG_OPTIONS.contains(&k.as_str()) {
-                    unrecognized_keys.push(k.to_owned());
+                let config = serde_json::from_reader::<_, Config>(BufReader::new(config_file)).unwrap();
+                if config.export_file_path.is_none() && !config.use_stdin {
+                    return Err(Box::from(format!("incompatible config options: must specify a path to an export file OR set `use_stdin: true`")))
                 }
-                keys_recognized_aux(v, unrecognized_keys);
+                if config.export_file_path.is_some() && config.use_stdin {
+                    return Err(Box::from(format!("incompatible config options: if an export file path is given, `use_stdin` cannot be `true`")))
+                }
+                if config.unsafe_permit_all_axioms {
+                    if config.unpermitted_axiom_hard_error {
+                        return Err(Box::from(format!("incompatible config options: unsafe_permit_all_axioms && unpermitted_axioms_hard_error")))
+                    }
+                    if config.permitted_axioms.is_some() {
+                        return Err(Box::from(format!("incompatible config options: unsafe_permit_all_axioms && nonempty permitted_axioms list")))
+                    }
+                }
+                Ok(config)
             }
         }
-    }
-    let mut unrecognized_keys = Vec::new();
-    keys_recognized_aux(j, &mut unrecognized_keys);
-    if !unrecognized_keys.is_empty() {
-        Err(Box::from(format!("unrecognized configuration options: {:?}", unrecognized_keys)))
-    } else {
-        Ok(())
-    }
-}
-
-impl TryFrom<&JsonValue> for Config {
-    type Error = Box<dyn std::error::Error>;
-
-    fn try_from(v: &JsonValue) -> Result<Self, Self::Error> {
-        keys_recognized(v)?;
-        Ok(Self {
-            export_file_path: get_path_buf("export_file_path", v)?,
-            use_stdin: get_bool("use_stdin", v, false)?,
-            permitted_axioms: get_list("permitted_axioms", v)?,
-            unpermitted_axiom_hard_error: get_bool("unpermitted_axiom_hard_error", v, true)?,
-            num_threads: get_nat("num_threads", v, 1)?,
-            pp_declars: get_list("pp_declars", v)?,
-            nat_extension: get_bool("nat_extension", v, false)?,
-            string_extension: get_bool("string_extension", v, false)?,
-            pp_output_path: get_path_buf("pp_output_path", v)?,
-            pp_to_stdout: get_bool("pp_to_stdout", v, false)?,
-            print_success_message: get_bool("print_success_message", v, true)?,
-            pp_options: match v.get("pp_options") {
-                Some(options) if !options.is_null() => PpOptions::try_from(options)?,
-                _ => PpOptions::default(),
-            },
-        })
     }
 }
 
@@ -1160,7 +962,9 @@ impl Config {
         }
     }
 
-    pub fn to_export_file<'a>(self) -> Result<ExportFile<'a>, Box<dyn Error>> {
+    // Returns the export file, and a list of strings representing the names of "skipped" axioms
+    // (axioms which were in the export file, but not allowed by the execution config).
+    pub fn to_export_file<'a>(self) -> Result<(ExportFile<'a>, Vec<String>), Box<dyn Error>> {
         if let Some(pathbuf) = self.export_file_path.as_ref() {
             match OpenOptions::new().read(true).truncate(false).open(pathbuf) {
                 Ok(file) => crate::parser::parse_export_file(BufReader::new(file), self),
@@ -1174,3 +978,14 @@ impl Config {
         }
     }
 }
+
+// The intent is to use this for reporting exit status/error info
+// when we go back and get rid of all of the `panic!` invocations
+// and use more involved error handling.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct ExitStatus {
+    tc_err: Option<String>,
+    pp_err: Option<String>
+}
+

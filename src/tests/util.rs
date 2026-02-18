@@ -8,37 +8,41 @@ pub(crate) fn test_export_file<A>(
     config_path: Option<&Path>,
     f: impl FnOnce(&ExportFile) -> A,
 ) -> Result<A, Box<dyn Error>> {
-    let export_file = test_get_export_file(config_path)?;
+    let (export_file, _) = test_get_export_file(config_path)?;
     Ok(f(&export_file))
 }
 
-pub(crate) fn test_get_export_file<'p>(config_path: Option<&Path>) -> Result<ExportFile<'p>, Box<dyn Error>> {
+pub(crate) fn test_get_export_file<'p>(config_path: Option<&Path>) -> Result<(ExportFile<'p>, Vec<String>), Box<dyn Error>> {
     let config_file = match config_path {
         None => Config {
             export_file_path: Some(PathBuf::from("test_resources/Empty/export")),
             use_stdin: false,
-            permitted_axioms: Vec::new(),
+            permitted_axioms: Some(Vec::new()),
             unpermitted_axiom_hard_error: true,
             nat_extension: false,
             string_extension: false,
-            pp_declars: Vec::new(),
+            pp_declars: None,
             pp_options: crate::pretty_printer::PpOptions::default(),
+            unknown_pp_declar_hard_error: true,
             pp_output_path: None,
             pp_to_stdout: false,
             num_threads: 1,
             print_success_message: true,
+            print_axioms: true,
+            unsafe_permit_all_axioms: false
         },
         Some(config_path) => Config::try_from(config_path)?,
     };
     config_file.to_export_file()
 }
 
+#[allow(dead_code)]
 pub(crate) fn test_export_file_should_panic<A>(config_path: Option<&Path>, f: impl FnOnce(&ExportFile) -> A) {
     // If there's an IO issue with actually getting the export file, we don't want
     // `should_panic` test to succeed, so we actually want to return success in this case.
     match test_get_export_file(config_path) {
         Err(..) => {}
-        Ok(export_file) => {
+        Ok((export_file, _)) => {
             f(&export_file);
         }
     }
@@ -75,14 +79,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 }
 
-#[test]
-fn check_prelude() -> Result<(), Box<dyn Error>> {
-    test_export_file(Some(&Path::new("test_resources/Init/config.json")), |export| {
-        for declar in export.declars.values() {
-            export.check_declar(declar);
-        }
-    })
-}
 #[test]
 fn check_empty() -> Result<(), Box<dyn Error>> {
     test_export_file(None, |export| {

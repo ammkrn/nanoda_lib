@@ -1,101 +1,404 @@
 use crate::env::{
-    ConstructorData, Declar, DeclarInfo, InductiveData, Notation, RecRule, RecursorData, ReducibilityHint,
-    ReducibilityHint::*,
+    ConstructorData, Declar, DeclarInfo, InductiveData, Notation, RecursorData, ReducibilityHint,
 };
 use crate::expr::{BinderStyle, Expr};
 use crate::hash64;
 use crate::level::Level;
 use crate::name::Name;
 use crate::util::{
-    new_fx_hash_map, new_fx_index_map, BigUintPtr, Config, DagMarker, ExportFile, ExprPtr, FxHashMap, FxIndexMap,
+    new_fx_hash_map, new_fx_index_map, BigUintPtr, Config, DagMarker, ExprPtr, FxHashMap, FxIndexMap,
     LeanDag, LevelPtr, LevelsPtr, NamePtr, StringPtr,
 };
 use num_bigint::BigUint;
+use serde::{ Deserialize, Deserializer };
+use serde::de::{Error as DeError, Visitor};
 use std::error::Error;
 use std::io::BufRead;
-use std::str::{FromStr, SplitWhitespace};
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::Arc;
+use std::borrow::Cow;
+use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Semver(u16, u16, u16);
-
-pub(crate) const MIN_SUPPORTED_SEMVER: Semver = Semver(2, 0, 0);
+fn check_semver<'a>(meta: &FileMeta<'a>) -> Result<(), Box<dyn Error>> {
+    const MIN_SEMVER : semver::Version = semver::Version::new(3, 1, 0);
+    const MAX_SEMVER : semver::Version = semver::Version::new(3, 2, 0);
+    let export_file_semver = semver::Version::parse(&meta.format.version)?;
+    if export_file_semver < MIN_SEMVER {
+        return Err(Box::from(format!(
+            "export format version is less than the minimum supported version. Found {}, but min supported is {}",
+            export_file_semver, MIN_SEMVER
+        )))
+    } else if export_file_semver >= MAX_SEMVER {
+        return Err(Box::from(format!(
+            "export format version is greater than the maximum supported version. Found {}, but max (exclusive) supported is {}",
+            export_file_semver, MAX_SEMVER
+        )))
+    } else {
+        Ok(())
+    }
+}
 
 pub struct Parser<'a, R: BufRead> {
     buf_reader: R,
     line_num: usize,
     dag: LeanDag<'a>,
-    // rec rules are treated separately during parsing because the export
-    // file doesn't nest them within a recursor, but they're not stored separately
-    // in the dag, so we need to hold onto them temporarily in a way that can be
-    // indexed by a usize.
-    rec_rules: Vec<RecRule<'a>>,
     declars: FxIndexMap<NamePtr<'a>, Declar<'a>>,
     notations: FxHashMap<NamePtr<'a>, Notation<'a>>,
     config: Config,
+    /// Tracks axiom names that were found in the export file, but not white-listed,
+    /// for use when `unpermitted_axiom_hard_error: false`
+    skipped: Vec<String>,
+    mutual_block_sizes: FxHashMap<NamePtr<'a>, (usize, usize)>
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+struct LeanMeta<'a> {
+    version: Cow<'a, str>,
+    githash: Cow<'a, str>
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+struct ExporterMeta<'a> {
+    name: Cow<'a, str>,
+    version: Cow<'a, str>
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+struct FormatMeta<'a> {
+    version: Cow<'a, str>
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct FileMeta<'a> {
+    lean: LeanMeta<'a>,
+    exporter: ExporterMeta<'a>,
+    format: FormatMeta<'a>
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+enum BackRef {
+    #[serde(alias = "in")]
+    In(u32),
+    #[serde(alias = "il")]
+    Il(u32),
+    #[serde(alias = "ie")]
+    Ie(u32),
+}
+
+impl BackRef {
+    fn assert_in(self, insert_result: (usize, bool)) {
+        assert!(insert_result.1);
+        let lhs = u32::try_from(insert_result.0).unwrap();
+        assert_eq!(self, BackRef::In(lhs))
+    }
+
+    fn assert_il(self, insert_result: (usize, bool)) {
+        assert!(insert_result.1);
+        let lhs = u32::try_from(insert_result.0).unwrap();
+        assert_eq!(self, BackRef::Il(lhs))
+    }
+
+    fn assert_ie(self, insert_result: (usize, bool)) {
+        assert!(insert_result.1);
+        let lhs = u32::try_from(insert_result.0).unwrap();
+        assert_eq!(self, BackRef::Ie(lhs))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ExportJsonObject<'a> {
+    #[serde(flatten)]
+    val: ExportJsonVal<'a>,
+    #[serde(flatten)]
+    i: Option<BackRef>
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+enum DefinitionSafety {
+    #[serde(rename = "unsafe")]
+    Unsafe,
+    #[serde(rename = "safe")]
+    Safe,
+    #[serde(rename = "partial")]
+    Partial,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+enum QuotKind {
+    #[serde(rename = "type")]
+    Ty,
+    #[serde(rename = "ctor")]
+    Ctor,
+    #[serde(rename = "lift")]
+    Lift,
+    #[serde(rename = "ind")]
+    Ind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+struct RecursorRule {
+    ctor: u32,
+    nfields: u16,
+    rhs: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+struct IndInfo {
+    name: u32,
+    #[serde(rename = "levelParams")]
+    uparams: Vec<u32>,
+    #[serde(rename = "type")]
+    ty: u32,
+    all: Vec<u32>,
+    ctors: Vec<u32>,
+    #[serde(rename = "isRec")]
+    is_rec: bool,
+    #[serde(rename = "isReflexive")]
+    is_reflexive: bool,
+    #[serde(rename = "numIndices")]
+    num_indices: u16,
+    #[serde(rename = "numNested")]
+    num_nested: u16,
+    #[serde(rename = "numParams")]
+    num_params: u16,
+    #[serde(rename = "isUnsafe")]
+    is_unsafe: bool
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+struct Constructor {
+    name: u32,
+    #[serde(rename = "levelParams")]
+    uparams: Vec<u32>,
+    #[serde(rename = "type")]
+    ty: u32,
+    #[serde(rename = "isUnsafe")]
+    is_unsafe: bool,
+    cidx: u16,
+    #[serde(rename = "numParams")]
+    num_params: u16,
+    #[serde(rename = "numFields")]
+    num_fields: u16,
+    induct: u32
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+struct Recursor {
+    name: u32,
+    #[serde(rename = "levelParams")]
+    uparams: Vec<u32>,
+    #[serde(rename = "type")]
+    ty: u32,
+    #[serde(rename = "isUnsafe")]
+    is_unsafe: bool,
+    #[serde(rename = "numParams")]
+    num_params: u16,
+    #[serde(rename = "numIndices")]
+    num_indices: u16,
+    #[serde(rename = "numMotives")]
+    num_motives: u16,
+    #[serde(rename = "numMinors")]
+    num_minors: u16,
+    rules: Vec<RecursorRule>,
+    all: Vec<u32>,
+    k: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+enum ExportJsonVal<'a> {
+    // The exporter metadata, incl. info about the lean, exporter, and format versions used
+    // to create the export file.
+    #[serde(rename = "meta")]
+    Metadata(FileMeta<'a>),
+    #[serde(rename = "str")]
+    NameStr {
+        pre: u32,
+        str: Cow<'a, str>
+    },
+    #[serde(rename = "num")]
+    NameNum {
+        pre: u32,
+        i: u32
+    },
+    #[serde(rename = "succ")]
+    LevelSucc(u32),
+    #[serde(rename = "max")]
+    LevelMax([u32; 2]),
+    #[serde(rename = "imax")]
+    LevelIMax([u32; 2]),
+    #[serde(rename = "param")]
+    LevelParam(u32),
+    #[serde(rename = "natVal", deserialize_with = "deserialize_biguint_from_string")]
+    NatLit(BigUint),
+    #[serde(rename = "strVal")]
+    StrLit(Cow<'a, str>),
+    #[serde(rename = "mdata")]
+    ExprMData {
+        expr: u32,
+        data: serde_json::Value
+    },
+    #[serde(rename = "letE")]
+    ExprLet {
+        name: u32,
+        #[serde(rename = "type")]
+        ty: u32,
+        value: u32,
+        body: u32,
+        nondep: bool
+    },
+    #[serde(rename = "const")]
+    ExprConst {
+        name: u32,
+        #[serde(rename = "us")]
+        levels: Vec<u32>
+    },
+    #[serde(rename = "app")]
+    ExprApp {
+        #[serde(rename = "fn")]
+        fun: u32,
+        arg: u32 
+    },
+    #[serde(rename = "forallE")]
+    ExprPi {
+        #[serde(rename = "name")]
+        binder_name: u32,
+        #[serde(rename = "type")]
+        binder_type: u32,
+        body: u32,
+        #[serde(rename = "binderInfo")]
+        binder_info: BinderStyle
+
+    },
+    #[serde(rename = "lam")]
+    ExprLambda {
+        #[serde(rename = "name")]
+        binder_name: u32,
+        #[serde(rename = "type")]
+        binder_type: u32,
+        body: u32,
+        #[serde(rename = "binderInfo")]
+        binder_info: BinderStyle
+    },
+    #[serde(rename = "proj")]
+    ExprProj {
+        #[serde(rename = "typeName")]
+        type_name: u32,
+        idx: usize,
+        #[serde(rename = "struct")]
+        structure: u32,
+    },
+    #[serde(rename = "sort")]
+    ExprSort(u32),
+    #[serde(rename = "bvar")]
+    ExprBVar(u16),
+    #[serde(rename = "axiom")]
+    Axiom {
+        name: u32,
+        #[serde(rename = "levelParams")]
+        uparams: Vec<u32>,
+        #[serde(rename = "type")]
+        ty: u32,
+        #[serde(rename = "isUnsafe")]
+        is_unsafe: bool
+    },
+    #[serde(rename = "thm")]
+    Thm {
+        name: u32,
+        #[serde(rename = "levelParams")]
+        uparams: Vec<u32>,
+        #[serde(rename = "type")]
+        ty: u32,
+        value: u32,
+    },
+    #[serde(rename = "def")]
+    Defn {
+        name: u32,
+        #[serde(rename = "levelParams")]
+        uparams: Vec<u32>,
+        #[serde(rename = "type")]
+        ty: u32,
+        value: u32,
+        #[serde(rename = "hints")]
+        hint: ReducibilityHint,
+        //all: Vec<usize>,
+        safety: DefinitionSafety
+    },
+    #[serde(rename = "opaque")]
+    Opaque {
+        name: u32,
+        #[serde(rename = "levelParams")]
+        uparams: Vec<u32>,
+        #[serde(rename = "type")]
+        ty: u32,
+        value: u32,
+        #[serde(rename = "isUnsafe")]
+        is_unsafe: bool
+    },
+    #[serde(rename = "quot")]
+    Quot {
+        name: u32,
+        #[serde(rename = "levelParams")]
+        uparams: Vec<u32>,
+        #[serde(rename = "type")]
+        ty: u32,
+        #[serde(rename = "kind")]
+        kind: QuotKind
+    },
+    #[serde(rename = "inductive")]
+    Inductive {
+        #[serde(rename = "types")]
+        ind_vals: Vec<IndInfo>,
+        #[serde(rename = "ctors")]
+        ctor_vals: Vec<Constructor>,
+        #[serde(rename = "recs")]
+        rec_vals: Vec<Recursor>
+    },
 }
 
 pub(crate) fn parse_export_file<'p, R: BufRead>(
     buf_reader: R,
     config: Config,
-) -> Result<ExportFile<'p>, Box<dyn Error>> {
+
+) -> Result<(crate::util::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
     let mut parser = Parser::new(buf_reader, config);
-    // A temporary buffer to hold the line being parsed; gets filled and cleared in each loop,
-    // but lets us use std's `SplitWhitespace`, which makes life easier.
     let mut line_buffer = String::new();
-    let semver = {
-        parser.buf_reader.read_line(&mut line_buffer)?;
-        parse_semver(&line_buffer)?
-    };
-    if semver < MIN_SUPPORTED_SEMVER {
-        return Err(Box::from(format!(
-            "parsed semver is less than the minimum supported export version. Found {:?}, min supported is {:?}",
-            semver, MIN_SUPPORTED_SEMVER
-        )))
-    }
+
     loop {
-        // Make sure the line buffer is empty.
+        let amt = parser.buf_reader.read_line(&mut line_buffer)?;
+        if amt == 0 {
+            break
+        }
+        parser.go1(line_buffer.as_str())?;
+        parser.line_num += 1;
         line_buffer.clear();
-        match parser.buf_reader.read_line(&mut line_buffer)? {
-            // If EOF has been reached, we're done.
-            0 => break,
-            // If we're able to read more than 0 bytes, a line has been parsed.
-            _ => {
-                let mut line_rem_toks = line_buffer.split_whitespace();
-                let tok = line_rem_toks
-                    .next()
-                    .ok_or_else(|| Box::<dyn Error>::from("Export file cannot contain empty lines"))?;
-                match tok {
-                    s @ "#PREFIX" | s @ "#INFIX" | s @ "#POSTFIX" => parser.parse_notation(s, &mut line_rem_toks),
-                    "#AX" => parser.parse_axiom(&mut line_rem_toks),
-                    "#DEF" => parser.parse_def(&mut line_rem_toks),
-                    "#OPAQ" => parser.parse_opaque(&mut line_rem_toks),
-                    "#QUOT" => parser.parse_quot(&mut line_rem_toks),
-                    "#THM" => parser.parse_theorem(&mut line_rem_toks),
-                    "#IND" => parser.parse_inductive(&mut line_rem_toks),
-                    "#CTOR" => parser.parse_constructor(&mut line_rem_toks),
-                    "#REC" => parser.parse_recursor(&mut line_rem_toks),
-                    // otherwise, the parsed line is some non-declaration primitive
-                    // (Name, Level, Expr) which should be prefixed by its index.
-                    leading_idx => parser.parse_primitive(leading_idx.parse::<u32>()?, &mut line_rem_toks)?,
-                }
+    }
+    
+    // If the execution config has `unknown_pp_declar_hard_error: true`, and a `pp_declars` 
+    // that includes `foo`, then we return early with an error if no `foo` declaration is present 
+    // in the export file.
+    if parser.config.unknown_pp_declar_hard_error {
+        if let Some(pp_declars) = parser.config.pp_declars.as_ref() {
+            let mut pp_declar_names = pp_declars.iter().map(|s| s.as_str()).collect::<crate::util::FxHashSet<&str>>();
+            for declar_name in parser.declars.keys() {
+                let n = parser.name_to_string(*declar_name);
+                pp_declar_names.remove(n.as_str());
+            }
+            if pp_declar_names.len() > 0 {
+                let list = pp_declar_names.into_iter().collect::<Vec<&str>>();
+                return Err(Box::from(format!("these pp_declars were not found in the exported environment: {:#?}", list)))
             }
         }
-        // Increment the line number; this is only tracked for error reporting.
-        parser.line_num += 1;
     }
-
+    
     let name_cache = parser.dag.mk_name_cache();
-    let mut f = ExportFile {
+    let export_file = crate::util::ExportFile {
         dag: parser.dag,
         declars: parser.declars,
         notations: parser.notations,
-        quot_checked: AtomicBool::new(false),
         name_cache,
         config: parser.config,
+        mutual_block_sizes: parser.mutual_block_sizes
     };
-    f.check_no_cycles();
-    Ok(f)
+    Ok((export_file, parser.skipped))
 }
 
 impl<'a, R: BufRead> Parser<'a, R> {
@@ -104,84 +407,17 @@ impl<'a, R: BufRead> Parser<'a, R> {
             buf_reader,
             line_num: 0usize,
             dag: LeanDag::new_parser(),
-            rec_rules: Vec::new(),
             declars: new_fx_index_map(),
             notations: new_fx_hash_map(),
             config,
+            skipped: Vec::new(),
+            mutual_block_sizes: new_fx_hash_map()
         }
     }
-
-    fn parse_rest_cowstr(&self, ws: &mut SplitWhitespace) -> crate::util::CowStr<'a> {
-        let s = ws.next().unwrap();
-        assert!(ws.next().is_none());
-        std::borrow::Cow::Owned(s.to_owned())
-    }
-
-    /// Allocate a parsed string as a DAG item.
-    fn parse_insert_string(&mut self, ws: &mut SplitWhitespace) -> StringPtr<'a> {
-        let s = self.parse_rest_cowstr(ws);
-        StringPtr::from(DagMarker::ExportFile, self.dag.strings.insert_full(s).0)
-    }
-
-    /// Parse a `#NS` row and add it to the dag. The leading index and discriminator
-    /// have already been found, and the leading index is passed as `idx`.
-    fn parse_name_str_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let pfx = self.parse_name_ptr(ws);
-        let sfx = self.parse_insert_string(ws);
-        let insert_result = {
-            let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
-            self.dag.names.insert_full(Name::Str(pfx, sfx, hash))
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-
-    /// Parse a `#NI` row and add it to the dag. The leading index and discriminator
-    /// have already been found, and the leading index is passed as `idx`.
-    fn parse_name_num_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let pfx = self.parse_name_ptr(ws);
-        let sfx = parse_u64(ws);
-        let insert_result = {
-            let hash = hash64!(crate::name::NUM_HASH, pfx, sfx);
-            self.dag.names.insert_full(Name::Num(pfx, sfx, hash))
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-
-    fn parse_level_succ_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let l = self.parse_level_ptr(ws);
-        let insert_result = {
-            let hash = hash64!(crate::level::SUCC_HASH, l);
-            self.dag.levels.insert_full(Level::Succ(l, hash))
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-    fn parse_level_max_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let l = self.parse_level_ptr(ws);
-        let r = self.parse_level_ptr(ws);
-        let insert_result = {
-            let hash = hash64!(crate::level::MAX_HASH, l, r);
-            self.dag.levels.insert_full(Level::Max(l, r, hash))
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-
-    fn parse_level_imax_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let l = self.parse_level_ptr(ws);
-        let r = self.parse_level_ptr(ws);
-        let insert_result = {
-            let hash = hash64!(crate::level::IMAX_HASH, l, r);
-            self.dag.levels.insert_full(Level::IMax(l, r, hash))
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-
-    fn parse_level_param_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let n = self.parse_name_ptr(ws);
-        let insert_result = {
-            let hash = hash64!(crate::level::PARAM_HASH, n);
-            self.dag.levels.insert_full(Level::Param(n, hash))
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
+    
+    fn axiom_permitted(&self, n: NamePtr<'a>) -> bool {
+        self.config.unsafe_permit_all_axioms ||
+            self.config.permitted_axioms.as_ref().map(|v| v.contains(&self.name_to_string(n))).unwrap_or(false)
     }
 
     fn num_loose_bvars(&self, e: ExprPtr<'a>) -> u16 {
@@ -190,269 +426,49 @@ impl<'a, R: BufRead> Parser<'a, R> {
 
     fn has_fvars(&self, e: ExprPtr<'a>) -> bool { self.dag.exprs.get_index(e.idx as usize).unwrap().has_fvars() }
 
-    fn parse_expr_var_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let dbj_idx = parse_u16(ws);
-        let insert_result = {
-            let hash = hash64!(crate::expr::VAR_HASH, dbj_idx);
-            self.dag.exprs.insert_full(Expr::Var { dbj_idx, hash })
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
+    fn get_name_ptr(&self, idx: u32) -> NamePtr<'a> {
+        let out = crate::util::Ptr { idx, dag_marker: DagMarker::ExportFile, ph: std::marker::PhantomData };
+        assert!((idx as usize) < self.dag.names.len());
+        out
     }
 
-    fn parse_expr_sort_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let level = self.parse_level_ptr(ws);
-        let insert_result = {
-            let hash = hash64!(crate::expr::SORT_HASH, level);
-            self.dag.exprs.insert_full(Expr::Sort { level, hash })
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
+    fn get_level_ptr(&self, idx: u32) -> LevelPtr<'a> {
+        let out = crate::util::Ptr { idx, dag_marker: DagMarker::ExportFile, ph: std::marker::PhantomData };
+        assert!((idx as usize) < self.dag.levels.len());
+        out
+    }
+    fn get_names(&self, idxs: &[u32]) -> Vec<NamePtr<'a>> {
+        let mut names = Vec::new();
+        for idx in idxs.iter().copied() {
+            names.push(NamePtr::from(DagMarker::ExportFile, idx as usize));
+        }
+        names
     }
 
-    fn parse_expr_const_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let name = self.parse_name_ptr(ws);
-        let levels = self.parse_level_ptrs(ws);
-        let insert_result = {
-            let hash = hash64!(crate::expr::CONST_HASH, name, levels);
-            self.dag.exprs.insert_full(Expr::Const { name, levels, hash })
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-
-    fn parse_expr_app_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let fun = self.parse_expr_ptr(ws);
-        let arg = self.parse_expr_ptr(ws);
-        let insert_result = {
-            let hash = hash64!(crate::expr::APP_HASH, fun, arg);
-            let num_bvars = self.num_loose_bvars(fun).max(self.num_loose_bvars(arg));
-            let locals = self.has_fvars(fun) || self.has_fvars(arg);
-            self.dag.exprs.insert_full(Expr::App { fun, arg, num_loose_bvars: num_bvars, has_fvars: locals, hash })
-        };
-
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-
-    fn parse_expr_lambda_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let binder_style = parse_binder_info(ws);
-        let binder_name = self.parse_name_ptr(ws);
-        let binder_type = self.parse_expr_ptr(ws);
-        let body = self.parse_expr_ptr(ws);
-        let insert_result = {
-            let hash = hash64!(crate::expr::LAMBDA_HASH, binder_name, binder_style, binder_type, body);
-            let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
-            let locals = self.has_fvars(binder_type) || self.has_fvars(body);
-            self.dag.exprs.insert_full(Expr::Lambda {
-                binder_name,
-                binder_style,
-                binder_type,
-                body,
-                num_loose_bvars: num_bvars,
-                has_fvars: locals,
-                hash,
-            })
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-
-    fn parse_expr_pi_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let binder_style = parse_binder_info(ws);
-        let binder_name = self.parse_name_ptr(ws);
-        let binder_type = self.parse_expr_ptr(ws);
-        let body = self.parse_expr_ptr(ws);
-        let insert_result = {
-            let hash = hash64!(crate::expr::PI_HASH, binder_name, binder_style, binder_type, body);
-            let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
-            let locals = self.has_fvars(binder_type) || self.has_fvars(body);
-            self.dag.exprs.insert_full(Expr::Pi {
-                binder_name,
-                binder_style,
-                binder_type,
-                body,
-                num_loose_bvars: num_bvars,
-                has_fvars: locals,
-                hash,
-            })
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-
-    fn parse_expr_let_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let binder_name = self.parse_name_ptr(ws);
-        let binder_type = self.parse_expr_ptr(ws);
-        let val = self.parse_expr_ptr(ws);
-        let body = self.parse_expr_ptr(ws);
-        let insert_result = {
-            let hash = hash64!(crate::expr::LET_HASH, binder_name, binder_type, val, body);
-            let num_bvars = self
-                .num_loose_bvars(binder_type)
-                .max(self.num_loose_bvars(val).max(self.num_loose_bvars(body).saturating_sub(1)));
-            let locals = self.has_fvars(binder_type) || self.has_fvars(val) || self.has_fvars(body);
-            self.dag.exprs.insert_full(Expr::Let {
-                binder_name,
-                binder_type,
-                val,
-                body,
-                num_loose_bvars: num_bvars,
-                has_fvars: locals,
-                hash,
-            })
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-
-    fn parse_expr_proj_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let ty_name = self.parse_name_ptr(ws);
-        let idx = parse_usize(ws);
-        let structure = self.parse_expr_ptr(ws);
-        let insert_result = {
-            let hash = hash64!(crate::expr::PROJ_HASH, ty_name, idx, structure);
-            let num_bvars = self.num_loose_bvars(structure);
-            let locals = self.has_fvars(structure);
-            self.dag.exprs.insert_full(Expr::Proj {
-                ty_name,
-                idx,
-                structure,
-                num_loose_bvars: num_bvars,
-                has_fvars: locals,
-                hash,
-            })
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-
-    fn parse_expr_stringlit_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let s = parse_hex_string(ws).unwrap();
-        let string_ptr =
-            StringPtr::from(DagMarker::ExportFile, self.dag.strings.insert_full(crate::util::CowStr::Owned(s)).0);
-        let insert_result = {
-            let hash = hash64!(crate::expr::STRING_LIT_HASH, string_ptr);
-            self.dag.exprs.insert_full(Expr::StringLit { ptr: string_ptr, hash })
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-
-    fn parse_expr_natlit_row(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) {
-        let chars = ws.next().unwrap();
-        let bignat = BigUint::from_str(chars).unwrap();
-        let num_ptr = BigUintPtr::from(DagMarker::ExportFile, self.dag.bignums.insert_full(bignat).0);
-        let insert_result = {
-            let hash = hash64!(crate::expr::NAT_LIT_HASH, num_ptr);
-            self.dag.exprs.insert_full(Expr::NatLit { ptr: num_ptr, hash })
-        };
-        assert_eq!((assigned_idx as usize, true), insert_result);
-    }
-
-    fn parse_name_ptr(&self, ws: &mut SplitWhitespace) -> NamePtr<'a> {
-        let idx = parse_u32(ws);
-        NamePtr::from(DagMarker::ExportFile, idx as usize)
-    }
-
-    fn try_parse_name_ptr(&self, ws: &mut SplitWhitespace) -> Option<NamePtr<'a>> {
-        let idx = try_parse_u32(ws)?;
-        Some(NamePtr::from(DagMarker::ExportFile, idx as usize))
-    }
-
-    fn parse_level_ptr(&self, ws: &mut SplitWhitespace) -> LevelPtr<'a> {
-        let idx = parse_u32(ws);
-        LevelPtr::from(DagMarker::ExportFile, idx as usize)
-    }
-
-    fn parse_expr_ptr(&self, ws: &mut SplitWhitespace) -> ExprPtr<'a> {
-        let idx = parse_u32(ws);
-        crate::util::Ptr { idx, dag_marker: DagMarker::ExportFile, ph: std::marker::PhantomData }
-    }
-
-    // Given a sequence of numbers [n1, n2, n3], collect the sequence
-    // [levels[n1], levels[n2], levels[n3]] into a list.
-    fn parse_level_ptrs(&mut self, ws: &mut SplitWhitespace) -> LevelsPtr<'a> {
+    fn get_uparams_ptr(&mut self, name_idxs: &[u32]) -> LevelsPtr<'a> {
         let mut levels = Vec::new();
-        for cs in ws {
-            let i = cs.parse::<usize>().expect("uparams_char_chunk");
-            levels.push(LevelPtr::from(DagMarker::ExportFile, i))
+        for name_idx in name_idxs.iter().copied() {
+            let name_ptr = self.get_name_ptr(name_idx);
+            let hash = hash64!(crate::level::PARAM_HASH, name_ptr);
+            // Has to already exist
+            let idx = self.dag.levels.get_index_of(&Level::Param(name_ptr, hash)).unwrap();
+            levels.push(LevelPtr::from(DagMarker::ExportFile, idx as usize));
         }
         LevelsPtr::from(DagMarker::ExportFile, self.dag.uparams.insert_full(Arc::from(levels)).0)
     }
 
-    /// Consumes the rest of the iterator.
-    fn parse_names(&mut self, ws: &mut SplitWhitespace, limit: Option<u16>) -> Vec<NamePtr<'a>> {
-        let mut name_ptrs = Vec::new();
-        if let Some(limit) = limit {
-            for _ in 0..limit {
-                let char_chunk = ws.next().unwrap();
-                let idx = char_chunk.parse::<u32>().expect("uparams_char_chunk");
-                name_ptrs.push(NamePtr::from(DagMarker::ExportFile, idx as usize));
-            }
-        } else {
-            for char_chunk in ws {
-                let idx = char_chunk.parse::<u32>().expect("uparams_char_chunk");
-                name_ptrs.push(NamePtr::from(DagMarker::ExportFile, idx as usize));
-            }
+    fn get_levels_ptr(&mut self, idxs: &[u32]) -> LevelsPtr<'a> {
+        let mut levels = Vec::new();
+        for idx in idxs.iter().copied() {
+            levels.push(LevelPtr::from(DagMarker::ExportFile, idx as usize));
         }
-        name_ptrs
+        LevelsPtr::from(DagMarker::ExportFile, self.dag.uparams.insert_full(Arc::from(levels)).0)
     }
 
-    fn name_as_level(&mut self, ws: &mut SplitWhitespace) -> Option<LevelPtr<'a>> {
-        let name_ptr = self.try_parse_name_ptr(ws)?;
-        let hash = hash64!(crate::level::PARAM_HASH, name_ptr);
-        // Has to already exist
-        let idx = self.dag.levels.get_index_of(&Level::Param(name_ptr, hash)).unwrap();
-        Some(LevelPtr::from(DagMarker::ExportFile, idx))
-    }
-
-    // This doesn't interfere with the export file indices because every declaration
-    // also has some associated `Expr::Const` which would already have made the
-    // uparam names an associated `Level`
-    /// Consumes the rest of the iterator.
-    fn parse_uparams(&mut self, ws: &mut SplitWhitespace, limit: Option<u16>) -> LevelsPtr<'a> {
-        let mut level_ptrs = Vec::new();
-        if let Some(limit) = limit {
-            for _ in 0..limit {
-                level_ptrs.push(self.name_as_level(ws).unwrap())
-            }
-        } else {
-            while let Some(level_ptr) = self.name_as_level(ws) {
-                level_ptrs.push(level_ptr)
-            }
-        }
-        LevelsPtr::from(DagMarker::ExportFile, self.dag.uparams.insert_full(Arc::from(level_ptrs)).0)
-    }
-
-    fn parse_primitive(&mut self, assigned_idx: u32, ws: &mut SplitWhitespace) -> Result<(), Box<dyn Error>> {
-        let discrim = ws.next().expect("Parse primitive");
-        match discrim {
-            "#RR" => self.parse_rec_rule(assigned_idx, ws),
-            "#NS" => self.parse_name_str_row(assigned_idx, ws),
-            "#NI" => self.parse_name_num_row(assigned_idx, ws),
-            "#US" => self.parse_level_succ_row(assigned_idx, ws),
-            "#UM" => self.parse_level_max_row(assigned_idx, ws),
-            "#UIM" => self.parse_level_imax_row(assigned_idx, ws),
-            "#UP" => self.parse_level_param_row(assigned_idx, ws),
-            "#EV" => self.parse_expr_var_row(assigned_idx, ws),
-            "#ES" => self.parse_expr_sort_row(assigned_idx, ws),
-            "#EC" => self.parse_expr_const_row(assigned_idx, ws),
-            "#EA" => self.parse_expr_app_row(assigned_idx, ws),
-            "#EL" => self.parse_expr_lambda_row(assigned_idx, ws),
-            "#EP" => self.parse_expr_pi_row(assigned_idx, ws),
-            "#EZ" => self.parse_expr_let_row(assigned_idx, ws),
-            "#EJ" => self.parse_expr_proj_row(assigned_idx, ws),
-            "#ELN" => {
-                if !self.config.nat_extension {
-                    return Err(Box::<dyn Error>::from(
-                        "Export file contained nat literal, but nat kernel extension not enabled",
-                    ))
-                }
-                self.parse_expr_natlit_row(assigned_idx, ws)
-            }
-            "#ELS" => {
-                if !self.config.string_extension {
-                    return Err(Box::<dyn Error>::from(
-                        "Export file contained string literal, but string lit extension not enabled",
-                    ))
-                }
-                self.parse_expr_stringlit_row(assigned_idx, ws)
-            }
-            owise => return Err(Box::<dyn Error>::from(format!("Unrecognized primitive {}", owise))),
-        }
-        Ok(())
+    fn get_expr_ptr(&self, idx: u32) -> ExprPtr<'a> {
+        let out = crate::util::Ptr { idx, dag_marker: DagMarker::ExportFile, ph: std::marker::PhantomData };
+        assert!((idx as usize) < self.dag.exprs.len());
+        out
     }
 
     // Used for the axiom whitelist feature.
@@ -476,224 +492,410 @@ impl<'a, R: BufRead> Parser<'a, R> {
         }
     }
 
-    fn parse_axiom(&mut self, ws: &mut SplitWhitespace) {
-        let name = self.parse_name_ptr(ws);
-        let ty = self.parse_expr_ptr(ws);
-        let uparams = self.parse_uparams(ws, None);
-        let info = DeclarInfo { name, ty, uparams };
-        let axiom = Declar::Axiom { info };
-        let axiom_permitted = self.config.permitted_axioms.contains(&self.name_to_string(name));
-        if !axiom_permitted && self.config.unpermitted_axiom_hard_error {
-            panic!("export file declares unpermitted axiom {:?}", self.name_to_string(name))
+    fn go1(&mut self, line: &str) -> Result<(), Box<dyn Error>> {
+        use ExportJsonVal::*;
+        let ExportJsonObject {val, i: assigned_idx} = serde_json::from_str::<ExportJsonObject>(line)?;
+        match val {
+            Metadata(json_val) => {
+                let _ = check_semver(&json_val)?;
+            }
+            NameStr {pre, str} => {
+                let pfx = self.get_name_ptr(pre);
+                let sfx = StringPtr::from(
+                    DagMarker::ExportFile, 
+                    self.dag.strings.insert_full(std::borrow::Cow::Owned(str.to_string())).0
+                );
+
+                let insert_result = {
+                    let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
+                    self.dag.names.insert_full(Name::Str(pfx, sfx, hash))
+                };
+                assigned_idx.unwrap().assert_in(insert_result);
+            }
+            NameNum {pre, i} => {
+                let pfx = self.get_name_ptr(pre);
+                let sfx = i as u64;
+                let insert_result = {
+                    let hash = hash64!(crate::name::NUM_HASH, pfx, sfx);
+                    self.dag.names.insert_full(Name::Num(pfx, sfx, hash))
+                };
+                assigned_idx.unwrap().assert_in(insert_result);
+            }
+            NatLit(big_uint) => {
+                let num_ptr = BigUintPtr::from(DagMarker::ExportFile, self.dag.bignums.insert_full(big_uint).0);
+                let insert_result = {
+                    let hash = hash64!(crate::expr::NAT_LIT_HASH, num_ptr);
+                    self.dag.exprs.insert_full(Expr::NatLit { ptr: num_ptr, hash })
+                };
+                if !self.config.nat_extension {
+                    return Err(Box::<dyn Error>::from(
+                        format!("Nat lit extension disallowed by checker execution config, found {:?}", line)
+                    ))
+                }
+                assigned_idx.unwrap().assert_ie(insert_result);
+            }
+            StrLit(cow_str) => {
+                let s = cow_str.to_string();
+                let string_ptr = StringPtr::from(
+                    DagMarker::ExportFile,
+                    self.dag.strings.insert_full(crate::util::CowStr::Owned(s)).0
+                );
+                let insert_result = {
+                    let hash = hash64!(crate::expr::STRING_LIT_HASH, string_ptr);
+                    self.dag.exprs.insert_full(Expr::StringLit { ptr: string_ptr, hash })
+                };
+                if !self.config.string_extension {
+                    return Err(Box::<dyn Error>::from(
+                        format!("String lit extension disallowed by checker execution config, found {:?}", line)
+                    ))
+                }
+                assigned_idx.unwrap().assert_ie(insert_result);
+            }
+            LevelSucc(l) => {
+                let l = self.get_level_ptr(l);
+                let insert_result = {
+                    let hash = hash64!(crate::level::SUCC_HASH, l);
+                    self.dag.levels.insert_full(Level::Succ(l, hash))
+                };
+                assigned_idx.unwrap().assert_il(insert_result);
+            }
+            LevelMax([l, r]) => {
+                let l = self.get_level_ptr(l);
+                let r = self.get_level_ptr(r);
+                let insert_result = {
+                    let hash = hash64!(crate::level::MAX_HASH, l, r);
+                    self.dag.levels.insert_full(Level::Max(l, r, hash))
+                };
+                assigned_idx.unwrap().assert_il(insert_result);
+            }
+            LevelIMax([l, r]) => {
+                let l = self.get_level_ptr(l);
+                let r = self.get_level_ptr(r);
+                let insert_result = {
+                    let hash = hash64!(crate::level::IMAX_HASH, l, r);
+                    self.dag.levels.insert_full(Level::IMax(l, r, hash))
+                };
+                assigned_idx.unwrap().assert_il(insert_result);
+            }
+            LevelParam(var_idx) => {
+                 let n = self.get_name_ptr(var_idx);
+                 let insert_result = {
+                     let hash = hash64!(crate::level::PARAM_HASH, n);
+                     self.dag.levels.insert_full(Level::Param(n, hash))
+                 };
+                assigned_idx.unwrap().assert_il(insert_result);
+            }
+            ExprSort(level) => {
+                let level = self.get_level_ptr(level);
+                let insert_result = {
+                    let hash = hash64!(crate::expr::SORT_HASH, level);
+                    self.dag.exprs.insert_full(Expr::Sort { level, hash })
+                };
+                assigned_idx.unwrap().assert_ie(insert_result);
+            }
+            ExprMData {..} => {
+                panic!("Expr.mdata not supported");
+            }
+            ExprConst {name, levels} => {
+                let name = self.get_name_ptr(name);
+                let levels = self.get_levels_ptr(&levels);
+                let insert_result = {
+                    let hash = hash64!(crate::expr::CONST_HASH, name, levels);
+                    self.dag.exprs.insert_full(Expr::Const { name, levels, hash })
+                };
+                assigned_idx.unwrap().assert_ie(insert_result);
+            }
+            ExprApp {fun, arg} => {
+                let fun = self.get_expr_ptr(fun);
+                let arg = self.get_expr_ptr(arg);
+                let insert_result = {
+                    let hash = hash64!(crate::expr::APP_HASH, fun, arg);
+                    let num_bvars = self.num_loose_bvars(fun).max(self.num_loose_bvars(arg));
+                    let locals = self.has_fvars(fun) || self.has_fvars(arg);
+                    self.dag.exprs.insert_full(Expr::App { fun, arg, num_loose_bvars: num_bvars, has_fvars: locals, hash })
+                };
+                assigned_idx.unwrap().assert_ie(insert_result);
+            }
+            ExprBVar(dbj_idx) => {
+                let insert_result = {
+                    let hash = hash64!(crate::expr::VAR_HASH, dbj_idx);
+                    self.dag.exprs.insert_full(Expr::Var { dbj_idx, hash })
+                };
+                assigned_idx.unwrap().assert_ie(insert_result);
+            }
+            ExprLambda {binder_name, binder_type, binder_info, body} => {
+                let binder_name = self.get_name_ptr(binder_name);
+                let binder_type = self.get_expr_ptr(binder_type);
+                let body = self.get_expr_ptr(body);
+                let insert_result = {
+                    let hash = hash64!(crate::expr::LAMBDA_HASH, binder_name, binder_info, binder_type, body);
+                    let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
+                    let locals = self.has_fvars(binder_type) || self.has_fvars(body);
+                    self.dag.exprs.insert_full(Expr::Lambda {
+                        binder_name,
+                        binder_style: binder_info,
+                        binder_type,
+                        body,
+                        num_loose_bvars: num_bvars,
+                        has_fvars: locals,
+                        hash,
+                    })
+                };
+                assigned_idx.unwrap().assert_ie(insert_result);
+            }
+            ExprPi {binder_name, binder_type, binder_info, body} => {
+                let binder_name = self.get_name_ptr(binder_name);
+                let binder_type = self.get_expr_ptr(binder_type);
+                let body = self.get_expr_ptr(body);
+                let insert_result = {
+                    let hash = hash64!(crate::expr::PI_HASH, binder_name, binder_info, binder_type, body);
+                    let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
+                    let locals = self.has_fvars(binder_type) || self.has_fvars(body);
+                    self.dag.exprs.insert_full(Expr::Pi {
+                        binder_name,
+                        binder_style: binder_info,
+                        binder_type,
+                        body,
+                        num_loose_bvars: num_bvars,
+                        has_fvars: locals,
+                        hash,
+                    })
+                };
+                assigned_idx.unwrap().assert_ie(insert_result);
+            }
+            ExprLet {name, ty, value, body, nondep} => {
+                let binder_name = self.get_name_ptr(name);
+                let binder_type = self.get_expr_ptr(ty);
+                let val = self.get_expr_ptr(value);
+                let body = self.get_expr_ptr(body);
+                let insert_result = {
+                    let hash = hash64!(crate::expr::LET_HASH, binder_name, binder_type, val, body, nondep);
+                    let num_bvars = self
+                        .num_loose_bvars(binder_type)
+                        .max(self.num_loose_bvars(val).max(self.num_loose_bvars(body).saturating_sub(1)));
+                    let locals = self.has_fvars(binder_type) || self.has_fvars(val) || self.has_fvars(body);
+                    self.dag.exprs.insert_full(Expr::Let {
+                        binder_name,
+                        binder_type,
+                        val,
+                        body,
+                        num_loose_bvars: num_bvars,
+                        has_fvars: locals,
+                        hash,
+                        nondep
+                    })
+                };
+                assigned_idx.unwrap().assert_ie(insert_result);
+            }
+            ExprProj {type_name, idx, structure: struct_} => {
+                let ty_name = self.get_name_ptr(type_name);
+                let structure = self.get_expr_ptr(struct_);
+                let insert_result = {
+                    let hash = hash64!(crate::expr::PROJ_HASH, ty_name, idx, structure);
+                    let num_bvars = self.num_loose_bvars(structure);
+                    let locals = self.has_fvars(structure);
+                    self.dag.exprs.insert_full(Expr::Proj {
+                        ty_name,
+                        idx,
+                        structure,
+                        num_loose_bvars: num_bvars,
+                        has_fvars: locals,
+                        hash,
+                    })
+                };
+                assigned_idx.unwrap().assert_ie(insert_result);
+            }
+            Axiom {name, ty, uparams, is_unsafe} => {
+                assert!(!is_unsafe);
+                let name = self.get_name_ptr(name);
+                let uparams = self.get_uparams_ptr(&uparams);
+                let ty = self.get_expr_ptr(ty);
+                let info = DeclarInfo { name, ty, uparams };
+                let axiom = Declar::Axiom { info };
+                if self.axiom_permitted(name) {
+                    assert!(self.declars.insert(name, axiom).is_none());
+                } else {
+                    let name_string = self.name_to_string(name);
+                    if self.config.unpermitted_axiom_hard_error {
+                        return Err(Box::from(format!("export file declares unpermitted axiom {:?}", name_string)))
+                    } else {
+                        self.skipped.push(name_string)
+                    }
+                }
+            }
+            Defn {name, ty, uparams, value, hint, safety} => {
+                assert!(!matches!(safety, DefinitionSafety::Unsafe | DefinitionSafety::Partial));
+                let name = self.get_name_ptr(name);
+                let ty = self.get_expr_ptr(ty);
+                let val = self.get_expr_ptr(value);
+                let uparams = self.get_uparams_ptr(&uparams);
+                let info = DeclarInfo { name, ty, uparams };
+                let definition = Declar::Definition { info, val, hint };
+                assert!(self.declars.insert(name, definition).is_none());
+            }
+            Thm {name, ty, uparams, value} => {
+                let name = self.get_name_ptr(name);
+                let ty = self.get_expr_ptr(ty);
+                let val = self.get_expr_ptr(value);
+                let uparams = self.get_uparams_ptr(&uparams);
+                let info = DeclarInfo { name, ty, uparams };
+                let theorem = Declar::Theorem { info, val };
+                assert!(self.declars.insert(name, theorem).is_none());
+            }
+            Opaque {name, ty, uparams, value, is_unsafe} => {
+                assert!(!is_unsafe);
+                let name = self.get_name_ptr(name);
+                let ty = self.get_expr_ptr(ty);
+                let val = self.get_expr_ptr(value);
+                let uparams = self.get_uparams_ptr(&uparams);
+                let info = DeclarInfo { name, ty, uparams };
+                let definition = Declar::Opaque { info, val };
+                assert!(self.declars.insert(name, definition).is_none());
+            }
+            Quot {name, ty, uparams, ..} => {
+                let name = self.get_name_ptr(name);
+                let ty = self.get_expr_ptr(ty);
+                let uparams = self.get_uparams_ptr(&uparams);
+                let info = DeclarInfo { name, ty, uparams };
+                let quot = Declar::Quot { info };
+                assert!(self.declars.insert(name, quot).is_none());
+            }
+            Inductive {ind_vals, ctor_vals, rec_vals} => {
+                let block_start = self.declars.len();
+                let block_size = ind_vals.len() + ctor_vals.len() + rec_vals.len();
+                for IndInfo {name, ty, uparams, all, ctors, is_rec, num_nested, num_params, num_indices, is_unsafe, ..} in ind_vals {
+                    assert!(!is_unsafe);
+                    let name = self.get_name_ptr(name);
+                    self.mutual_block_sizes.insert(name, (block_start, block_size));
+                    let uparams = self.get_uparams_ptr(&uparams);
+                    let ty = self.get_expr_ptr(ty);
+                    let all_ind_names =  Arc::from(self.get_names(&all)); 
+                    let all_ctor_names = Arc::from(self.get_names(&ctors)); 
+                    let inductive = Declar::Inductive(InductiveData {
+                        info: DeclarInfo { name, uparams, ty },
+                        is_recursive: is_rec,
+                        is_nested: num_nested > 0,
+                        num_params,
+                        num_indices,
+                        all_ind_names,
+                        all_ctor_names,
+                    });
+                    assert!(self.declars.insert(name, inductive).is_none());
+                }
+                for Constructor {name, uparams, ty, is_unsafe, induct, cidx, num_params, num_fields, ..}  in ctor_vals {
+                    assert!(!is_unsafe);
+                    let name = self.get_name_ptr(name);
+                    let ty = self.get_expr_ptr(ty);
+                    let uparams = self.get_uparams_ptr(&uparams);
+                    let info = DeclarInfo { name, ty, uparams };
+                    let parent_inductive = self.get_name_ptr(induct);
+                    let ctor_idx = cidx;
+                    let ctor = Declar::Constructor(ConstructorData {
+                        info,
+                        inductive_name: parent_inductive,
+                        ctor_idx,
+                        num_params,
+                        num_fields,
+                    });
+                    assert!(self.declars.insert(name, ctor).is_none());
+                }
+                for Recursor {name, uparams, ty, rules, is_unsafe, num_params, num_indices, num_motives, num_minors, k, all, ..} in rec_vals {
+                    assert!(!is_unsafe);
+                    let name = self.get_name_ptr(name);
+                    let ty = self.get_expr_ptr(ty);
+                    let uparams = self.get_uparams_ptr(&uparams);
+                    let info = DeclarInfo { name, ty, uparams };
+                    let rules = rules.into_iter().map(|RecursorRule {rhs, ctor, nfields}| 
+                        crate::env::RecRule {
+                            val: self.get_expr_ptr(rhs),
+                            ctor_name: self.get_name_ptr(ctor),
+                            ctor_telescope_size_wo_params: nfields
+                        }
+                    ).collect::<Vec<_>>();
+                    let all_inductives = self.get_names(&all);
+                    let recursor = Declar::Recursor(RecursorData {
+                        info,
+                        all_inductives: Arc::from(all_inductives),
+                        num_params,
+                        num_indices,
+                        num_motives,
+                        num_minors,
+                        rec_rules: Arc::from(rules),
+                        is_k: k,
+                    });
+                    assert!(self.declars.insert(name, recursor).is_none())
+                }
+            }
         }
-        if axiom_permitted {
-            self.declars.insert(name, axiom);
+        Ok(())
+    }
+}
+
+/// Needed because the lean4export format serializes nat literals as strings: 
+/// https://github.com/leanprover/lean4export/blob/ddeb0869b0b5679b0104e16291ffd929fbaa6a48/format_ndjson.md?plain=1#L186
+fn deserialize_biguint_from_string<'de, D>(deserializer: D) -> Result<BigUint, D::Error>
+where D: Deserializer<'de> {
+    use std::str::FromStr;
+    struct BigUintStringVisitor;
+
+    impl<'de> Visitor<'de> for BigUintStringVisitor {
+        type Value = BigUint;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a string containing a natural number")
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<BigUint, E> where E: DeError {
+            BigUint::from_str(v).map_err(|e| E::custom(format!("invalid BigUint decimal string: {e}")))
+        }
+
+        fn visit_string<E>(self, v: String) -> Result<BigUint, E> where E: DeError {
+            self.visit_str(&v)
+        }
+    }
+    deserializer.deserialize_str(BigUintStringVisitor)
+}
+
+mod semver_tests {
+    use super::*;
+    #[allow(dead_code)]
+    fn mk_meta(s: &'static str) -> FileMeta<'static> {
+        FileMeta {
+            lean: LeanMeta { version: Cow::Borrowed(""), githash: Cow::Borrowed("") },
+            exporter: ExporterMeta { version: Cow::Borrowed(""), name: Cow::Borrowed("") },
+            format :FormatMeta { version: Cow::Borrowed(s) }
         }
     }
 
-    fn parse_hint(&mut self, ws: &mut SplitWhitespace) -> ReducibilityHint {
-        match ws.next() {
-            Some("O") => Opaque,
-            Some("A") => Abbrev,
-            Some("R") => Regular(parse_u16(ws)),
-            owise => panic!("expected to parse reducibility hint, found {:?}", owise),
+    #[test]
+    fn test_ng() {
+        let too_small = [
+            "2.9.9",
+            "2.9.99",
+        ];
+        let too_big = [
+            "4.0.0",
+            "4.1.0",
+            "3.2.0",
+            "3.2.1",
+        ];
+
+        for v in too_small {
+            assert!(check_semver(&mk_meta(v)).is_err())
+        }
+        for v in too_big {
+            assert!(check_semver(&mk_meta(v)).is_err())
         }
     }
 
-    fn parse_def(&mut self, ws: &mut SplitWhitespace) {
-        let name = self.parse_name_ptr(ws);
-        let ty = self.parse_expr_ptr(ws);
-        let val = self.parse_expr_ptr(ws);
-        let hint = self.parse_hint(ws);
-        let uparams = self.parse_uparams(ws, None);
-        let info = DeclarInfo { name, ty, uparams };
-        let definition = Declar::Definition { info, val, hint };
-        self.declars.insert(name, definition);
-    }
-
-    fn parse_opaque(&mut self, ws: &mut SplitWhitespace) {
-        let name = self.parse_name_ptr(ws);
-        let ty = self.parse_expr_ptr(ws);
-        let val = self.parse_expr_ptr(ws);
-        let uparams = self.parse_uparams(ws, None);
-        let info = DeclarInfo { name, ty, uparams };
-        let definition = Declar::Opaque { info, val };
-        self.declars.insert(name, definition);
-    }
-
-    pub(crate) fn parse_theorem(&mut self, ws: &mut SplitWhitespace) {
-        let name = self.parse_name_ptr(ws);
-        let ty = self.parse_expr_ptr(ws);
-        let val = self.parse_expr_ptr(ws);
-        let uparams = self.parse_uparams(ws, None);
-        let info = DeclarInfo { name, ty, uparams };
-        let theorem = Declar::Theorem { info, val };
-        self.declars.insert(name, theorem);
-    }
-
-    fn parse_quot(&mut self, ws: &mut SplitWhitespace) {
-        let name = self.parse_name_ptr(ws);
-        let ty = self.parse_expr_ptr(ws);
-        let uparams = self.parse_uparams(ws, None);
-        let info = DeclarInfo { name, ty, uparams };
-        let quot = Declar::Quot { info };
-        self.declars.insert(name, quot);
-    }
-
-    fn parse_inductive(&mut self, ws: &mut SplitWhitespace) {
-        let name = self.parse_name_ptr(ws);
-        let ty = self.parse_expr_ptr(ws);
-        let _is_reflexive = parse_nat_as_bool(ws);
-        let is_recursive = parse_nat_as_bool(ws);
-        let is_nested = parse_nat_as_bool(ws);
-        let num_params = parse_u16(ws);
-        let num_indices = parse_u16(ws);
-        let num_inductives = parse_u16(ws);
-        let all_ind_names = Arc::from(self.parse_names(ws, Some(num_inductives)));
-        let num_ctors = parse_u16(ws);
-        let all_ctor_names = Arc::from(self.parse_names(ws, Some(num_ctors)));
-        let uparams = self.parse_uparams(ws, None);
-        let info = DeclarInfo { name, ty, uparams };
-
-        let inductive = Declar::Inductive(InductiveData {
-            info,
-            is_recursive,
-            is_nested,
-            num_params,
-            num_indices,
-            all_ind_names,
-            all_ctor_names,
-        });
-        self.declars.insert(name, inductive);
-    }
-
-    fn parse_constructor(&mut self, ws: &mut SplitWhitespace) {
-        let name = self.parse_name_ptr(ws);
-        let ty = self.parse_expr_ptr(ws);
-        let parent_inductive = self.parse_name_ptr(ws);
-        let ctor_idx = parse_u16(ws);
-        let num_params = parse_u16(ws);
-        let num_fields = parse_u16(ws);
-        let uparams = self.parse_uparams(ws, None);
-        let info = DeclarInfo { name, ty, uparams };
-        let ctor = Declar::Constructor(ConstructorData {
-            info,
-            inductive_name: parent_inductive,
-            ctor_idx,
-            num_params,
-            num_fields,
-        });
-        self.declars.insert(name, ctor);
-    }
-
-    fn parse_rec_rule(&mut self, assigned_idx: u32, line_rem_toks: &mut SplitWhitespace) {
-        let ctor_name = self.parse_name_ptr(line_rem_toks);
-        let ctor_telescope_size_wo_params = parse_u16(line_rem_toks);
-        let val = self.parse_expr_ptr(line_rem_toks);
-        let rule = RecRule { ctor_name, ctor_telescope_size_wo_params, val };
-        assert_eq!(assigned_idx as usize, self.rec_rules.len());
-        self.rec_rules.push(rule)
-    }
-
-    fn parse_recursor(&mut self, ws: &mut SplitWhitespace) {
-        let name = self.parse_name_ptr(ws);
-        let ty = self.parse_expr_ptr(ws);
-        let num_inductives = parse_u16(ws);
-        let all_inductives = Arc::from(self.parse_names(ws, Some(num_inductives)));
-
-        let num_params = parse_u16(ws);
-        let num_indices = parse_u16(ws);
-        let num_motives = parse_u16(ws);
-        let num_minors = parse_u16(ws);
-        let num_rec_rules = parse_u16(ws);
-        let mut rec_rules = Vec::new();
-        for _ in 0..num_rec_rules {
-            let idx = parse_usize(ws);
-            let rr = self.rec_rules[idx];
-            rec_rules.push(rr);
+    #[test]
+    fn test_ok() {
+        let ok = [
+            "3.1.0",
+            "3.1.9",
+        ];
+        for v in ok {
+            assert!(check_semver(&mk_meta(v)).is_ok())
         }
-        let is_k = parse_nat_as_bool(ws);
-        let uparams = self.parse_uparams(ws, None);
-        let info = DeclarInfo { name, ty, uparams };
-        let recursor = Declar::Recursor(RecursorData {
-            info,
-            all_inductives,
-            num_params,
-            num_indices,
-            num_motives,
-            num_minors,
-            rec_rules: Arc::from(rec_rules),
-            is_k,
-        });
-        self.declars.insert(name, recursor);
-    }
-
-    fn parse_notation(&mut self, discrim: &str, ws: &mut SplitWhitespace) {
-        let name = self.parse_name_ptr(ws);
-        let priority = parse_usize(ws);
-        let symbol = Arc::from(ws.flat_map(|x| x.chars()).collect::<String>());
-        let made = match discrim {
-            "#PREFIX" => Notation::new_prefix(name, priority, symbol),
-            "#INFIX" => Notation::new_infix(name, priority, symbol),
-            "#POSTFIX" => Notation::new_postfix(name, priority, symbol),
-            _ => unreachable!(),
-        };
-        self.notations.insert(name, made);
-    }
-}
-
-fn parse_usize(ws: &mut SplitWhitespace) -> usize {
-    ws.next().expect("parser::parse_usize::next()").parse::<usize>().expect("parser::parse_usize::and_then")
-}
-
-fn parse_nat_as_bool(ws: &mut SplitWhitespace) -> bool {
-    match ws.next() {
-        Some("0") => false,
-        Some(s) if s.chars().all(|c| c.is_ascii_digit()) => true,
-        owise => panic!("Parse bool expected 1 or 0, got {:?}", owise),
-    }
-}
-
-fn parse_u64(ws: &mut SplitWhitespace) -> u64 {
-    ws.next().expect("parser::parse_u64::next()").parse::<u64>().expect("parser::parse_u64::and_then")
-}
-fn parse_u32(ws: &mut SplitWhitespace) -> u32 {
-    ws.next().expect("parser::parse_u32::next").parse::<u32>().expect("parser::parse_u32::parse")
-}
-
-fn try_parse_u32(ws: &mut SplitWhitespace) -> Option<u32> { ws.next().and_then(|s| s.parse::<u32>().ok()) }
-
-fn parse_u16(ws: &mut SplitWhitespace) -> u16 {
-    ws.next().expect("parser::parse_u16::next").parse::<u16>().expect("parser::parse_u16::parse")
-}
-
-fn parse_binder_info(ws: &mut SplitWhitespace) -> BinderStyle {
-    ws.next()
-        .map(|elem| match elem {
-            s if s.contains("#BD") => BinderStyle::Default,
-            s if s.contains("#BI") => BinderStyle::Implicit,
-            s if s.contains("#BC") => BinderStyle::InstanceImplicit,
-            s if s.contains("#BS") => BinderStyle::StrictImplicit,
-            _ => panic!(),
-        })
-        .expect("parse_binder_info")
-}
-
-pub(crate) fn parse_hex_string(ws: &mut SplitWhitespace) -> Option<String> {
-    let bytes = ws.map(|hex_pair| u8::from_str_radix(hex_pair, 16).ok()).collect::<Option<Vec<u8>>>()?;
-    String::from_utf8(bytes).ok()
-}
-
-/// Information about the semver is currently unused awaiting community input.
-pub(crate) fn parse_semver(line: &str) -> Result<Semver, Box<dyn Error>> {
-    let mut iter = line.trim().split('.');
-
-    let major = iter.next().unwrap().parse::<u16>()?;
-    let minor = iter.next().unwrap().parse::<u16>()?;
-    let patch = iter.next().unwrap().parse::<u16>()?;
-    if iter.next().is_some() {
-        Err(Box::<dyn Error>::from("improper semver line; pre-release identiiers or trailing items are not allowed"))
-    } else {
-        Ok(Semver(major, minor, patch))
     }
 }

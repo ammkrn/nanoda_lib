@@ -1,12 +1,16 @@
 use crate::util::{ExprPtr, FxHashMap, FxIndexMap, LevelsPtr, NamePtr};
 use std::sync::Arc;
+use serde::Deserialize;
 
 /// Reducibility hints accompany definitions; used to determine how
 /// to unfold expressions in order to most efficiently proceed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 pub enum ReducibilityHint {
+    #[serde(rename = "opaque")]
     Opaque,
+    #[serde(rename = "regular")]
     Regular(u16),
+    #[serde(rename = "abbrev")]
     Abbrev,
 }
 
@@ -119,6 +123,7 @@ pub struct RecursorData<'a> {
 }
 
 impl<'a> RecursorData<'a> {
+    /// Compute the index in the recursor's type (in the telescope) where the major premise is located. 
     pub fn major_idx(&self) -> usize {
         (self.num_params + self.num_motives + self.num_minors + self.num_indices) as usize
     }
@@ -161,18 +166,30 @@ impl<'a> Notation<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum EnvLimit<'a> {
+    Empty,
+    ByIndex(usize),
+    ByName(NamePtr<'a>),
+    PpUnlimited
+}
+
 /// A Lean environment, which consists of a set of declarations that my have a temporary
 /// extension, and some notation items. The temporary extensions are used to acommodate
 /// the specialization process needed for checking nested inductives.
 ///
 /// When a tyep checker looks up a declaration in the environment, it will check the temporary
 /// extension first if there is one, then fall back to the persistent map.
-#[derive(PartialEq, Eq)]
 pub struct Env<'x, 'a: 'x> {
-    pub declars: &'a FxIndexMap<NamePtr<'a>, Declar<'a>>,
+    declars: &'a FxIndexMap<NamePtr<'a>, Declar<'a>>,
     /// Used for checking nested inductives.
-    pub temp_declars: Option<&'x FxIndexMap<NamePtr<'a>, Declar<'a>>>,
-    pub notation: &'a FxHashMap<NamePtr<'a>, Notation<'a>>,
+    temp_declars: Option<&'x FxIndexMap<NamePtr<'a>, Declar<'a>>>,
+    #[allow(dead_code)]
+    pub(crate) notation: &'a FxHashMap<NamePtr<'a>, Notation<'a>>,
+    /// `cutoff` is used to mark the end of what should be the "visible" environment.
+    /// This allows us to make the complete environment at parse time, and then control visibility
+    /// between threads by only making a particular slice of that environment available to a thread.
+    cutoff: usize,
 }
 
 pub(crate) type DeclarMap<'a> = FxIndexMap<NamePtr<'a>, Declar<'a>>;
@@ -180,23 +197,31 @@ pub(crate) type NotationMap<'a> = FxHashMap<NamePtr<'a>, Notation<'a>>;
 
 impl<'x, 'a: 'x> Env<'x, 'a> {
     /// Create a new environment (without any temporary extension)
-    pub fn new(declars: &'a DeclarMap<'a>, notation: &'a NotationMap<'a>) -> Self {
-        Self::new_plus(declars, None, notation)
+    pub fn new(declars: &'a DeclarMap<'a>, notation: &'a NotationMap<'a>, limit: EnvLimit<'a>) -> Self {
+        Self::new_w_temp_ext(declars, None, notation, limit)
     }
 
     /// Create a new environment that includes some temporary extension; the temporary
     /// extension is used for checking nested inductives.
-    pub fn new_plus(
+    pub fn new_w_temp_ext(
         declars: &'a DeclarMap<'a>,
         temp_declars: Option<&'x DeclarMap<'a>>,
         notation: &'a NotationMap<'a>,
+        limit: EnvLimit<'a>
     ) -> Self {
-        Self { declars, temp_declars, notation }
+        let cutoff = match limit {
+            EnvLimit::Empty => 0,
+            EnvLimit::ByIndex(idx) => idx,
+            EnvLimit::PpUnlimited => declars.len(),
+            EnvLimit::ByName(n) => declars.get_index_of(&n).unwrap_or(0),
+        };
+        Self { declars, cutoff, temp_declars, notation }
     }
 
+    /// Retrieve a declaration by first checking the contents of any temporary extension,
+    /// then checking the persistent environment.
     pub fn get_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> {
-        // Need to check the temporary declarations first.
-        self.temp_declars.as_ref().and_then(|ext| ext.get(n)).or_else(|| self.declars.get(n))
+        self.temp_declars.as_ref().and_then(|ext| ext.get(n)).or_else(|| self.get_old_declar(n))
     }
 
     /// Get a declaration, only looking in the temporary extension.
@@ -206,7 +231,14 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
 
     /// Get a declaration, bypassing the temporary extension, only searching in
     /// the persistent set of declarations.
-    pub fn get_old_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> { self.declars.get(n) }
+    pub fn get_old_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> { 
+        let (idx, _, v) = self.declars.get_full(n)?;
+        if idx < self.cutoff {
+            Some(v)
+        } else {
+            None
+        }
+    }
 
     pub fn get_inductive(&self, n: &NamePtr<'a>) -> Option<&InductiveData<'a>> {
         match self.get_declar(n) {

@@ -1,9 +1,0 @@
-prelude
-inductive MyFalse : Prop
-
-mutual
-unsafe def a : MyFalse := d
-unsafe def b : MyFalse := c
-unsafe def c : MyFalse := b
-unsafe def d : MyFalse := a
-end

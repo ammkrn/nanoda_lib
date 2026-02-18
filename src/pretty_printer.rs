@@ -3,8 +3,8 @@ use crate::expr::{BinderStyle, Expr::*, FVarId};
 use crate::hash64;
 use crate::level::Level;
 use crate::name::Name;
-use crate::util::{get_bool, get_nat, get_string, ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr, TcCtx};
-use serde_json::Value as JsonValue;
+use crate::util::{ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr, TcCtx};
+use serde::Deserialize;
 use std::error::Error;
 use std::rc::Rc;
 use BinderStyle::*;
@@ -27,6 +27,9 @@ const LETTERLIKE_SYMBOL: std::ops::Range<char> = '℀'..'\u{214f}';
 const SUBSCRIPT0: std::ops::Range<char> = '₀'..'₉';
 const SUBSCRIPT1: std::ops::Range<char> = 'ₐ'..'ₜ';
 const SUBSCRIPT2: std::ops::Range<char> = 'ᵢ'..'ᵪ';
+const fn default_width() -> usize { 120 }
+const fn default_indent() -> usize { 2 }
+const MAX_LEVEL: usize = 1024;
 
 fn is_letterlike_start(c: char) -> bool {
     c.is_ascii_alphabetic()
@@ -78,9 +81,7 @@ impl From<String> for DocPtr {
 }
 
 #[derive(Clone)]
-struct DocPtr(Rc<Doc>);
-
-pub const MAX_LEVEL: usize = 1024;
+pub(crate) struct DocPtr(Rc<Doc>);
 
 fn line() -> DocPtr { Line(" ").into() }
 
@@ -249,33 +250,23 @@ fn tile_docs(mut s: impl Iterator<Item = DocPtr>) -> DocPtr {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct PpOptions {
+    #[serde(default)]
     pub all: bool,
+    #[serde(default)]
     pub explicit: bool,
+    #[serde(default)]
     pub universes: bool,
+    #[serde(default)]
     pub notation: bool,
+    #[serde(default)]
     pub proofs: bool,
+    #[serde(default = "default_indent")]
     pub indent: usize,
+    #[serde(default = "default_width")]
     pub width: usize,
-    pub declar_sep: String,
-}
-
-impl TryFrom<&JsonValue> for PpOptions {
-    type Error = Box<dyn std::error::Error>;
-
-    fn try_from(v: &JsonValue) -> Result<Self, Self::Error> {
-        Ok(Self {
-            all: get_bool("all", v, false)?,
-            explicit: get_bool("explicit", v, false)?,
-            universes: get_bool("universes", v, false)?,
-            notation: get_bool("notation", v, true)?,
-            proofs: get_bool("proofs", v, false)?,
-            indent: get_nat("indent", v, 2)?,
-            width: get_nat("width", v, 100)?,
-            declar_sep: get_string("declar_sep", v, String::from("\n\n"))?,
-        })
-    }
+    pub declar_sep: Option<String>,
 }
 
 impl std::default::Default for PpOptions {
@@ -291,8 +282,8 @@ impl PpOptions {
             notation: true,
             proofs: false,
             indent: 2usize,
-            width: 100usize,
-            declar_sep: String::from("\n\n"),
+            width: 120usize,
+            declar_sep: None,
         }
     }
 
@@ -304,8 +295,8 @@ impl PpOptions {
             notation: false,
             proofs: true,
             indent: 2usize,
-            width: 100usize,
-            declar_sep: String::from("\n\n"),
+            width: 120usize,
+            declar_sep: None,
         }
     }
 }
@@ -351,33 +342,54 @@ impl<'a> ParsedBinder<'a> {
     fn is_lambda(&self) -> bool { !self.is_pi }
 }
 
-pub struct PrettyPrinter<'x, 't, 'p> {
-    pub(crate) ctx: &'x mut TcCtx<'t, 'p>,
-}
-
 use crate::util::PpDestination;
 impl<'p> ExportFile<'p> {
+    // Need to get better information about escaping/use of double french quotes.
     pub fn pp_selected_declars(&self, pp_destination: Option<&mut PpDestination>) -> Vec<Box<dyn std::error::Error>> {
         let mut errs = Vec::new();
         if let Some(pp_destination) = pp_destination {
             self.with_ctx(|ctx| {
-                for declar_name in ctx.export_file.config.pp_declars.iter() {
-                    let n = ctx.name_from_str(declar_name);
-                    if let Some(s) = ctx.with_pp(|pp| pp.pp_declar(n)) {
-                        if let Err(e) = pp_destination.write_line(s, self.config.pp_options.declar_sep.as_str()) {
+                let mut pp_declars = Vec::new();
+                if let Some(pp_declar_strings) = self.config.pp_declars.as_ref() {
+                    for declar_name in pp_declar_strings.iter() {
+                        let n = ctx.name_from_str(declar_name);
+                        pp_declars.push((declar_name.clone(), n));
+                    }
+                }
+                if self.config.print_axioms {
+                    for (declar_name, declar) in self.declars.iter() {
+                        if let Declar::Axiom {..} = declar {
+                            let as_str = format!("{:?}", ctx.debug_print(*declar_name));
+                            pp_declars.push((as_str, *declar_name));
+                        }
+                    }
+    
+                }
+                for (ss, pp_declar) in pp_declars {
+                    if let Some(s) = ctx.with_pp(|pp| pp.pp_declar(pp_declar)) {
+                        if let Err(e) = pp_destination.write_line(s, self.config.pp_options.declar_sep.as_ref().map(|x| x.as_str()).unwrap_or("\n\n")) {
                             errs.push(e)
                         }
                     } else {
                         errs.push(Box::<dyn Error>::from(format!(
                             "declaration {} not found during pretty printing",
-                            declar_name
-                        )))
+                            ss
+                        )));
                     }
                 }
-            })
+ 
+            });
+        } else {
+            if self.config.print_axioms {
+                errs.push(Box::<dyn Error>::from("Unable to print axioms"));
+            }
         }
         errs
     }
+}
+
+pub struct PrettyPrinter<'x, 't, 'p> {
+    pub(crate) ctx: &'x mut TcCtx<'t, 'p>,
 }
 
 impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
@@ -533,7 +545,10 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     }
 
     /// `safe` in the sense that the name will be escaped if it doesn't follow the
-    /// usual convention for identifiers.
+    /// usual convention for identifiers. 
+    ///
+    /// FIXME: We need to come back and update this when we have more "official" information 
+    /// from upstream about how quoting interacts with elements like hygienic identifiers
     fn pp_name_safe(&self, n: NamePtr<'t>) -> DocPtr {
         let doc = self.name_to_string(n).as_str().into();
         if self.should_be_escaped(n) {
@@ -542,7 +557,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
             doc
         }
     }
-
+    
     /// Create a string from a name `n`, leaving the dot-separator in the output string.\
     ///
     /// Example: name_to_string(`Foo.Bar.Baz`) == "Foo.Bar.Baz"
@@ -597,8 +612,8 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
 
     /// Does this expression infer as a `Pi` with any binder style other than `Default`
     fn is_implicit_fun(&mut self, fun: ExprPtr<'t>) -> bool {
-        self.ctx.with_tc(|tc| {
-            let ty = tc.whnf_after_infer(fun, crate::tc::InferFlag::InferOnly);
+        self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, |tc| {
+            let ty = tc.infer_then_whnf(fun, crate::tc::InferFlag::InferOnly);
             match tc.ctx.read_expr(ty) {
                 Pi { binder_style, .. } => binder_style != BinderStyle::Default,
                 _ => false,
@@ -719,7 +734,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     }
 
     fn pp_expr_aux(&mut self, e: ExprPtr<'t>) -> Parenable {
-        if !self.options().proofs && self.ctx.with_tc(|tc| tc.is_proof(e).0) {
+        if !self.options().proofs && self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, |tc| tc.is_proof(e).0) {
             DocPtr::from("_").as_unparenable()
         } else {
             match self.ctx.read_expr(e) {
@@ -744,7 +759,12 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
                         .as_unparenable()
                 }
                 NatLit { ptr, .. } => DocPtr::from(self.ctx.read_bignum(ptr).to_string()).as_unparenable(),
-                StringLit { ptr, .. } => DocPtr::from(self.ctx.read_string(ptr).as_ref()).as_unparenable(),
+                StringLit { ptr, .. } => {
+                    DocPtr::from("\"")
+                    .concat(DocPtr::from(self.ctx.read_string(ptr).as_ref()))
+                    .concat(DocPtr::from("\""))
+                    .as_unparenable()
+                },
             }
         }
     }
@@ -790,7 +810,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
 
         let instd = self.ctx.inst(val, named_binder_tys.as_slice());
         let pp_val = {
-            let is_prop = self.ctx.with_tc(|tc| tc.is_proposition(declar.info().ty).0);
+            let is_prop = self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, |tc| tc.is_proposition(declar.info().ty).0);
             line()
                 .concat(if is_prop && !self.options().proofs {
                     DocPtr::from("_")

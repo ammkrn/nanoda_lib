@@ -3,6 +3,7 @@ use crate::util::{BigUintPtr, ExprPtr, FxHashMap, LevelPtr, LevelsPtr, NamePtr, 
 use num_bigint::BigUint;
 use num_traits::identities::Zero;
 use Expr::*;
+use serde::Deserialize;
 
 pub(crate) const VAR_HASH: u64 = 281;
 pub(crate) const SORT_HASH: u64 = 563;
@@ -88,6 +89,7 @@ pub enum Expr<'a> {
         body: ExprPtr<'a>,
         num_loose_bvars: u16,
         has_fvars: bool,
+        nondep: bool
     },
     /// A free variable with binder information, and either a unique
     /// identifier, or a deBruijn level.
@@ -135,11 +137,15 @@ impl<'a> std::hash::Hash for Expr<'a> {
 ///
 /// These are only used by the pretty printer, and do not change the behavior of
 /// type checking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 pub enum BinderStyle {
+    #[serde(rename = "default")]
     Default,
+    #[serde(rename = "implicit")]
     Implicit,
+    #[serde(rename = "strictImplicit")]
     StrictImplicit,
+    #[serde(rename = "instImplicit")]
     InstanceImplicit,
 }
 
@@ -189,11 +195,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     let body = self.inst_aux(body, substs, offset + 1);
                     self.mk_lambda(binder_name, binder_style, binder_type, body)
                 }
-                Let { binder_name, binder_type, val, body, .. } => {
+                Let { binder_name, binder_type, val, body, nondep, .. } => {
                     let binder_type = self.inst_aux(binder_type, substs, offset);
                     let val = self.inst_aux(val, substs, offset);
                     let body = self.inst_aux(body, substs, offset + 1);
-                    self.mk_let(binder_name, binder_type, val, body)
+                    self.mk_let(binder_name, binder_type, val, body, nondep)
                 }
                 Proj { ty_name, idx, structure, .. } => {
                     let structure = self.inst_aux(structure, substs, offset);
@@ -246,11 +252,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     let body = self.abstr_aux_levels(body, start_pos, num_open_binders + 1);
                     self.mk_lambda(binder_name, binder_style, binder_type, body)
                 }
-                Let { binder_name, binder_type, val, body, .. } => {
+                Let { binder_name, binder_type, val, body, nondep, .. } => {
                     let binder_type = self.abstr_aux_levels(binder_type, start_pos, num_open_binders);
                     let val = self.abstr_aux_levels(val, start_pos, num_open_binders);
                     let body = self.abstr_aux_levels(body, start_pos, num_open_binders + 1);
-                    self.mk_let(binder_name, binder_type, val, body)
+                    self.mk_let(binder_name, binder_type, val, body, nondep)
                 }
                 StringLit { .. } | NatLit { .. } => panic!(),
                 Proj { ty_name, idx, structure, .. } => {
@@ -293,11 +299,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     let body = self.abstr_aux(body, locals, offset + 1);
                     self.mk_lambda(binder_name, binder_style, binder_type, body)
                 }
-                Let { binder_name, binder_type, val, body, .. } => {
+                Let { binder_name, binder_type, val, body, nondep, .. } => {
                     let binder_type = self.abstr_aux(binder_type, locals, offset);
                     let val = self.abstr_aux(val, locals, offset);
                     let body = self.abstr_aux(body, locals, offset + 1);
-                    self.mk_let(binder_name, binder_type, val, body)
+                    self.mk_let(binder_name, binder_type, val, body, nondep)
                 }
                 StringLit { .. } | NatLit { .. } => panic!(),
                 Proj { ty_name, idx, structure, .. } => {
@@ -348,11 +354,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     let body = self.subst_aux(body, ks, vs);
                     self.mk_lambda(binder_name, binder_style, binder_type, body)
                 }
-                Let { binder_name, binder_type, val, body, .. } => {
+                Let { binder_name, binder_type, val, body, nondep, .. } => {
                     let binder_type = self.subst_aux(binder_type, ks, vs);
                     let val = self.subst_aux(val, ks, vs);
                     let body = self.subst_aux(body, ks, vs);
-                    self.mk_let(binder_name, binder_type, val, body)
+                    self.mk_let(binder_name, binder_type, val, body, nondep)
                 }
                 // Level subst is only used in const inference, and when unfolding definitions;
                 // in both cases you're substituting in expressions that were just pulled out of the
@@ -482,7 +488,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             _ => unreachable!("Cannot apply lambda with non-local domain type"),
         }
     }
-
+    
     pub(crate) fn is_nat_zero(&mut self, e: ExprPtr<'t>) -> bool {
         match self.read_expr(e) {
             Const { .. } => e == self.c_nat_zero(),
@@ -521,8 +527,20 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             self.mk_app(succ_c, pred)
         }
     }
+    
+    /// Return `true` iff `e` is an application of `@eagerReduce A a`
+    pub(crate) fn is_eager_reduce_app(&self, e: ExprPtr<'t>) -> bool {
+        if let App {fun, ..} = self.read_expr(e) {
+            if let App {fun, ..} = self.read_expr(fun) {
+                if let Const {name, ..} = self.read_expr(fun) {
+                    return self.export_file.name_cache.eager_reduce == Some(name)
+                }
+            }
+        }
+        false
+    }
 
-    /// Convert a string literal to `String.mk <| List.cons (Char.ofNat _) .. List.nil`
+    /// Convert a string literal to `String.ofList <| List.cons (Char.ofNat _) .. List.nil`
     pub(crate) fn str_lit_to_constructor(&mut self, s: StringPtr<'t>) -> Option<ExprPtr<'t>> {
         assert!(self.export_file.config.string_extension);
         let zero = self.zero();
@@ -553,8 +571,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             // (List.cons (Char.ofNat u32)) xs
             out = self.mk_app(y, out);
         }
-        let string_mk_const = self.mk_const(self.export_file.name_cache.string_mk?, empty_levels);
-        Some(self.mk_app(string_mk_const, out))
+        let string_of_list_const = self.mk_const(self.export_file.name_cache.string_of_list?, empty_levels);
+        Some(self.mk_app(string_of_list_const, out))
     }
 
     /// If `e` is a NatLit, or `Const Nat.zero []`, return the appropriate Bignum.
@@ -682,6 +700,34 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     /// Is this expression `Sort(Level::Zero)`?
     pub(crate) fn prop(&mut self) -> ExprPtr<'t> { self.mk_sort(self.zero()) }
+
+    pub fn get_nth_pi_binder(&self, mut e: ExprPtr<'t>, n: usize) -> Option<ExprPtr<'t>> {
+        for _ in 0.. n {
+            match self.read_expr(e) {
+                Pi {body, ..} => { e = body; },
+                _ => return None
+            }
+        }
+        match self.read_expr(e) {
+            Pi {binder_type, ..} => Some(binder_type),
+            _ => None
+        }
+    }
+
+    /// Get the name of the inductive type which is the major premise for this recursor
+    /// by finding the correct binder in the recursor's type.
+    pub fn get_major_induct(&self, rec: &crate::env::RecursorData<'t>) -> Option<NamePtr<'t>> {
+        match self.get_nth_pi_binder(rec.info.ty, rec.major_idx()).map(|x| self.read_expr(self.unfold_apps_fun(x))) {
+            Some(Const {name, ..}) => Some(name),
+            _ => None
+        }
+    }
+    
+    /// The number of "loose" bound variables, which is the number of bound variables
+    /// in an expression which are boudn by something above it.
+    pub(crate) fn num_loose_bvars(&self, e: ExprPtr<'t>) -> u16 { self.read_expr(e).num_loose_bvars() }
+
+    pub(crate) fn has_fvars(&self, e: ExprPtr<'t>) -> bool { self.read_expr(e).has_fvars() }
 }
 
 impl<'t> Expr<'t> {
@@ -711,10 +757,4 @@ impl<'t> Expr<'t> {
         }
     }
 }
-impl<'t, 'p: 't> TcCtx<'t, 'p> {
-    /// The number of "loose" bound variables, which is the number of bound variables
-    /// in an expression which are boudn by something above it.
-    pub(crate) fn num_loose_bvars(&self, e: ExprPtr<'t>) -> u16 { self.read_expr(e).num_loose_bvars() }
 
-    pub(crate) fn has_fvars(&self, e: ExprPtr<'t>) -> bool { self.read_expr(e).has_fvars() }
-}
