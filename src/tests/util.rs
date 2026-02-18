@@ -88,6 +88,19 @@ fn check_empty() -> Result<(), Box<dyn Error>> {
     })
 }
 
+#[test]
+#[should_panic(expected = "infer_proj prop")]
+fn check_proj_from_prop() {
+    test_export_file_should_panic(
+        Some(Path::new("test_resources/ProjFromProp/config.json")),
+        |export| {
+            for declar in export.declars.values() {
+                export.check_declar(declar);
+            }
+        },
+    )
+}
+
 pub(crate) fn rand_string<'t>(rng: &mut ThreadRng, size: usize) -> CowStr<'t> {
     let rand_string: String = rng.sample_iter(&Alphanumeric).take(size).map(char::from).collect();
     CowStr::Owned(rand_string)
