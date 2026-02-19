@@ -696,8 +696,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     ) -> bool {
         // The arguments applied to the constructor are the params + indices.
         let (base_const, ctor_apps) = self.ctx.unfold_apps(ind_ty_app);
-        let ind_name = match self.ctx.read_expr(base_const) {
-            Const { name, .. } if name == parent_ind_name => name,
+        let (ind_name, appd_levels) = match self.ctx.read_expr(base_const) {
+            Const { name, levels, .. } if name == parent_ind_name => (name, levels),
             _ => return false,
         };
         let ind_name_pos = st
@@ -709,6 +709,20 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 _ => panic!(),
             })
             .unwrap();
+        match self.ctx.read_expr(st.ind_consts[ind_name_pos]) {
+            Const {levels, ..} => {
+                let (lhs, rhs) = (self.ctx.read_levels(appd_levels), self.ctx.read_levels(levels));
+                if lhs.len() != rhs.len() {
+                    return false
+                }
+                for i in 0..lhs.len() {
+                    if !self.ctx.eq_antisymm(lhs[i], rhs[i]) {
+                        return false
+                    }
+                }
+            },
+            _ => return false
+        };
         let ind_name_num_indices = st.local_indices[ind_name_pos].len();
 
         if ctor_apps.len() != (st.local_params.len() + ind_name_num_indices) {

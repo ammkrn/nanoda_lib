@@ -491,21 +491,21 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     
     pub(crate) fn is_nat_zero(&mut self, e: ExprPtr<'t>) -> bool {
         match self.read_expr(e) {
-            Const { .. } => e == self.c_nat_zero(),
-            NatLit { ptr, .. } => self.read_bignum(ptr).is_zero(),
+            Const { .. } => self.c_nat_zero() == Some(e),
+            NatLit { ptr, .. } => self.read_bignum(ptr).map(|n| n.is_zero()).unwrap_or(false),
             _ => false,
         }
     }
 
     pub(crate) fn pred_of_nat_succ(&mut self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
         match self.read_expr(e) {
-            App { fun, arg, .. } if fun == self.c_nat_succ() => Some(arg),
+            App { fun, arg, .. } if self.c_nat_succ() == Some(fun) => Some(arg),
             NatLit { ptr, .. } => {
-                let n = self.read_bignum(ptr);
-                if n > BigUint::zero() {
-                    Some(self.mk_nat_lit_quick(n - 1u8))
-                } else {
+                let n = self.read_bignum(ptr)?;
+                if n.is_zero() {
                     None
+                } else {
+                    self.mk_nat_lit_quick(n - 1u8)
                 }
             }
             _ => None,
@@ -515,16 +515,16 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// Used in iota reduction (`reduce_rec`) to turn a bignum
     /// either `Nat.zero`, or `App (Nat.succ) (bignum - 1)`; in order to do iota reduction,
     /// we need to know what constructor the major premise comes from.
-    pub(crate) fn nat_lit_to_constructor(&mut self, n: BigUintPtr<'t>) -> ExprPtr<'t> {
+    pub(crate) fn nat_lit_to_constructor(&mut self, n: BigUintPtr<'t>) -> Option<ExprPtr<'t>> {
         assert!(self.export_file.config.nat_extension);
-        let n = self.read_bignum(n);
+        let n = self.read_bignum(n).unwrap();
         if n.is_zero() {
             self.c_nat_zero()
         } else {
-            let pred = self.alloc_bignum(core::ops::Sub::sub(n, 1u8));
-            let pred = self.mk_nat_lit(pred);
-            let succ_c = self.c_nat_succ();
-            self.mk_app(succ_c, pred)
+            let pred = self.alloc_bignum(core::ops::Sub::sub(n, 1u8)).unwrap();
+            let pred = self.mk_nat_lit(pred).unwrap();
+            let succ_c = self.c_nat_succ()?;
+            Some(self.mk_app(succ_c, pred))
         }
     }
     
@@ -542,7 +542,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     /// Convert a string literal to `String.ofList <| List.cons (Char.ofNat _) .. List.nil`
     pub(crate) fn str_lit_to_constructor(&mut self, s: StringPtr<'t>) -> Option<ExprPtr<'t>> {
-        assert!(self.export_file.config.string_extension);
+        if (!self.export_file.config.string_extension) || (!self.export_file.config.nat_extension) {
+            return None
+        }
         let zero = self.zero();
         let empty_levels = self.alloc_levels_slice(&[]);
         let tyzero_levels = self.alloc_levels_slice(&[zero]);
@@ -562,8 +564,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         };
         let mut out = c_list_nil_char;
         for c in self.read_string(s).clone().chars().rev() {
-            let bignum = self.alloc_bignum(BigUint::from(c as u32));
-            let bignum = self.mk_nat_lit(bignum);
+            let bignum = self.alloc_bignum(BigUint::from(c as u32)).unwrap();
+            let bignum = self.mk_nat_lit(bignum).unwrap();
             // Char.ofNat (c as u32)
             let x = self.mk_app(c_char_of_nat, bignum);
             // List.cons (Char.ofNat u32)
@@ -578,9 +580,19 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// If `e` is a NatLit, or `Const Nat.zero []`, return the appropriate Bignum.
     pub(crate) fn get_bignum_from_expr(&mut self, e: ExprPtr<'t>) -> Option<BigUint> {
         if let NatLit { ptr, .. } = self.read_expr(e) {
-            Some(self.read_bignum(ptr))
-        } else if e == self.c_nat_zero() {
+            self.read_bignum(ptr).cloned()
+        } else if Some(e) == self.c_nat_zero() {
             Some(BigUint::zero())
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn get_bignum_succ_from_expr(&mut self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
+        if let NatLit { ptr, .. } = self.read_expr(e) {
+            self.mk_nat_lit_quick(self.read_bignum(ptr)? + 1usize)
+        } else if Some(e) == self.c_nat_zero() {
+            self.mk_nat_lit_quick(BigUint::zero() + 1usize)
         } else {
             None
         }
@@ -602,35 +614,35 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub(crate) fn c_bool_false(&mut self) -> Option<ExprPtr<'t>> {
-        let n = self.export_file.name_cache.bool_false.unwrap();
+        let n = self.export_file.name_cache.bool_false?;
         let levels = self.alloc_levels_slice(&[]);
         Some(self.mk_const(n, levels))
     }
 
-    pub(crate) fn c_nat_zero(&mut self) -> ExprPtr<'t> {
-        let n = self.export_file.name_cache.nat_zero.unwrap();
+    pub(crate) fn c_nat_zero(&mut self) -> Option<ExprPtr<'t>> {
+        let n = self.export_file.name_cache.nat_zero?;
         let levels = self.alloc_levels_slice(&[]);
-        self.mk_const(n, levels)
+        Some(self.mk_const(n, levels))
     }
 
-    pub(crate) fn c_nat_succ(&mut self) -> ExprPtr<'t> {
-        let n = self.export_file.name_cache.nat_succ.unwrap();
+    pub(crate) fn c_nat_succ(&mut self) -> Option<ExprPtr<'t>> {
+        let n = self.export_file.name_cache.nat_succ?;
         let levels = self.alloc_levels_slice(&[]);
-        self.mk_const(n, levels)
+        Some(self.mk_const(n, levels))
     }
 
     /// Make `Const("Nat", [])`
-    pub(crate) fn nat_type(&mut self) -> ExprPtr<'t> {
-        let n = self.export_file.name_cache.nat.unwrap();
+    pub(crate) fn nat_type(&mut self) -> Option<ExprPtr<'t>> {
+        let n = self.export_file.name_cache.nat?;
         let levels = self.alloc_levels_slice(&[]);
-        self.mk_const(n, levels)
+        Some(self.mk_const(n, levels))
     }
 
     /// Make `Const("String", [])`
-    pub(crate) fn string_type(&mut self) -> ExprPtr<'t> {
-        let n = self.export_file.name_cache.string.unwrap();
+    pub(crate) fn string_type(&mut self) -> Option<ExprPtr<'t>> {
+        let n = self.export_file.name_cache.string?;
         let levels = self.alloc_levels_slice(&[]);
-        self.mk_const(n, levels)
+        Some(self.mk_const(n, levels))
     }
 
     /// Abstract `e` with the binders in `binders`, creating a lambda

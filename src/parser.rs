@@ -406,7 +406,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
         Self {
             buf_reader,
             line_num: 0usize,
-            dag: LeanDag::new_parser(),
+            dag: LeanDag::new(&config),
             declars: new_fx_index_map(),
             notations: new_fx_hash_map(),
             config,
@@ -522,7 +522,12 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 assigned_idx.unwrap().assert_in(insert_result);
             }
             NatLit(big_uint) => {
-                let num_ptr = BigUintPtr::from(DagMarker::ExportFile, self.dag.bignums.insert_full(big_uint).0);
+                if !self.config.nat_extension {
+                    return Err(Box::<dyn Error>::from(
+                        format!("Nat lit extension disallowed by checker execution config, but export file contains a nat literal {:?}", line)
+                    ))
+                }
+                let num_ptr = BigUintPtr::from(DagMarker::ExportFile, self.dag.bignums.as_mut().unwrap().insert_full(big_uint).0);
                 let insert_result = {
                     let hash = hash64!(crate::expr::NAT_LIT_HASH, num_ptr);
                     self.dag.exprs.insert_full(Expr::NatLit { ptr: num_ptr, hash })
@@ -535,6 +540,11 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 assigned_idx.unwrap().assert_ie(insert_result);
             }
             StrLit(cow_str) => {
+                if !self.config.string_extension {
+                    return Err(Box::<dyn Error>::from(
+                        format!("String lit extension disallowed by checker execution config, but export file contains a string literal {:?}", line)
+                    ))
+                }
                 let s = cow_str.to_string();
                 let string_ptr = StringPtr::from(
                     DagMarker::ExportFile,
@@ -544,11 +554,6 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::expr::STRING_LIT_HASH, string_ptr);
                     self.dag.exprs.insert_full(Expr::StringLit { ptr: string_ptr, hash })
                 };
-                if !self.config.string_extension {
-                    return Err(Box::<dyn Error>::from(
-                        format!("String lit extension disallowed by checker execution config, found {:?}", line)
-                    ))
-                }
                 assigned_idx.unwrap().assert_ie(insert_result);
             }
             LevelSucc(l) => {

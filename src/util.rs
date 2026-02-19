@@ -218,7 +218,7 @@ impl<'p> ExportFile<'p> {
     pub fn with_ctx<F, A>(&self, f: F) -> A
     where
         F: FnOnce(&mut TcCtx<'_, 'p>) -> A, {
-        let mut dag = LeanDag::empty();
+        let mut dag = LeanDag::new(&self.config);
         let mut ctx = TcCtx::new(self, &mut dag);
         f(&mut ctx)
     }
@@ -226,7 +226,7 @@ impl<'p> ExportFile<'p> {
     pub fn with_tc<F, A>(&self, env_limit: EnvLimit, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
-        let mut dag = LeanDag::empty();
+        let mut dag = LeanDag::new(&self.config);
         let mut ctx = TcCtx::new(self, &mut dag);
         let env = self.new_env(env_limit);
         let mut tc = TypeChecker::new(&mut ctx, &env, None);
@@ -236,7 +236,7 @@ impl<'p> ExportFile<'p> {
     pub fn with_tc_and_declar<F, A>(&self, d: crate::env::DeclarInfo<'p>, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
-        let mut dag = LeanDag::empty();
+        let mut dag = LeanDag::new(&self.config);
         let mut ctx = TcCtx::new(self, &mut dag);
         let env = self.new_env(EnvLimit::ByName(d.name));
         let mut tc = TypeChecker::new(&mut ctx, &env, Some(d));
@@ -349,10 +349,10 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    pub fn read_bignum(&self, p: BigUintPtr<'t>) -> BigUint {
+    pub fn read_bignum(&self, p: BigUintPtr<'t>) -> Option<&BigUint> {
         match p.dag_marker() {
-            DagMarker::ExportFile => self.export_file.dag.bignums.get_index(p.idx()).cloned().unwrap(),
-            DagMarker::TcCtx => self.dag.bignums.get_index(p.idx()).cloned().unwrap(),
+            DagMarker::ExportFile => Some(self.export_file.dag.bignums.as_ref()?.get_index(p.idx()).unwrap()),
+            DagMarker::TcCtx => Some(self.dag.bignums.as_ref()?.get_index(p.idx()).unwrap()),
         }
     }
 
@@ -412,11 +412,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// element. Checks the longer-lived storage first.
     ///
     /// Used for Nat literals.
-    pub(crate) fn alloc_bignum(&mut self, n: BigUint) -> BigUintPtr<'t> {
-        if let Some(idx) = self.export_file.dag.bignums.get_index_of(&n) {
-            Ptr::from(DagMarker::ExportFile, idx)
+    pub(crate) fn alloc_bignum(&mut self, n: BigUint) -> Option<BigUintPtr<'t>> {
+        if let Some(idx) = self.export_file.dag.bignums.as_ref()?.get_index_of(&n) {
+            Some(Ptr::from(DagMarker::ExportFile, idx))
         } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.bignums.insert_full(n).0)
+            Some(Ptr::from(DagMarker::TcCtx, self.dag.bignums.as_mut()?.insert_full(n).0))
         }
     }
 
@@ -567,25 +567,34 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         self.alloc_expr(Expr::Proj { ty_name, idx, structure, num_loose_bvars, has_fvars, hash })
     }
 
-    pub fn mk_string_lit(&mut self, string_ptr: StringPtr<'t>) -> ExprPtr<'t> {
+    pub fn mk_string_lit(&mut self, string_ptr: StringPtr<'t>) -> Option<ExprPtr<'t>> {
+        if !self.export_file.config.string_extension {
+            return None
+        }
         let hash = hash64!(crate::expr::STRING_LIT_HASH, string_ptr);
-        self.alloc_expr(Expr::StringLit { ptr: string_ptr, hash })
+        Some(self.alloc_expr(Expr::StringLit { ptr: string_ptr, hash }))
     }
 
-    pub fn mk_string_lit_quick(&mut self, s: CowStr<'t>) -> ExprPtr<'t> {
+    pub fn mk_string_lit_quick(&mut self, s: CowStr<'t>) -> Option<ExprPtr<'t>> {
+        if !self.export_file.config.string_extension {
+            return None
+        }
         let string_ptr = self.alloc_string(s);
         self.mk_string_lit(string_ptr)
     }
 
-    pub fn mk_nat_lit(&mut self, num_ptr: BigUintPtr<'t>) -> ExprPtr<'t> {
+    pub fn mk_nat_lit(&mut self, num_ptr: BigUintPtr<'t>) -> Option<ExprPtr<'t>> {
+        if !self.export_file.config.nat_extension {
+            return None
+        }
         let hash = hash64!(crate::expr::NAT_LIT_HASH, num_ptr);
-        self.alloc_expr(Expr::NatLit { ptr: num_ptr, hash })
+        Some(self.alloc_expr(Expr::NatLit { ptr: num_ptr, hash }))
     }
 
     /// Shortcut to make an `Expr::NatLit` directly from a `BigUint`, rather than
     /// going `alloc_bignum` and `mk_nat_lit`
-    pub fn mk_nat_lit_quick(&mut self, n: BigUint) -> ExprPtr<'t> {
-        let num_ptr = self.alloc_bignum(n);
+    pub fn mk_nat_lit_quick(&mut self, n: BigUint) -> Option<ExprPtr<'t>> {
+        let num_ptr = self.alloc_bignum(n)?;
         self.mk_nat_lit(num_ptr)
     }
 
@@ -660,9 +669,9 @@ pub struct LeanDag<'a> {
     pub names: UniqueIndexSet<Name<'a>>,
     pub levels: UniqueIndexSet<Level<'a>>,
     pub exprs: UniqueIndexSet<Expr<'a>>,
-    pub strings: FxIndexSet<CowStr<'a>>,
     pub uparams: FxIndexSet<Arc<[LevelPtr<'a>]>>,
-    pub bignums: FxIndexSet<BigUint>,
+    pub strings: FxIndexSet<CowStr<'a>>,
+    pub bignums: Option<FxIndexSet<BigUint>>,
 }
 
 impl<'a> LeanDag<'a> {
@@ -672,22 +681,19 @@ impl<'a> LeanDag<'a> {
     ///
     /// So when creating a new parser, we need to begin by placing `Anon` and `Zero` in the 0th position
     /// of their backing storage, satisfying the exporter's assumption.
-    pub fn new_parser() -> Self {
-        let mut out = Self::empty();
-        let _ = out.names.insert(Name::Anon);
-        let _ = out.levels.insert(Level::Zero);
-        out
-    }
-
-    pub fn empty() -> Self {
-        Self {
+    pub fn new(config: &Config) -> Self {
+        let mut out = Self {
             names: new_unique_index_set(),
             levels: new_unique_index_set(),
             exprs: new_unique_index_set(),
-            strings: new_fx_index_set(),
             uparams: new_fx_index_set(),
-            bignums: new_fx_index_set(),
-        }
+            strings: new_fx_index_set(),
+            bignums: if config.nat_extension { Some(new_fx_index_set()) } else { None },
+        };
+
+        let _ = out.names.insert(Name::Anon);
+        let _ = out.levels.insert(Level::Zero);
+        out
     }
 
     /// Used for constructing the name cache;

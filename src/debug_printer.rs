@@ -168,7 +168,7 @@ impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, ExprPtr<'t>> {
             Proj { idx, structure, .. } => {
                 write!(f, "%({:?}).{}", self.ctx.debug_print(structure), idx)
             }
-            NatLit { ptr, .. } => write!(f, "NLit({})", self.ctx.read_bignum(ptr)),
+            NatLit { ptr, .. } => write!(f, "NLit({})", self.ctx.read_bignum(ptr).unwrap()),
             StringLit { ptr, .. } => write!(f, "SLit({})", self.ctx.read_string(ptr)),
         }
     }
@@ -186,7 +186,7 @@ impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::util::Strin
 }
 impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::util::BigUintPtr<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.ctx.read_bignum(self.elem_to_print))
+        write!(f, "{:?}", self.ctx.read_bignum(self.elem_to_print).unwrap())
     }
 }
 
