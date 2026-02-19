@@ -64,8 +64,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn mk_succ_app(&mut self, n: usize) -> ExprPtr<'t> {
-        let mut out = self.c_nat_zero();
-        let succ = self.c_nat_succ();
+        let mut out = self.c_nat_zero().unwrap();
+        let succ = self.c_nat_succ().unwrap();
         for _ in 0..n {
             out = self.mk_app(succ, out);
         }

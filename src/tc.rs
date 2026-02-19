@@ -341,7 +341,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         use NatBinOp::*;
         let (x, y) = (self.whnf(x), self.whnf(y));
         let (arg1, arg2) = (self.ctx.get_bignum_from_expr(x)?, self.ctx.get_bignum_from_expr(y)?);
-        Some(match op {
+        match op {
             Add => self.ctx.mk_nat_lit_quick(arg1 + arg2),
             Sub => self.ctx.mk_nat_lit_quick(nat_sub(arg1, arg2)),
             Mul => self.ctx.mk_nat_lit_quick(arg1 * arg2),
@@ -354,9 +354,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             XOr => self.ctx.mk_nat_lit_quick(nat_xor(&arg1, &arg2)),
             Shl => self.ctx.mk_nat_lit_quick(nat_shl(arg1, arg2)),
             Shr => self.ctx.mk_nat_lit_quick(nat_shr(arg1, arg2)),
-            Beq => self.ctx.bool_to_expr(arg1 == arg2)?,
-            Ble => self.ctx.bool_to_expr(arg1 <= arg2)?,
-        })
+            Beq => self.ctx.bool_to_expr(arg1 == arg2),
+            Ble => self.ctx.bool_to_expr(arg1 <= arg2),
+        }
     }
     
     /// Try to reduce an expression `e` which is an application of `Nat.succ`,
@@ -373,9 +373,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let out = match (self.ctx.read_expr(f), args.as_slice()) {
             (Const { name, .. }, [arg]) if Some(name) == self.ctx.export_file.name_cache.nat_succ => {
                 let v_expr = self.whnf(*arg);
-                let v_biguint = self.ctx.get_bignum_from_expr(v_expr)?;
-                let bignum = self.ctx.mk_nat_lit_quick(v_biguint + 1usize);
-                Some(bignum)
+                self.ctx.get_bignum_succ_from_expr(v_expr)
             }
             (Const { name, .. }, [arg1, arg2]) => {
                 let op = if Some(name) == self.ctx.export_file.name_cache.nat_add {
@@ -499,11 +497,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             Proj { ty_name, idx, structure, .. } => self.infer_proj(ty_name, idx, structure),
             NatLit { .. } => {
                 assert!(self.ctx.export_file.config.nat_extension);
-                self.ctx.nat_type()
+                self.ctx.nat_type().unwrap()
             }
             StringLit { .. } => {
                 assert!(self.ctx.export_file.config.string_extension);
-                self.ctx.string_type()
+                self.ctx.string_type().unwrap()
             }
         };
         match flag {
@@ -819,6 +817,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             return Some(true)
         }
         if let (NatLit { .. }, NatLit { .. }) = (self.ctx.read_expr(x), self.ctx.read_expr(y)) {
+            assert!(self.ctx.export_file.config.nat_extension);
             return Some(x == y)
         }
         if let (Some(x_pred), Some(y_pred)) = (self.ctx.pred_of_nat_succ(x), self.ctx.pred_of_nat_succ(y)) {
@@ -1045,7 +1044,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let major = self.to_ctor_when_k(major, rec).unwrap_or(major);
         let major = self.whnf(major);
         let major = match self.ctx.read_expr(major) {
-            NatLit { ptr, .. } => self.ctx.nat_lit_to_constructor(ptr),
+            NatLit { ptr, .. } => self.ctx.nat_lit_to_constructor(ptr).unwrap_or(major),
             StringLit { ptr, .. } => self.str_lit_to_ctor_reducing(ptr).unwrap_or(major),
             _ => {
                 let ind_rec_name_prefix = self.ctx.get_major_induct(rec).unwrap();

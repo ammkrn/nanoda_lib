@@ -758,7 +758,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
                         .concat(DocPtr::from((idx + 1).to_string()))
                         .as_unparenable()
                 }
-                NatLit { ptr, .. } => DocPtr::from(self.ctx.read_bignum(ptr).to_string()).as_unparenable(),
+                NatLit { ptr, .. } => DocPtr::from(self.ctx.read_bignum(ptr).unwrap().to_string()).as_unparenable(),
                 StringLit { ptr, .. } => {
                     DocPtr::from("\"")
                     .concat(DocPtr::from(self.ctx.read_string(ptr).as_ref()))

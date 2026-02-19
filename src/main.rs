@@ -44,6 +44,8 @@ fn use_config(config_path: &Path) -> Result<Option<String>, Box<dyn Error>> {
                 pp_errs
             )))
         }
+    } else if skipped_axioms.is_empty() {
+        Ok(None)
     } else {
         Ok(Some(format!("Skipped exported but unpermitted axioms {:?}", skipped_axioms)))
     }
