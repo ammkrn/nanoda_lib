@@ -728,6 +728,13 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         if ctor_apps.len() != (st.local_params.len() + ind_name_num_indices) {
             return false
         }
+        // Require that no args in an index position have an instance of an inductive
+        // currently being declared.
+        for index_app in &ctor_apps[st.local_params.len()..] {
+            if self.has_ind_occ(*index_app, &st.ind_consts) {
+                return false
+            }
+        }
         ctor_app_params_ok(ctor_apps.as_slice(), st.local_params.as_slice())
     }
 

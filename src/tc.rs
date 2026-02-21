@@ -457,9 +457,16 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         for i in 0..idx {
             ctor_ty = self.whnf(ctor_ty);
             match self.ctx.read_expr(ctor_ty) {
-                Pi { body, .. } => {
-                    let arg = self.ctx.mk_proj(inductive_info.name, i, structure);
-                    ctor_ty = self.ctx.inst(body, &[arg]);
+                Pi { binder_type, body, .. } => {
+                    if self.ctx.num_loose_bvars(body) != 0 {
+                      if structure_ty_is_prop && !self.is_proposition(binder_type).0 {
+                          panic!("infer_proj prop")
+                      }
+                      let arg = self.ctx.mk_proj(inductive_info.name, i, structure);
+                      ctor_ty = self.ctx.inst(body, &[arg]);
+                    } else {
+                      ctor_ty = body;
+                    }
                 }
                 _ => panic!("Ran out of constructor telescope"),
             }
