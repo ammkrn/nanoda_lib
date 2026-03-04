@@ -37,6 +37,23 @@ fn leq_test2() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn leq_test_imax_imax() -> Result<(), Box<dyn Error>> {
+    test_ctx(None, |ctx| {
+        let a = ctx.param_quick("a");
+        let b = ctx.param_quick("b");
+        let imax_a_b = ctx.imax(a, b);
+        let s_imax_a_b = ctx.succ(imax_a_b);
+        let ss_imax_a_b = ctx.succ(s_imax_a_b);
+        assert!(ctx.leq(imax_a_b, imax_a_b));
+        assert!(ctx.leq(imax_a_b, s_imax_a_b));
+        assert!(ctx.leq(imax_a_b, ss_imax_a_b));
+        assert!(ctx.leq(s_imax_a_b, ss_imax_a_b));
+        assert!(!ctx.leq(ss_imax_a_b, imax_a_b));
+        assert!(!ctx.leq(ss_imax_a_b, s_imax_a_b));
+    })
+}
+
+#[test]
 fn leq_test3() -> Result<(), Box<dyn Error>> {
     test_ctx(None, |ctx| {
         let a = ctx.param_quick("a");

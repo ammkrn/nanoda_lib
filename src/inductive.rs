@@ -1213,6 +1213,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         imported_rr: &RecRule<'t>,
         constructed_rr: &RecRule<'t>,
     ) {
+        assert!(!std::ptr::eq(imported_rr, constructed_rr));
+        // Should be structurally != because they come from different envs.
+        assert_ne!(imported_rr, constructed_rr);
         assert!(!st.is_nested());
         self.tc_cache.clear();
         assert_eq!(imported_rr.ctor_name, constructed_rr.ctor_name);
@@ -1224,18 +1227,22 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn assert_nonnested_recursors_def_eq(&mut self, st: &InductiveCheckState<'t>, recursors: &Vec<Declar<'t>>) {
         assert!(!st.is_nested());
         for new_rec in recursors {
-            match self.env.get_old_declar(&new_rec.info().name) {
-                Some(reference @ Declar::Recursor(RecursorData { info, rec_rules, .. })) => {
-                    let rec_ty = self.ctx.subst_expr_levels(info.ty, st.rec_uparams.unwrap(), reference.info().uparams);
-                    assert_eq!(rec_rules.len(), rec_rules.len());
-                    for (r_old, r_new) in rec_rules.iter().zip(rec_rules.iter()) {
-                        self.assert_nonnested_rec_rule_def_eq(st, reference.info().uparams, r_old, r_new)
-                    }
+            match (self.env.get_old_declar(&new_rec.info().name), new_rec) {
+                (
+                    Some(old @ Declar::Recursor(RecursorData { rec_rules: old_rec_rules, .. })),
+                    new @ Declar::Recursor(RecursorData { rec_rules: new_rec_rules, .. })
+                ) => {
                     self.tc_cache.clear();
-                    self.assert_def_eq(reference.info().ty, rec_ty);
+                    assert!(!std::ptr::eq(old, new));
+                    // Should be structurally != because they come from different envs.
+                    assert_ne!(old, new);
+                    self.assert_def_eq(old.info().ty, new.info().ty);
+                    assert_eq!(old_rec_rules.len(), new_rec_rules.len());
+                    for (r_old, r_new) in old_rec_rules.iter().zip(new_rec_rules.iter()) {
+                        self.assert_nonnested_rec_rule_def_eq(st, old.info().uparams, r_old, r_new)
+                    }
                 }
-                #[allow(clippy::needless_return)]
-                _ => return,
+                _ => panic!("Expected (Declar::Recursor, Declar::Recursor)"),
             };
         }
     }

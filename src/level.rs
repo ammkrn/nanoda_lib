@@ -185,7 +185,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             (Max(a, b, ..), _) => self.leq_core(a, r_in, diff) && self.leq_core(b, r_in, diff),
             (Param(..), Max(x, y, ..)) => self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff),
             (Zero, Max(x, y, ..)) => self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff),
-            (IMax(a, b, ..), IMax(x, y, ..)) if (a == x) && (b == y) => true,
+            (IMax(a, b, ..), IMax(x, y, ..)) if (a == x) && (b == y) && diff >= 0 => true,
             (IMax(_, b, _), _) if self.is_param(b) => self.leq_imax_by_cases(b, l_in, r_in, diff),
 
             (_, IMax(_, y, _)) if self.is_param(y) => self.leq_imax_by_cases(y, l_in, r_in, diff),

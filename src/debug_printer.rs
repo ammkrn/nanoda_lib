@@ -176,7 +176,7 @@ impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, ExprPtr<'t>> {
 
 impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::util::LevelsPtr<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.ctx.read_levels(self.elem_to_print))
+        write!(f, "{:?}", self.ctx.debug_print(self.ctx.read_levels(self.elem_to_print).as_ref()))
     }
 }
 impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::util::StringPtr<'t>> {
