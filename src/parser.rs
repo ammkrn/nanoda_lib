@@ -440,6 +440,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn get_names(&self, idxs: &[u32]) -> Vec<NamePtr<'a>> {
         let mut names = Vec::new();
         for idx in idxs.iter().copied() {
+            assert!(self.dag.names.get_index(idx as usize).is_some());
             names.push(NamePtr::from(DagMarker::ExportFile, idx as usize));
         }
         names

@@ -379,6 +379,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             return cached
         }
         self.expr_cache.subst_cache.clear();
+        assert_eq!(self.read_levels(ks).len(), self.read_levels(vs).len());
         let out = self.subst_aux(e, ks, vs);
         self.expr_cache.dsubst_cache.insert((e, ks, vs), out);
         out

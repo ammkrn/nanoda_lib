@@ -1086,10 +1086,13 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         } else {
             return None
         };
-        match self.ctx.read_expr(self.ctx.unfold_apps_fun(qmk)) {
-            Const { name, .. } if name == self.ctx.export_file.name_cache.quot_mk? => (),
-            _ => return None,
-        };
+        {
+            let (qmk_const, qmk_args) = self.ctx.unfold_apps(qmk);
+            match self.ctx.read_expr(qmk_const) {
+                Const { name, .. } if name == self.ctx.export_file.name_cache.quot_mk? && qmk_args.len() == 3 => (),
+                _ => return None,
+            };
+        }
         let f = args.get(3).copied()?;
         let appd = match self.ctx.read_expr(qmk) {
             App { arg, .. } => self.ctx.mk_app(f, arg),
