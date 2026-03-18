@@ -282,8 +282,15 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             *cached
         } else {
             let calcd = match self.read_expr(e) {
-                Local { .. } =>
-                    locals.iter().rev().position(|x| *x == e).map(|pos| self.mk_var(pos as u16 + offset)).unwrap_or(e),
+                Local { .. } => locals
+                    .iter()
+                    .rev()
+                    .position(|x| *x == e)
+                    .map(|pos| {
+                        let idx = u16::try_from(pos).unwrap() + offset;
+                        self.mk_var(idx)
+                    })
+                    .unwrap_or(e),
                 App { fun, arg, .. } => {
                     let fun = self.abstr_aux(fun, locals, offset);
                     let arg = self.abstr_aux(arg, locals, offset);

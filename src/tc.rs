@@ -861,7 +861,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 x = body1;
                 y = body2;
             } else {
-                self.ctx.dbj_level_counter -= (locals.len() as u16);
+                let local_levels = u16::try_from(locals.len()).unwrap();
+                self.ctx.dbj_level_counter -= local_levels;
                 return Some(false)
             }
         }
@@ -869,7 +870,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let x = self.ctx.inst(x, locals.as_slice());
         let y = self.ctx.inst(y, locals.as_slice());
         let r = self.def_eq(x, y);
-        self.ctx.dbj_level_counter -= (locals.len() as u16);
+        let local_levels = u16::try_from(locals.len()).unwrap();
+        self.ctx.dbj_level_counter -= local_levels;
         Some(r)
     }
 

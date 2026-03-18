@@ -966,7 +966,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn mk_motive_dep(&mut self, st: &InductiveCheckState<'t>, major: ExprPtr<'t>, ind_type_idx: u64) -> ExprPtr<'t> {
         let elim_sort = self.ctx.mk_sort(st.elim_level.unwrap());
         let w_major = self.ctx.abstr_pi(major, elim_sort);
-        let motive_type = self.ctx.abstr_pi_telescope(&st.local_indices[ind_type_idx as usize], w_major);
+        let local_idx = usize::try_from(ind_type_idx).unwrap();
+        let motive_type = self.ctx.abstr_pi_telescope(&st.local_indices[local_idx], w_major);
         let motive_name_base = self.ctx.str1("motive");
         let motive_name = if st.all_inductives_incl_specialized.len() > 1 {
             // Lean uses 1-based indexing for these, so we try to match for the pretty printer output.
