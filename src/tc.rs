@@ -598,7 +598,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn infer_lambda(&mut self, mut e: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
         let mut locals = Vec::new();
         let start_pos = self.ctx.dbj_level_counter;
-        while let Lambda { binder_name, binder_style, binder_type, body, .. } = self.ctx.read_expr(e) {
+        while let Lambda { binder_name, binder_type, body, meta, .. } = self.ctx.read_expr(e) {
+            let binder_style = crate::expr::meta_binder_style(meta);
             let binder_type = self.ctx.inst(binder_type, locals.as_slice());
             if let Check = flag {
                 self.infer_sort_of(binder_type, flag);
@@ -629,7 +630,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut universes = Vec::new();
         let mut locals = Vec::new();
         let c0 = self.ctx.dbj_level_counter;
-        while let Pi { binder_name, binder_style, binder_type, body, .. } = self.ctx.read_expr(e) {
+        while let Pi { binder_name, binder_type, body, meta, .. } = self.ctx.read_expr(e) {
+            let binder_style = crate::expr::meta_binder_style(meta);
             let binder_type = self.ctx.inst(binder_type, locals.as_slice());
             let dom_univ = self.infer_sort_of(binder_type, flag);
             universes.push(dom_univ);
@@ -687,7 +689,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 let arg = self.strong_reduce(arg, reduce_types, reduce_proofs);
                 self.ctx.mk_app(f, arg)
             }
-            Expr::Lambda {binder_name, binder_style, binder_type, body, ..} => {
+            Expr::Lambda {binder_name, binder_type, body, meta, ..} => {
+                let binder_style = crate::expr::meta_binder_style(meta);
                 let start_pos = self.ctx.dbj_level_counter;
                 let local = self.ctx.mk_dbj_level(binder_name, binder_style, binder_type);
                 let instd = self.ctx.inst(body, &[local]);
@@ -702,7 +705,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     _ => panic!()
                 }
             }
-            Expr::Pi {binder_name, binder_style, binder_type, body, ..} => {
+            Expr::Pi {binder_name, binder_type, body, meta, ..} => {
+                let binder_style = crate::expr::meta_binder_style(meta);
                 let start_pos = self.ctx.dbj_level_counter;
                 let local = self.ctx.mk_dbj_level(binder_name, binder_style, binder_type);
                 let instd = self.ctx.inst(body, &[local]);
@@ -846,14 +850,15 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn def_eq_binder_aux(&mut self, mut x: ExprPtr<'t>, mut y: ExprPtr<'t>) -> Option<bool> {
         let mut locals = Vec::new();
         while let (
-            Pi { binder_name, binder_style, binder_type: t1, body: body1, .. },
+            Pi { binder_name, binder_type: t1, body: body1, meta, .. },
             Pi { binder_type: t2, body: body2, .. },
         )
         | (
-            Lambda { binder_name, binder_style, binder_type: t1, body: body1, .. },
+            Lambda { binder_name, binder_type: t1, body: body1, meta, .. },
             Lambda { binder_type: t2, body: body2, .. },
         ) = self.ctx.read_expr_pair(x, y)
         {
+            let binder_style = crate::expr::meta_binder_style(meta);
             let t1 = self.ctx.inst(t1, locals.as_slice());
             let t2 = self.ctx.inst(t2, locals.as_slice());
             if self.def_eq(t1, t2) {
@@ -1316,7 +1321,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn try_eta_expansion_aux(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
         if let Lambda { .. } = self.ctx.read_expr(x) {
             let y_ty = self.infer_then_whnf(y, InferOnly);
-            if let Pi { binder_name, binder_type, binder_style, .. } = self.ctx.read_expr(y_ty) {
+            if let Pi { binder_name, binder_type, meta, .. } = self.ctx.read_expr(y_ty) {
+                let binder_style = crate::expr::meta_binder_style(meta);
                 let v0 = self.ctx.mk_var(0);
                 let new_body = self.ctx.mk_app(y, v0);
                 let new_lambda = self.ctx.mk_lambda(binder_name, binder_style, binder_type, new_body);

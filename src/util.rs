@@ -530,7 +530,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         let hash = hash64!(crate::expr::APP_HASH, fun, arg);
         let num_loose_bvars = self.num_loose_bvars(fun).max(self.num_loose_bvars(arg));
         let has_fvars = self.has_fvars(fun) || self.has_fvars(arg);
-        self.alloc_expr(Expr::App { fun, arg, num_loose_bvars, has_fvars, hash })
+        let meta = crate::expr::pack_meta_no_binder(num_loose_bvars, has_fvars);
+        self.alloc_expr(Expr::App { fun, arg, meta, hash })
     }
 
     pub fn mk_lambda(
@@ -543,7 +544,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         let hash = hash64!(crate::expr::LAMBDA_HASH, binder_name, binder_style, binder_type, body);
         let num_loose_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
         let has_fvars = self.has_fvars(binder_type) || self.has_fvars(body);
-        self.alloc_expr(Expr::Lambda { binder_name, binder_style, binder_type, body, num_loose_bvars, has_fvars, hash })
+        let meta = crate::expr::pack_meta(num_loose_bvars, has_fvars, binder_style);
+        self.alloc_expr(Expr::Lambda { binder_name, binder_type, body, meta, hash })
     }
 
     pub fn mk_pi(
@@ -556,7 +558,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         let hash = hash64!(crate::expr::PI_HASH, binder_name, binder_style, binder_type, body);
         let num_loose_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
         let has_fvars = self.has_fvars(binder_type) || self.has_fvars(body);
-        self.alloc_expr(Expr::Pi { binder_name, binder_style, binder_type, body, num_loose_bvars, has_fvars, hash })
+        let meta = crate::expr::pack_meta(num_loose_bvars, has_fvars, binder_style);
+        self.alloc_expr(Expr::Pi { binder_name, binder_type, body, meta, hash })
     }
 
     pub fn mk_let(
@@ -572,14 +575,16 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             .num_loose_bvars(binder_type)
             .max(self.num_loose_bvars(val).max(self.num_loose_bvars(body).saturating_sub(1)));
         let has_fvars = self.has_fvars(binder_type) || self.has_fvars(val) || self.has_fvars(body);
-        self.alloc_expr(Expr::Let { binder_name, binder_type, val, body, num_loose_bvars, has_fvars, hash, nondep })
+        let meta = crate::expr::pack_meta_no_binder(num_loose_bvars, has_fvars);
+        self.alloc_expr(Expr::Let { binder_name, binder_type, val, body, meta, hash, nondep })
     }
 
     pub fn mk_proj(&mut self, ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>) -> ExprPtr<'t> {
         let hash = hash64!(crate::expr::PROJ_HASH, ty_name, idx, structure);
         let num_loose_bvars = self.num_loose_bvars(structure);
         let has_fvars = self.has_fvars(structure);
-        self.alloc_expr(Expr::Proj { ty_name, idx, structure, num_loose_bvars, has_fvars, hash })
+        let meta = crate::expr::pack_meta_no_binder(num_loose_bvars, has_fvars);
+        self.alloc_expr(Expr::Proj { ty_name, idx, structure, meta, hash })
     }
 
     pub fn mk_string_lit(&mut self, string_ptr: StringPtr<'t>) -> Option<ExprPtr<'t>> {

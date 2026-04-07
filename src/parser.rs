@@ -618,7 +618,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::expr::APP_HASH, fun, arg);
                     let num_bvars = self.num_loose_bvars(fun).max(self.num_loose_bvars(arg));
                     let locals = self.has_fvars(fun) || self.has_fvars(arg);
-                    self.dag.exprs.insert_full(Expr::App { fun, arg, num_loose_bvars: num_bvars, has_fvars: locals, hash })
+                    let meta = crate::expr::pack_meta_no_binder(num_bvars, locals);
+                    self.dag.exprs.insert_full(Expr::App { fun, arg, meta, hash })
                 };
                 assigned_idx.unwrap().assert_ie(insert_result);
             }
@@ -637,13 +638,12 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::expr::LAMBDA_HASH, binder_name, binder_info, binder_type, body);
                     let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
                     let locals = self.has_fvars(binder_type) || self.has_fvars(body);
+                    let meta = crate::expr::pack_meta(num_bvars, locals, binder_info);
                     self.dag.exprs.insert_full(Expr::Lambda {
                         binder_name,
-                        binder_style: binder_info,
                         binder_type,
                         body,
-                        num_loose_bvars: num_bvars,
-                        has_fvars: locals,
+                        meta,
                         hash,
                     })
                 };
@@ -657,13 +657,12 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::expr::PI_HASH, binder_name, binder_info, binder_type, body);
                     let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
                     let locals = self.has_fvars(binder_type) || self.has_fvars(body);
+                    let meta = crate::expr::pack_meta(num_bvars, locals, binder_info);
                     self.dag.exprs.insert_full(Expr::Pi {
                         binder_name,
-                        binder_style: binder_info,
                         binder_type,
                         body,
-                        num_loose_bvars: num_bvars,
-                        has_fvars: locals,
+                        meta,
                         hash,
                     })
                 };
@@ -680,13 +679,13 @@ impl<'a, R: BufRead> Parser<'a, R> {
                         .num_loose_bvars(binder_type)
                         .max(self.num_loose_bvars(val).max(self.num_loose_bvars(body).saturating_sub(1)));
                     let locals = self.has_fvars(binder_type) || self.has_fvars(val) || self.has_fvars(body);
+                    let meta = crate::expr::pack_meta_no_binder(num_bvars, locals);
                     self.dag.exprs.insert_full(Expr::Let {
                         binder_name,
                         binder_type,
                         val,
                         body,
-                        num_loose_bvars: num_bvars,
-                        has_fvars: locals,
+                        meta,
                         hash,
                         nondep
                     })
@@ -700,12 +699,12 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::expr::PROJ_HASH, ty_name, idx, structure);
                     let num_bvars = self.num_loose_bvars(structure);
                     let locals = self.has_fvars(structure);
+                    let meta = crate::expr::pack_meta_no_binder(num_bvars, locals);
                     self.dag.exprs.insert_full(Expr::Proj {
                         ty_name,
                         idx,
                         structure,
-                        num_loose_bvars: num_bvars,
-                        has_fvars: locals,
+                        meta,
                         hash,
                     })
                 };
