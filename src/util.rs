@@ -94,8 +94,7 @@ pub(crate) fn new_fx_hash_map<K, V>() -> FxHashMap<K, V> { FxHashMap::with_hashe
 
 pub(crate) fn new_fx_hash_set<K>() -> FxHashSet<K> { FxHashSet::with_hasher(Default::default()) }
 
-pub(crate) fn new_fx_index_set<K>() -> FxIndexSet<K> { FxIndexSet::with_hasher(Default::default()) }
-pub(crate) fn new_unique_index_set<K>() -> UniqueIndexSet<K> { UniqueIndexSet::with_hasher(Default::default()) }
+
 
 pub(crate) fn new_unique_hash_map<K, V>() -> UniqueHashMap<K, V> { UniqueHashMap::with_hasher(Default::default()) }
 
@@ -218,10 +217,21 @@ pub struct ExportFile<'p> {
 impl<'p> ExportFile<'p> {
     pub fn new_env(&self, env_limit: EnvLimit<'p>) -> Env<'_, '_> { Env::new(&self.declars, &self.notations, env_limit) }
 
+    /// Sizing hints for temporary DAGs, derived from the export file's own DAG.
+    /// A single declaration's working set is typically much smaller than the full export.
+    fn dag_hints(&self) -> (usize, usize, usize) {
+        (
+            self.dag.names.len() / 4,
+            self.dag.levels.len() / 4,
+            self.dag.exprs.len() / 4,
+        )
+    }
+
     pub fn with_ctx<F, A>(&self, f: F) -> A
     where
         F: FnOnce(&mut TcCtx<'_, 'p>) -> A, {
-        let mut dag = LeanDag::new(&self.config);
+        let (nh, lh, eh) = self.dag_hints();
+        let mut dag = LeanDag::new_presized(&self.config, nh, lh, eh);
         let mut ctx = TcCtx::new(self, &mut dag);
         f(&mut ctx)
     }
@@ -229,7 +239,8 @@ impl<'p> ExportFile<'p> {
     pub fn with_tc<F, A>(&self, env_limit: EnvLimit, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
-        let mut dag = LeanDag::new(&self.config);
+        let (nh, lh, eh) = self.dag_hints();
+        let mut dag = LeanDag::new_presized(&self.config, nh, lh, eh);
         let mut ctx = TcCtx::new(self, &mut dag);
         let env = self.new_env(env_limit);
         let mut tc = TypeChecker::new(&mut ctx, &env, None);
@@ -239,7 +250,8 @@ impl<'p> ExportFile<'p> {
     pub fn with_tc_and_declar<F, A>(&self, d: crate::env::DeclarInfo<'p>, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
-        let mut dag = LeanDag::new(&self.config);
+        let (nh, lh, eh) = self.dag_hints();
+        let mut dag = LeanDag::new_presized(&self.config, nh, lh, eh);
         let mut ctx = TcCtx::new(self, &mut dag);
         let env = self.new_env(EnvLimit::ByName(d.name));
         let mut tc = TypeChecker::new(&mut ctx, &env, Some(d));
@@ -685,13 +697,19 @@ impl<'a> LeanDag<'a> {
     /// So when creating a new parser, we need to begin by placing `Anon` and `Zero` in the 0th position
     /// of their backing storage, satisfying the exporter's assumption.
     pub fn new(config: &Config) -> Self {
+        Self::new_presized(config, 0, 0, 0)
+    }
+
+    /// Create a LeanDag with pre-sized IndexSets to avoid repeated rehashing.
+    /// The hints are target capacities for names, levels, and exprs respectively.
+    pub fn new_presized(config: &Config, name_hint: usize, level_hint: usize, expr_hint: usize) -> Self {
         let mut out = Self {
-            names: new_unique_index_set(),
-            levels: new_unique_index_set(),
-            exprs: new_unique_index_set(),
-            uparams: new_fx_index_set(),
-            strings: new_fx_index_set(),
-            bignums: if config.nat_extension { Some(new_fx_index_set()) } else { None },
+            names: UniqueIndexSet::with_capacity_and_hasher(name_hint, Default::default()),
+            levels: UniqueIndexSet::with_capacity_and_hasher(level_hint, Default::default()),
+            exprs: UniqueIndexSet::with_capacity_and_hasher(expr_hint, Default::default()),
+            uparams: FxIndexSet::with_capacity_and_hasher(16, Default::default()),
+            strings: FxIndexSet::with_capacity_and_hasher(16, Default::default()),
+            bignums: if config.nat_extension { Some(FxIndexSet::with_capacity_and_hasher(16, Default::default())) } else { None },
         };
 
         let _ = out.names.insert(Name::Anon);
