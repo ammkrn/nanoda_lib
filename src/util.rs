@@ -36,39 +36,42 @@ pub(crate) type UniqueHashMap<K, V> = HashMap<K, V, BuildHasherDefault<UniqueHas
 /// An integer pointer to a kernel item, which can be in either the export file's
 /// persistent dag, or the type checking context's temporary dag. The integer pointer
 /// is currently 32 bits, which comfortably accommodates mathlib.
+///
+/// Bit 31 encodes the DagMarker (0 = ExportFile, 1 = TcCtx).
+/// Bits 0-30 hold the index into the appropriate dag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(packed)]
 pub struct Ptr<A> {
-    /// The index in the appropriate dag at which this element sits.
-    pub(crate) idx: u32,
-    /// The dag this pointer points to; the persistent dag in the export file,
-    /// or the temporary dag in the type checker context.
-    pub(crate) dag_marker: DagMarker,
-    pub(crate) ph: PhantomData<A>,
+    raw: u32,
+    ph: PhantomData<A>,
 }
 
-const HIGH_MASK: u64 = 1 << 63;
+/// Bit 31 set indicates TcCtx; cleared indicates ExportFile.
+const TC_BIT: u32 = 1 << 31;
+/// Mask for the 31-bit index stored in bits 0-30.
+const IDX_MASK: u32 = !TC_BIT;
 
 impl<A> Ptr<A> {
     pub(crate) fn from(dag_marker: DagMarker, idx: usize) -> Self {
-        Self { idx: u32::try_from(idx).unwrap(), dag_marker, ph: PhantomData }
+        let idx_u32 = u32::try_from(idx).unwrap();
+        assert!(idx_u32 & TC_BIT == 0, "index {idx} exceeds 31-bit capacity");
+        let tag = match dag_marker {
+            DagMarker::ExportFile => 0,
+            DagMarker::TcCtx => TC_BIT,
+        };
+        Self { raw: tag | idx_u32, ph: PhantomData }
     }
 
-    pub(crate) fn idx(&self) -> usize { self.idx as usize }
+    pub(crate) fn idx(&self) -> usize { (self.raw & IDX_MASK) as usize }
 
-    pub(crate) fn dag_marker(&self) -> DagMarker { self.dag_marker }
-
-    pub(crate) fn get_hash(&self) -> u64 {
-        if self.dag_marker == DagMarker::ExportFile {
-            self.idx as u64
-        } else {
-            HIGH_MASK | (self.idx as u64)
-        }
+    pub(crate) fn dag_marker(&self) -> DagMarker {
+        if self.raw & TC_BIT == 0 { DagMarker::ExportFile } else { DagMarker::TcCtx }
     }
+
+    pub(crate) fn get_hash(&self) -> u64 { self.raw as u64 }
 }
 
 impl<A> std::hash::Hash for Ptr<A> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { state.write_u64(self.get_hash()) }
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { state.write_u64(self.raw as u64) }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
