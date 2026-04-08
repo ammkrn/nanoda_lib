@@ -22,6 +22,7 @@ rand = "0.8.5"
 num-bigint = { version = "0.4.4", features = ["rand", "serde"] }
 
 [dependencies]
+hashbrown = "0.16"
 indexmap = "2.13.0"
 rustc-hash = "1.1.0"
 num-bigint = { version = "0.4.4", features = ["serde"] }
@@ -35,4 +36,3 @@ serde = { version = "1.0.228", features = ["derive"] }
 [[bin]]
 name = "nanoda_bin"
 path = "src/main.rs"
-bench = false

@@ -7,6 +7,7 @@ use crate::tc::TypeChecker;
 use crate::union_find::UnionFind;
 use crate::unique_hasher::UniqueHasher;
 use indexmap::{IndexMap, IndexSet};
+use hashbrown::HashTable;
 use num_bigint::BigUint;
 use num_traits::{ Pow, identities::Zero };
 use num_integer::Integer;
@@ -27,6 +28,58 @@ use serde::Deserialize;
 pub(crate) const fn default_true() -> bool { true }
 
 pub(crate) type UniqueIndexSet<A> = IndexSet<A, BuildHasherDefault<UniqueHasher>>;
+
+/// A deduplicating vector backed by hashbrown::HashTable for O(1) lookup.
+/// Items stored in a dense Vec, HashTable stores indices with pre-computed hashes.
+pub struct DedupVec<T: Eq + std::hash::Hash> {
+    items: Vec<T>,
+    table: HashTable<u32>,
+}
+
+impl<T: Eq + std::hash::Hash + std::fmt::Debug> std::fmt::Debug for DedupVec<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.items.iter()).finish()
+    }
+}
+
+impl<T: Eq + std::hash::Hash> DedupVec<T> {
+    pub fn new() -> Self { Self { items: Vec::new(), table: HashTable::new() } }
+    pub fn with_capacity(cap: usize) -> Self {
+        Self { items: Vec::with_capacity(cap), table: HashTable::with_capacity(cap) }
+    }
+    pub fn len(&self) -> usize { self.items.len() }
+    pub fn get_index(&self, idx: usize) -> Option<&T> { self.items.get(idx) }
+    pub fn get_index_of_prehashed(&self, hash: u64, item: &T) -> Option<usize> {
+        self.table.find(hash, |&idx| self.items[idx as usize] == *item).map(|&idx| idx as usize)
+    }
+    pub fn insert_prehashed(&mut self, hash: u64, item: T) -> (usize, bool) {
+        if let Some(&idx) = self.table.find(hash, |&idx| self.items[idx as usize] == item) {
+            return (idx as usize, false);
+        }
+        let idx = self.items.len() as u32;
+        self.items.push(item);
+        self.table.insert_unique(hash, idx, |&existing_idx| {
+            let existing = &self.items[existing_idx as usize];
+            let mut hasher = crate::unique_hasher::UniqueHasher::new();
+            std::hash::Hash::hash(existing, &mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        });
+        (idx as usize, true)
+    }
+    pub fn insert_full(&mut self, item: T) -> (usize, bool) {
+        let mut hasher = crate::unique_hasher::UniqueHasher::new();
+        std::hash::Hash::hash(&item, &mut hasher);
+        let hash = std::hash::Hasher::finish(&hasher);
+        self.insert_prehashed(hash, item)
+    }
+    pub fn get_index_of(&self, item: &T) -> Option<usize> {
+        let mut hasher = crate::unique_hasher::UniqueHasher::new();
+        std::hash::Hash::hash(item, &mut hasher);
+        let hash = std::hash::Hasher::finish(&hasher);
+        self.get_index_of_prehashed(hash, item)
+    }
+}
+
 pub(crate) type FxIndexSet<A> = IndexSet<A, BuildHasherDefault<FxHasher>>;
 pub(crate) type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
 pub(crate) type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
@@ -382,10 +435,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// already stored, forego the allocation and return a pointer to the previously inserted
     /// element. Checks the longer-lived storage first.
     pub fn alloc_name(&mut self, n: Name<'t>) -> NamePtr<'t> {
-        if let Some(idx) = self.export_file.dag.names.get_index_of(&n) {
+        let hash = n.get_hash();
+        if let Some(idx) = self.export_file.dag.names.get_index_of_prehashed(hash, &n) {
             Ptr::from(DagMarker::ExportFile, idx)
         } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.names.insert_full(n).0)
+            Ptr::from(DagMarker::TcCtx, self.dag.names.insert_prehashed(hash, n).0)
         }
     }
 
@@ -393,10 +447,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// already stored, forego the allocation and return a pointer to the previously inserted
     /// element. Checks the longer-lived storage first.
     pub fn alloc_level(&mut self, l: Level<'t>) -> LevelPtr<'t> {
-        if let Some(idx) = self.export_file.dag.levels.get_index_of(&l) {
+        let hash = l.get_hash();
+        if let Some(idx) = self.export_file.dag.levels.get_index_of_prehashed(hash, &l) {
             Ptr::from(DagMarker::ExportFile, idx)
         } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.levels.insert_full(l).0)
+            Ptr::from(DagMarker::TcCtx, self.dag.levels.insert_prehashed(hash, l).0)
         }
     }
 
@@ -404,10 +459,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// already stored, forego the allocation and return a pointer to the previously inserted
     /// element. Checks the longer-lived storage first.
     pub fn alloc_expr(&mut self, e: Expr<'t>) -> ExprPtr<'t> {
-        if let Some(idx) = self.export_file.dag.exprs.get_index_of(&e) {
+        let hash = e.get_hash();
+        if let Some(idx) = self.export_file.dag.exprs.get_index_of_prehashed(hash, &e) {
             Ptr::from(DagMarker::ExportFile, idx)
         } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.exprs.insert_full(e).0)
+            Ptr::from(DagMarker::TcCtx, self.dag.exprs.insert_prehashed(hash, e).0)
         }
     }
 
@@ -686,9 +742,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
 #[derive(Debug)]
 pub struct LeanDag<'a> {
-    pub names: UniqueIndexSet<Name<'a>>,
-    pub levels: UniqueIndexSet<Level<'a>>,
-    pub exprs: UniqueIndexSet<Expr<'a>>,
+    pub names: DedupVec<Name<'a>>,
+    pub levels: DedupVec<Level<'a>>,
+    pub exprs: DedupVec<Expr<'a>>,
     pub uparams: FxIndexSet<Arc<[LevelPtr<'a>]>>,
     pub strings: FxIndexSet<CowStr<'a>>,
     pub bignums: Option<FxIndexSet<BigUint>>,
@@ -709,16 +765,16 @@ impl<'a> LeanDag<'a> {
     /// The hints are target capacities for names, levels, and exprs respectively.
     pub fn new_presized(config: &Config, name_hint: usize, level_hint: usize, expr_hint: usize) -> Self {
         let mut out = Self {
-            names: UniqueIndexSet::with_capacity_and_hasher(name_hint, Default::default()),
-            levels: UniqueIndexSet::with_capacity_and_hasher(level_hint, Default::default()),
-            exprs: UniqueIndexSet::with_capacity_and_hasher(expr_hint, Default::default()),
+            names: DedupVec::with_capacity(name_hint),
+            levels: DedupVec::with_capacity(level_hint),
+            exprs: DedupVec::with_capacity(expr_hint),
             uparams: FxIndexSet::with_capacity_and_hasher(16, Default::default()),
             strings: FxIndexSet::with_capacity_and_hasher(16, Default::default()),
             bignums: if config.nat_extension { Some(FxIndexSet::with_capacity_and_hasher(16, Default::default())) } else { None },
         };
 
-        let _ = out.names.insert(Name::Anon);
-        let _ = out.levels.insert(Level::Zero);
+        let _ = out.names.insert_full(Name::Anon);
+        let _ = out.levels.insert_full(Level::Zero);
         out
     }
 
