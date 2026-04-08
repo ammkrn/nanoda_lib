@@ -3,6 +3,7 @@
 //! Doc comment example
 //! ```
 #![allow(clippy::too_many_arguments)]
+#![deny(clippy::cast_possible_truncation)]
 
 pub mod debug_printer;
 pub mod env;
