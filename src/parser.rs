@@ -495,7 +495,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
 
     fn go1(&mut self, line: &str) -> Result<(), Box<dyn Error>> {
         use ExportJsonVal::*;
-        let ExportJsonObject {val, i: assigned_idx} = serde_json::from_str::<ExportJsonObject>(line)?;
+        let mut line_bytes = line.as_bytes().to_vec(); // simd-json needs mutable bytes
+        let ExportJsonObject {val, i: assigned_idx} = simd_json::serde::from_slice::<ExportJsonObject>(&mut line_bytes)?;
         match val {
             Metadata(json_val) => {
                 let _ = check_semver(&json_val)?;
