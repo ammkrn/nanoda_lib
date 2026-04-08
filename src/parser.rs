@@ -421,19 +421,19 @@ impl<'a, R: BufRead> Parser<'a, R> {
     }
 
     fn num_loose_bvars(&self, e: ExprPtr<'a>) -> u16 {
-        self.dag.exprs.get_index(e.idx as usize).unwrap().num_loose_bvars()
+        self.dag.exprs.get_index(e.idx()).unwrap().num_loose_bvars()
     }
 
-    fn has_fvars(&self, e: ExprPtr<'a>) -> bool { self.dag.exprs.get_index(e.idx as usize).unwrap().has_fvars() }
+    fn has_fvars(&self, e: ExprPtr<'a>) -> bool { self.dag.exprs.get_index(e.idx()).unwrap().has_fvars() }
 
     fn get_name_ptr(&self, idx: u32) -> NamePtr<'a> {
-        let out = crate::util::Ptr { idx, dag_marker: DagMarker::ExportFile, ph: std::marker::PhantomData };
+        let out = crate::util::Ptr::from(DagMarker::ExportFile, idx as usize);
         assert!((idx as usize) < self.dag.names.len());
         out
     }
 
     fn get_level_ptr(&self, idx: u32) -> LevelPtr<'a> {
-        let out = crate::util::Ptr { idx, dag_marker: DagMarker::ExportFile, ph: std::marker::PhantomData };
+        let out = crate::util::Ptr::from(DagMarker::ExportFile, idx as usize);
         assert!((idx as usize) < self.dag.levels.len());
         out
     }
@@ -467,7 +467,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     }
 
     fn get_expr_ptr(&self, idx: u32) -> ExprPtr<'a> {
-        let out = crate::util::Ptr { idx, dag_marker: DagMarker::ExportFile, ph: std::marker::PhantomData };
+        let out = crate::util::Ptr::from(DagMarker::ExportFile, idx as usize);
         assert!((idx as usize) < self.dag.exprs.len());
         out
     }
