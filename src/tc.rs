@@ -3,8 +3,8 @@ use crate::env::{ConstructorData, Declar, DeclarInfo, Env, InductiveData, RecRul
 use crate::expr::Expr;
 use crate::level::Level;
 use crate::util::{
-    nat_div, nat_mod, nat_sub, nat_gcd, nat_land, nat_lor, 
-    nat_xor, nat_shr, nat_shl, ExportFile, ExprPtr, LevelPtr, 
+    nat_div, nat_mod, nat_sub, nat_gcd, nat_land, nat_lor,
+    nat_xor, nat_shr, nat_shl, ExportFile, ExprPtr, LevelPtr,
     LevelsPtr, NamePtr, TcCache, TcCtx, StringPtr
 };
 use std::error::Error;
@@ -107,7 +107,12 @@ impl<'p> ExportFile<'p> {
 
     /// Check all declarations in this export file using a single thread.
     pub(crate) fn check_all_declars_serial(&self) {
-        for declar in self.declars.values() {
+        let total = self.declars.len();
+        let print_progress = self.config.print_progress;
+        for (i, (name, declar)) in self.declars.iter().enumerate() {
+            if print_progress {
+                self.print_progress(i + 1, total, *name);
+            }
             self.check_declar(declar);
         }
     }
@@ -118,6 +123,10 @@ impl<'p> ExportFile<'p> {
         use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
         use std::thread;
         let task_num = AtomicUsize::new(0);
+        let total = self.declars.len();
+        let print_progress = self.config.print_progress;
+        let step = self.config.print_progress_step;
+        let started_count = AtomicUsize::new(0);
         thread::scope(|sco| {
             let mut handles = Vec::new();
             for i in 0..num_threads {
@@ -127,7 +136,11 @@ impl<'p> ExportFile<'p> {
                         .stack_size(crate::STACK_SIZE)
                         .spawn_scoped(sco, || loop {
                             let idx = task_num.fetch_add(1, Relaxed);
-                            if let Some((_, declar)) = self.declars.get_index(idx) {
+                            if let Some((name, declar)) = self.declars.get_index(idx) {
+                                if print_progress && step > 0 {
+                                    let started = started_count.fetch_add(1, Relaxed) + 1;
+                                    self.print_progress(started, total, *name);
+                                }
                                 self.check_declar(declar);
                             } else {
                                 break
@@ -143,12 +156,24 @@ impl<'p> ExportFile<'p> {
     }
 
     /// Check all of the declarations in this export file on the specified number
-    /// of threads (checking will be serial on the main thread is num_threads <= 1).
+    /// of threads (checking will be serial on the main thread if num_threads <= 1).
     pub fn check_all_declars(&self) {
+        let print_progress = self.config.print_progress;
+        let start = std::time::Instant::now();
         if self.config.num_threads > 1 {
+            if print_progress {
+                eprintln!("Checking {} declarations with {} workers...", self.declars.len(), self.config.num_threads);
+            }
             self.check_all_declars_par(self.config.num_threads)
         } else {
+            if print_progress {
+                eprintln!("Checking {} declarations (serial)...", self.declars.len());
+            }
             self.check_all_declars_serial()
+        }
+        if print_progress {
+            if self.config.is_tty { eprint!("\r\x1b[K"); }
+            eprintln!("Checked all {} declarations in {:.1}s", self.declars.len(), start.elapsed().as_secs_f64());
         }
     }
 }
@@ -156,7 +181,7 @@ impl<'p> ExportFile<'p> {
 impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     pub fn new(dag: &'x mut TcCtx<'t, 'p>, env: &'x Env<'x, 't>, declar_info: Option<DeclarInfo<'t>>) -> Self {
         assert_eq!(dag.dbj_level_counter, 0);
-        Self { ctx: dag, env, tc_cache: TcCache::new(), declar_info } 
+        Self { ctx: dag, env, tc_cache: TcCache::new(), declar_info }
     }
 
     /// Conduct the preliminary checks done on all declarations; a declaration
@@ -170,7 +195,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let inferred_type = self.infer(info.ty, Check);
         let sort = self.ensure_sort(inferred_type);
 
-        // This is sort of a "soft" check in terms of soundness, but for theorems, ensure 
+        // This is sort of a "soft" check in terms of soundness, but for theorems, ensure
         // that they're propositions.
         if let Declar::Theorem {..} = d {
             if !self.ctx.is_zero(sort) {
@@ -179,7 +204,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     self.ctx.debug_print(sort)
                 )))
             }
-        } 
+        }
         Ok(())
     }
 
@@ -358,7 +383,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             Ble => self.ctx.bool_to_expr(arg1 <= arg2),
         }
     }
-    
+
     /// Try to reduce an expression `e` which is an application of `Nat.succ`,
     /// or an application of a supported binary operation. `e` must have no free
     /// variables.
@@ -545,7 +570,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                         if self.ctx.is_eager_reduce_app(arg) {
                             self.ctx.eager_mode = true;
                         }
-                        // `arg_type` and `binder_type` get swapped here to accommodate the 
+                        // `arg_type` and `binder_type` get swapped here to accommodate the
                         // eager reduction branch in `def_eq` being focused on reducing the lhs.
                         self.assert_def_eq(binder_type, arg_type);
                         // replace the outer scope's setting before next iteration
@@ -663,7 +688,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let body = self.ctx.inst(body, &[val]);
         self.infer(body, flag)
     }
-    
+
     // Not well tested, used for introspection/debugging.
     #[allow(dead_code)]
     pub(crate) fn strong_reduce(&mut self, e: ExprPtr<'t>, reduce_types: bool, reduce_proofs: bool) -> ExprPtr<'t> {
@@ -726,7 +751,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 } else {
                     x
                 }
-                
+
             }
             _ => e
         };
@@ -1038,7 +1063,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             }
         }
     }
-    
+
     fn reduce_rec(
         &mut self,
         const_name: NamePtr<'t>,
