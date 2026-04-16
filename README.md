@@ -44,6 +44,10 @@ if `"unpermitted_axiom_hard_error"` is set to `true`, the presence of an axiom i
 
 If `"print_success_message"` is set to false, no additional output will be printed on success, and users should look to the platform-specific exit code. If `"pp_to_stdout"` is `true` and `"print_success_message"` is `false` the pretty printer output will still be written to stdout.
 
+`"print_progress"` enables progress reporting to stderr during type checking. When enabled, the checker logs each pipeline stage (parsing, checking, pretty printing) with timing information. This is useful for large exports (e.g. mathlib) where checking can take dozens of minutes. Disabled by default.
+
+`"print_progress_step"` controls how often individual declaration progress is reported (every N declarations). Defaults to `1000`. Set to `1` to log every declaration — useful for identifying stuck or slow declarations when running in serial mode. Set to `0` to disable per-declaration progress (only stage-level messages will be shown).
+
 An example configuration file:
 
 ```
@@ -72,6 +76,8 @@ An example configuration file:
         "width": 100,
         "declar_sep": "\n\n",
     },
-    "print_success_message": false
+    "print_success_message": false,
+    "print_progress": true,
+    "print_progress_step": 1000
 }
 ```
