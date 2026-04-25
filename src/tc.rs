@@ -433,11 +433,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
 
     #[allow(non_snake_case)]
-    fn infer_proj(&mut self, _ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>) -> ExprPtr<'t> {
-        let (structure_ty_is_prop, structure_ty) = {
-            let (is_proof, t) = self.is_proof(structure);
-            (is_proof, self.whnf(t))
-        };
+    fn infer_proj(&mut self, _ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
+        let structure_ty = self.infer(structure, flag);
+        let structure_ty = self.whnf(structure_ty);
+        let structure_ty_is_prop = self.is_proposition(structure_ty).0;
         let (_, struct_ty_name, struct_ty_levels, struct_ty_args) = self.ctx.unfold_const_apps(structure_ty).unwrap();
 
         let InductiveData { info: inductive_info, all_ctor_names, num_params, .. } =
@@ -501,7 +500,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             Lambda { .. } => self.infer_lambda(e, flag),
             Let { binder_type, val, body, .. } => self.infer_let(binder_type, val, body, flag),
             Const { name, levels, .. } => self.infer_const(name, levels, flag),
-            Proj { ty_name, idx, structure, .. } => self.infer_proj(ty_name, idx, structure),
+            Proj { ty_name, idx, structure, .. } => self.infer_proj(ty_name, idx, structure, flag),
             NatLit { .. } => {
                 assert!(self.ctx.export_file.config.nat_extension);
                 self.ctx.nat_type().unwrap()
