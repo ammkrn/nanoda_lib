@@ -452,7 +452,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
             let name_ptr = self.get_name_ptr(name_idx);
             let hash = hash64!(crate::level::PARAM_HASH, name_ptr);
             // Has to already exist
-            let idx = self.dag.levels.get_index_of(&Level::Param(name_ptr, hash)).unwrap();
+            let idx = self.dag.levels.get_index_of_prehashed(hash, &Level::Param(name_ptr, hash)).unwrap();
             levels.push(LevelPtr::from(DagMarker::ExportFile, idx as usize));
         }
         LevelsPtr::from(DagMarker::ExportFile, self.dag.uparams.insert_full(Arc::from(levels)).0)
@@ -495,7 +495,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
 
     fn go1(&mut self, line: &str) -> Result<(), Box<dyn Error>> {
         use ExportJsonVal::*;
-        let ExportJsonObject {val, i: assigned_idx} = serde_json::from_str::<ExportJsonObject>(line)?;
+        let mut line_bytes = line.as_bytes().to_vec(); // simd-json needs mutable bytes
+        let ExportJsonObject {val, i: assigned_idx} = simd_json::serde::from_slice::<ExportJsonObject>(&mut line_bytes)?;
         match val {
             Metadata(json_val) => {
                 let _ = check_semver(&json_val)?;
@@ -509,7 +510,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
 
                 let insert_result = {
                     let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
-                    self.dag.names.insert_full(Name::Str(pfx, sfx, hash))
+                    self.dag.names.insert_prehashed(hash, Name::Str(pfx, sfx, hash))
                 };
                 assigned_idx.unwrap().assert_in(insert_result);
             }
@@ -518,7 +519,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let sfx = i as u64;
                 let insert_result = {
                     let hash = hash64!(crate::name::NUM_HASH, pfx, sfx);
-                    self.dag.names.insert_full(Name::Num(pfx, sfx, hash))
+                    self.dag.names.insert_prehashed(hash, Name::Num(pfx, sfx, hash))
                 };
                 assigned_idx.unwrap().assert_in(insert_result);
             }
@@ -531,7 +532,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let num_ptr = BigUintPtr::from(DagMarker::ExportFile, self.dag.bignums.as_mut().unwrap().insert_full(big_uint).0);
                 let insert_result = {
                     let hash = hash64!(crate::expr::NAT_LIT_HASH, num_ptr);
-                    self.dag.exprs.insert_full(Expr::NatLit { ptr: num_ptr, hash })
+                    self.dag.exprs.insert_prehashed(hash, Expr::NatLit { ptr: num_ptr, hash })
                 };
                 if !self.config.nat_extension {
                     return Err(Box::<dyn Error>::from(
@@ -553,7 +554,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 );
                 let insert_result = {
                     let hash = hash64!(crate::expr::STRING_LIT_HASH, string_ptr);
-                    self.dag.exprs.insert_full(Expr::StringLit { ptr: string_ptr, hash })
+                    self.dag.exprs.insert_prehashed(hash, Expr::StringLit { ptr: string_ptr, hash })
                 };
                 assigned_idx.unwrap().assert_ie(insert_result);
             }
@@ -561,7 +562,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let l = self.get_level_ptr(l);
                 let insert_result = {
                     let hash = hash64!(crate::level::SUCC_HASH, l);
-                    self.dag.levels.insert_full(Level::Succ(l, hash))
+                    self.dag.levels.insert_prehashed(hash, Level::Succ(l, hash))
                 };
                 assigned_idx.unwrap().assert_il(insert_result);
             }
@@ -570,7 +571,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let r = self.get_level_ptr(r);
                 let insert_result = {
                     let hash = hash64!(crate::level::MAX_HASH, l, r);
-                    self.dag.levels.insert_full(Level::Max(l, r, hash))
+                    self.dag.levels.insert_prehashed(hash, Level::Max(l, r, hash))
                 };
                 assigned_idx.unwrap().assert_il(insert_result);
             }
@@ -579,7 +580,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let r = self.get_level_ptr(r);
                 let insert_result = {
                     let hash = hash64!(crate::level::IMAX_HASH, l, r);
-                    self.dag.levels.insert_full(Level::IMax(l, r, hash))
+                    self.dag.levels.insert_prehashed(hash, Level::IMax(l, r, hash))
                 };
                 assigned_idx.unwrap().assert_il(insert_result);
             }
@@ -587,7 +588,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                  let n = self.get_name_ptr(var_idx);
                  let insert_result = {
                      let hash = hash64!(crate::level::PARAM_HASH, n);
-                     self.dag.levels.insert_full(Level::Param(n, hash))
+                     self.dag.levels.insert_prehashed(hash, Level::Param(n, hash))
                  };
                 assigned_idx.unwrap().assert_il(insert_result);
             }
@@ -595,7 +596,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let level = self.get_level_ptr(level);
                 let insert_result = {
                     let hash = hash64!(crate::expr::SORT_HASH, level);
-                    self.dag.exprs.insert_full(Expr::Sort { level, hash })
+                    self.dag.exprs.insert_prehashed(hash, Expr::Sort { level, hash })
                 };
                 assigned_idx.unwrap().assert_ie(insert_result);
             }
@@ -607,7 +608,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let levels = self.get_levels_ptr(&levels);
                 let insert_result = {
                     let hash = hash64!(crate::expr::CONST_HASH, name, levels);
-                    self.dag.exprs.insert_full(Expr::Const { name, levels, hash })
+                    self.dag.exprs.insert_prehashed(hash, Expr::Const { name, levels, hash })
                 };
                 assigned_idx.unwrap().assert_ie(insert_result);
             }
@@ -618,14 +619,15 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::expr::APP_HASH, fun, arg);
                     let num_bvars = self.num_loose_bvars(fun).max(self.num_loose_bvars(arg));
                     let locals = self.has_fvars(fun) || self.has_fvars(arg);
-                    self.dag.exprs.insert_full(Expr::App { fun, arg, num_loose_bvars: num_bvars, has_fvars: locals, hash })
+                    let meta = crate::expr::pack_meta_no_binder(num_bvars, locals);
+                    self.dag.exprs.insert_prehashed(hash, Expr::App { fun, arg, meta, hash })
                 };
                 assigned_idx.unwrap().assert_ie(insert_result);
             }
             ExprBVar(dbj_idx) => {
                 let insert_result = {
                     let hash = hash64!(crate::expr::VAR_HASH, dbj_idx);
-                    self.dag.exprs.insert_full(Expr::Var { dbj_idx, hash })
+                    self.dag.exprs.insert_prehashed(hash, Expr::Var { dbj_idx, hash })
                 };
                 assigned_idx.unwrap().assert_ie(insert_result);
             }
@@ -637,13 +639,12 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::expr::LAMBDA_HASH, binder_name, binder_info, binder_type, body);
                     let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
                     let locals = self.has_fvars(binder_type) || self.has_fvars(body);
-                    self.dag.exprs.insert_full(Expr::Lambda {
+                    let meta = crate::expr::pack_meta(num_bvars, locals, binder_info);
+                    self.dag.exprs.insert_prehashed(hash, Expr::Lambda {
                         binder_name,
-                        binder_style: binder_info,
                         binder_type,
                         body,
-                        num_loose_bvars: num_bvars,
-                        has_fvars: locals,
+                        meta,
                         hash,
                     })
                 };
@@ -657,13 +658,12 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::expr::PI_HASH, binder_name, binder_info, binder_type, body);
                     let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
                     let locals = self.has_fvars(binder_type) || self.has_fvars(body);
-                    self.dag.exprs.insert_full(Expr::Pi {
+                    let meta = crate::expr::pack_meta(num_bvars, locals, binder_info);
+                    self.dag.exprs.insert_prehashed(hash, Expr::Pi {
                         binder_name,
-                        binder_style: binder_info,
                         binder_type,
                         body,
-                        num_loose_bvars: num_bvars,
-                        has_fvars: locals,
+                        meta,
                         hash,
                     })
                 };
@@ -680,13 +680,13 @@ impl<'a, R: BufRead> Parser<'a, R> {
                         .num_loose_bvars(binder_type)
                         .max(self.num_loose_bvars(val).max(self.num_loose_bvars(body).saturating_sub(1)));
                     let locals = self.has_fvars(binder_type) || self.has_fvars(val) || self.has_fvars(body);
-                    self.dag.exprs.insert_full(Expr::Let {
+                    let meta = crate::expr::pack_meta_no_binder(num_bvars, locals);
+                    self.dag.exprs.insert_prehashed(hash, Expr::Let {
                         binder_name,
                         binder_type,
                         val,
                         body,
-                        num_loose_bvars: num_bvars,
-                        has_fvars: locals,
+                        meta,
                         hash,
                         nondep
                     })
@@ -700,12 +700,12 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::expr::PROJ_HASH, ty_name, idx, structure);
                     let num_bvars = self.num_loose_bvars(structure);
                     let locals = self.has_fvars(structure);
-                    self.dag.exprs.insert_full(Expr::Proj {
+                    let meta = crate::expr::pack_meta_no_binder(num_bvars, locals);
+                    self.dag.exprs.insert_prehashed(hash, Expr::Proj {
                         ty_name,
                         idx,
                         structure,
-                        num_loose_bvars: num_bvars,
-                        has_fvars: locals,
+                        meta,
                         hash,
                     })
                 };
