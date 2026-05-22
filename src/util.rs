@@ -25,6 +25,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 pub(crate) const fn default_true() -> bool { true }
+pub(crate) const fn default_progress_step() -> usize { 1000 }
 
 pub(crate) type UniqueIndexSet<A> = IndexSet<A, BuildHasherDefault<UniqueHasher>>;
 pub(crate) type FxIndexSet<A> = IndexSet<A, BuildHasherDefault<FxHasher>>;
@@ -217,6 +218,57 @@ pub struct ExportFile<'p> {
 
 impl<'p> ExportFile<'p> {
     pub fn new_env(&self, env_limit: EnvLimit<'p>) -> Env<'_, '_> { Env::new(&self.declars, &self.notations, env_limit) }
+
+    fn format_name(&self, p: NamePtr<'p>, buf: &mut String) {
+        use std::fmt::Write;
+        let name = *self.dag.names.get_index(p.idx()).unwrap();
+        match name {
+            Name::Anon => {}
+            Name::Str(pfx, sfx, _) => {
+                self.format_name_prefix(pfx, buf);
+                let s = self.dag.strings.get_index(sfx.idx()).unwrap();
+                let _ = write!(buf, "{}", s);
+            }
+            Name::Num(pfx, sfx, _) => {
+                self.format_name_prefix(pfx, buf);
+                let _ = write!(buf, "{}", sfx);
+            }
+        }
+    }
+
+    fn format_name_prefix(&self, pfx: NamePtr<'p>, buf: &mut String) {
+        let pfx_name = *self.dag.names.get_index(pfx.idx()).unwrap();
+        if !matches!(pfx_name, Name::Anon) {
+            self.format_name(pfx, buf);
+            buf.push('.');
+        }
+    }
+
+    /// Print a progress line like `[current/total] name` if progress reporting
+    /// is enabled and `current` aligns with the configured step.
+    pub fn print_progress(&self, current: usize, total: usize, name: NamePtr<'p>) {
+        if !self.config.print_progress {
+            return;
+        }
+        let step = self.config.print_progress_step;
+        if step > 0 && current % step == 0 {
+            let mut buf = String::new();
+            self.format_name(name, &mut buf);
+            if buf.len() > 120 {
+                let mut end = 117;
+                while !buf.is_char_boundary(end) {
+                    end -= 1;
+                }
+                buf.truncate(end);
+                buf.push_str("...");
+            }
+            if self.config.is_tty {
+                eprint!("\r\x1b[K[{}/{}] {}", current, total, buf);
+            } else {
+                eprintln!("[{}/{}] {}", current, total, buf);
+            }
+        }
+    }
 
     pub fn with_ctx<F, A>(&self, f: F) -> A
     where
@@ -904,15 +956,27 @@ pub struct Config {
     #[serde(default)]
     pub print_success_message: bool,
 
+    /// Whether to print progress messages to stderr during type checking.
+    #[serde(default)]
+    pub print_progress: bool,
+
+    /// How often to print progress (every N declarations). If 0, progress is not printed.
+    #[serde(default = "default_progress_step")]
+    pub print_progress_step: usize,
+
     /// If `true`, the typechecker will print the axioms actually admitted to the environment
     /// when typechecking is finished. 
     #[serde(default = "default_true")]
     pub print_axioms: bool,
 
-    /// If set to `true`, will allow all axioms to be admitted to the environment. 
+    /// If set to `true`, will allow all axioms to be admitted to the environment.
     /// This is checked so as to be mutually exclusive with any of the axiom allow list/whitelist features.
     #[serde(default)]
     pub unsafe_permit_all_axioms: bool,
+
+    /// Whether stderr is a terminal (computed at startup, not from config file).
+    #[serde(skip)]
+    pub is_tty: bool,
 }
 
 impl TryFrom<&Path> for Config {
@@ -921,7 +985,9 @@ impl TryFrom<&Path> for Config {
         match OpenOptions::new().read(true).truncate(false).open(p) {
             Err(e) => Err(Box::from(format!("failed to open configuration file: {:?}", e))),
             Ok(config_file) => {
-                let config = serde_json::from_reader::<_, Config>(BufReader::new(config_file)).unwrap();
+                use std::io::IsTerminal;
+                let mut config = serde_json::from_reader::<_, Config>(BufReader::new(config_file)).unwrap();
+                config.is_tty = std::io::stderr().is_terminal();
                 if config.export_file_path.is_none() && !config.use_stdin {
                     return Err(Box::from(format!("incompatible config options: must specify a path to an export file OR set `use_stdin: true`")))
                 }
@@ -974,14 +1040,34 @@ impl Config {
     // Returns the export file, and a list of strings representing the names of "skipped" axioms
     // (axioms which were in the export file, but not allowed by the execution config).
     pub fn to_export_file<'a>(self) -> Result<(ExportFile<'a>, Vec<String>), Box<dyn Error>> {
+        let print_progress = self.print_progress;
+        let log_parsed = |start: std::time::Instant, result: &Result<(ExportFile<'_>, Vec<String>), Box<dyn Error>>| {
+            if let Ok((ref ef, _)) = result {
+                eprintln!("Parsed {} declarations in {:.1}s", ef.declars.len(), start.elapsed().as_secs_f64());
+            }
+        };
         if let Some(pathbuf) = self.export_file_path.as_ref() {
+            if print_progress {
+                eprintln!("Parsing export file {}...", pathbuf.display());
+            }
+            let start = std::time::Instant::now();
             match OpenOptions::new().read(true).truncate(false).open(pathbuf) {
-                Ok(file) => crate::parser::parse_export_file(BufReader::new(file), self),
+                Ok(file) => {
+                    let result = crate::parser::parse_export_file(BufReader::new(file), self);
+                    if print_progress { log_parsed(start, &result); }
+                    result
+                },
                 Err(e) => Err(Box::from(format!("Failed to open export file: {:?}", e))),
             }
         } else if self.use_stdin {
+            if print_progress {
+                eprintln!("Parsing export file from stdin...");
+            }
+            let start = std::time::Instant::now();
             let reader = BufReader::new(std::io::stdin());
-            crate::parser::parse_export_file(reader, self)
+            let result = crate::parser::parse_export_file(reader, self);
+            if print_progress { log_parsed(start, &result); }
+            result
         } else {
             panic!("Configuration file must specify en export file path or \"use_stdin\": true")
         }

@@ -28,8 +28,11 @@ pub(crate) fn test_get_export_file<'p>(config_path: Option<&Path>) -> Result<(Ex
             pp_to_stdout: false,
             num_threads: 1,
             print_success_message: true,
+            print_progress: false,
+            print_progress_step: 0,
             print_axioms: true,
-            unsafe_permit_all_axioms: false
+            unsafe_permit_all_axioms: false,
+            is_tty: false,
         },
         Some(config_path) => Config::try_from(config_path)?,
     };
