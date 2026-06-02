@@ -30,6 +30,8 @@ The `"permitted_axioms"` list is where users specify the axioms an export file i
 
 if `"unpermitted_axiom_hard_error"` is set to `true`, the presence of an axiom in the export file that is not in the `permitted_axioms` list will cause a hard error and abort checking, regardless of whether it's used by any later declarations. If set to `false`, the unpermitted axiom will simply be ignored, meaning it will not be checked, will not be added to the environment, and will cause a hard error only if another exported declaration actually tries to use it. This value is currently set to `true` by default out of an abundance of caution, but this may change; most users will probably want to set this to `false`, since things like the prelude's `sorryAx` are declared so that they may be used by metaprograms, but will not actually be invoked by other declarations in the file and are therefore safe to just skip.
 
+If `"unsafe_permit_all_axioms"` is set to `true`, all axioms will be admitted to the environment (when using this option, you must also explicitly set `"unpermitted_axiom_hard_error": false` to avoid a hard error on startup). This is checked so as to be mutually exclusive with any of the axiom allow list/whitelist features: it cannot be combined with `"unpermitted_axiom_hard_error": true` or with a non-empty `"permitted_axioms"` list, and either combination will result in a hard error. Defaults to `false`.
+
 `"nat_extension"` and `"string_extension"` enable or disable the Nat and String kernel extensions. While we expect most users to opt into the Nat and String kernel extensions, they are disabled by default.
 
 `"pp_declars"` is a list of declarations to be printed back by the pretty printer.
