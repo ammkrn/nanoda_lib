@@ -85,22 +85,49 @@ enum BackRef {
 }
 
 impl BackRef {
-    fn assert_in(self, insert_result: (usize, bool)) {
-        assert!(insert_result.1);
-        let lhs = u32::try_from(insert_result.0).unwrap();
-        assert_eq!(self, BackRef::In(lhs))
+    fn assert_in(self, (idx, inserted): (usize, bool)) {
+        if !inserted {
+            panic!("Attempted to insert duplicate Name");
+        }
+        let lhs = u32::try_from(idx).unwrap();
+        if self != BackRef::In(lhs) {
+            eprintln!(
+                "Declined: Name back-reference mismatch, expected {:?}, found {:?}. Back-refs must be continuous.",
+                BackRef::In(lhs),
+                self
+            );
+            std::process::exit(2);
+        }
     }
 
-    fn assert_il(self, insert_result: (usize, bool)) {
-        assert!(insert_result.1);
-        let lhs = u32::try_from(insert_result.0).unwrap();
-        assert_eq!(self, BackRef::Il(lhs))
+    fn assert_il(self, (idx, inserted): (usize, bool)) {
+        if !inserted {
+            panic!("Attempted to insert duplicate Level");
+        }
+        let lhs = u32::try_from(idx).unwrap();
+        if self != BackRef::Il(lhs) {
+            eprintln!(
+                "Declined: Level back-reference mismatch, expected {:?}, found {:?}. Back-refs must be continuous.",
+                BackRef::Il(lhs),
+                self
+            );
+            std::process::exit(2);
+        }
     }
 
-    fn assert_ie(self, insert_result: (usize, bool)) {
-        assert!(insert_result.1);
-        let lhs = u32::try_from(insert_result.0).unwrap();
-        assert_eq!(self, BackRef::Ie(lhs))
+    fn assert_ie(self, (idx, inserted): (usize, bool)) {
+        if !inserted {
+            panic!("Attempted to insert duplicate Expr");
+        }
+        let lhs = u32::try_from(idx).unwrap();
+        if self != BackRef::Ie(lhs) {
+            eprintln!(
+                "Declined: Expr back-reference mismatch, expected {:?}, found {:?}. Back-refs must be continuous.",
+                BackRef::Ie(lhs),
+                self
+            );
+            std::process::exit(2);
+        }
     }
 }
 
