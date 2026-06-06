@@ -7,6 +7,7 @@ use crate::tc::TypeChecker;
 use crate::union_find::UnionFind;
 use crate::unique_hasher::UniqueHasher;
 use indexmap::{IndexMap, IndexSet};
+use hashbrown::HashTable;
 use num_bigint::BigUint;
 use num_traits::{ Pow, identities::Zero };
 use num_integer::Integer;
@@ -27,6 +28,58 @@ use serde::Deserialize;
 pub(crate) const fn default_true() -> bool { true }
 
 pub(crate) type UniqueIndexSet<A> = IndexSet<A, BuildHasherDefault<UniqueHasher>>;
+
+/// A deduplicating vector backed by hashbrown::HashTable for O(1) lookup.
+/// Items stored in a dense Vec, HashTable stores indices with pre-computed hashes.
+pub struct DedupVec<T: Eq + std::hash::Hash> {
+    items: Vec<T>,
+    table: HashTable<u32>,
+}
+
+impl<T: Eq + std::hash::Hash + std::fmt::Debug> std::fmt::Debug for DedupVec<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.items.iter()).finish()
+    }
+}
+
+impl<T: Eq + std::hash::Hash> DedupVec<T> {
+    pub fn new() -> Self { Self { items: Vec::new(), table: HashTable::new() } }
+    pub fn with_capacity(cap: usize) -> Self {
+        Self { items: Vec::with_capacity(cap), table: HashTable::with_capacity(cap) }
+    }
+    pub fn len(&self) -> usize { self.items.len() }
+    pub fn get_index(&self, idx: usize) -> Option<&T> { self.items.get(idx) }
+    pub fn get_index_of_prehashed(&self, hash: u64, item: &T) -> Option<usize> {
+        self.table.find(hash, |&idx| self.items[idx as usize] == *item).map(|&idx| idx as usize)
+    }
+    pub fn insert_prehashed(&mut self, hash: u64, item: T) -> (usize, bool) {
+        if let Some(&idx) = self.table.find(hash, |&idx| self.items[idx as usize] == item) {
+            return (idx as usize, false);
+        }
+        let idx = self.items.len() as u32;
+        self.items.push(item);
+        self.table.insert_unique(hash, idx, |&existing_idx| {
+            let existing = &self.items[existing_idx as usize];
+            let mut hasher = crate::unique_hasher::UniqueHasher::new();
+            std::hash::Hash::hash(existing, &mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        });
+        (idx as usize, true)
+    }
+    pub fn insert_full(&mut self, item: T) -> (usize, bool) {
+        let mut hasher = crate::unique_hasher::UniqueHasher::new();
+        std::hash::Hash::hash(&item, &mut hasher);
+        let hash = std::hash::Hasher::finish(&hasher);
+        self.insert_prehashed(hash, item)
+    }
+    pub fn get_index_of(&self, item: &T) -> Option<usize> {
+        let mut hasher = crate::unique_hasher::UniqueHasher::new();
+        std::hash::Hash::hash(item, &mut hasher);
+        let hash = std::hash::Hasher::finish(&hasher);
+        self.get_index_of_prehashed(hash, item)
+    }
+}
+
 pub(crate) type FxIndexSet<A> = IndexSet<A, BuildHasherDefault<FxHasher>>;
 pub(crate) type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
 pub(crate) type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
@@ -94,8 +147,7 @@ pub(crate) fn new_fx_hash_map<K, V>() -> FxHashMap<K, V> { FxHashMap::with_hashe
 
 pub(crate) fn new_fx_hash_set<K>() -> FxHashSet<K> { FxHashSet::with_hasher(Default::default()) }
 
-pub(crate) fn new_fx_index_set<K>() -> FxIndexSet<K> { FxIndexSet::with_hasher(Default::default()) }
-pub(crate) fn new_unique_index_set<K>() -> UniqueIndexSet<K> { UniqueIndexSet::with_hasher(Default::default()) }
+
 
 pub(crate) fn new_unique_hash_map<K, V>() -> UniqueHashMap<K, V> { UniqueHashMap::with_hasher(Default::default()) }
 
@@ -218,10 +270,21 @@ pub struct ExportFile<'p> {
 impl<'p> ExportFile<'p> {
     pub fn new_env(&self, env_limit: EnvLimit<'p>) -> Env<'_, '_> { Env::new(&self.declars, &self.notations, env_limit) }
 
+    /// Sizing hints for temporary DAGs, derived from the export file's own DAG.
+    /// A single declaration's working set is typically much smaller than the full export.
+    fn dag_hints(&self) -> (usize, usize, usize) {
+        (
+            self.dag.names.len() / 4,
+            self.dag.levels.len() / 4,
+            self.dag.exprs.len() / 4,
+        )
+    }
+
     pub fn with_ctx<F, A>(&self, f: F) -> A
     where
         F: FnOnce(&mut TcCtx<'_, 'p>) -> A, {
-        let mut dag = LeanDag::new(&self.config);
+        let (nh, lh, eh) = self.dag_hints();
+        let mut dag = LeanDag::new_presized(&self.config, nh, lh, eh);
         let mut ctx = TcCtx::new(self, &mut dag);
         f(&mut ctx)
     }
@@ -229,7 +292,8 @@ impl<'p> ExportFile<'p> {
     pub fn with_tc<F, A>(&self, env_limit: EnvLimit, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
-        let mut dag = LeanDag::new(&self.config);
+        let (nh, lh, eh) = self.dag_hints();
+        let mut dag = LeanDag::new_presized(&self.config, nh, lh, eh);
         let mut ctx = TcCtx::new(self, &mut dag);
         let env = self.new_env(env_limit);
         let mut tc = TypeChecker::new(&mut ctx, &env, None);
@@ -239,7 +303,8 @@ impl<'p> ExportFile<'p> {
     pub fn with_tc_and_declar<F, A>(&self, d: crate::env::DeclarInfo<'p>, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
-        let mut dag = LeanDag::new(&self.config);
+        let (nh, lh, eh) = self.dag_hints();
+        let mut dag = LeanDag::new_presized(&self.config, nh, lh, eh);
         let mut ctx = TcCtx::new(self, &mut dag);
         let env = self.new_env(EnvLimit::ByName(d.name));
         let mut tc = TypeChecker::new(&mut ctx, &env, Some(d));
@@ -370,10 +435,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// already stored, forego the allocation and return a pointer to the previously inserted
     /// element. Checks the longer-lived storage first.
     pub fn alloc_name(&mut self, n: Name<'t>) -> NamePtr<'t> {
-        if let Some(idx) = self.export_file.dag.names.get_index_of(&n) {
+        let hash = n.get_hash();
+        if let Some(idx) = self.export_file.dag.names.get_index_of_prehashed(hash, &n) {
             Ptr::from(DagMarker::ExportFile, idx)
         } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.names.insert_full(n).0)
+            Ptr::from(DagMarker::TcCtx, self.dag.names.insert_prehashed(hash, n).0)
         }
     }
 
@@ -381,10 +447,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// already stored, forego the allocation and return a pointer to the previously inserted
     /// element. Checks the longer-lived storage first.
     pub fn alloc_level(&mut self, l: Level<'t>) -> LevelPtr<'t> {
-        if let Some(idx) = self.export_file.dag.levels.get_index_of(&l) {
+        let hash = l.get_hash();
+        if let Some(idx) = self.export_file.dag.levels.get_index_of_prehashed(hash, &l) {
             Ptr::from(DagMarker::ExportFile, idx)
         } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.levels.insert_full(l).0)
+            Ptr::from(DagMarker::TcCtx, self.dag.levels.insert_prehashed(hash, l).0)
         }
     }
 
@@ -392,10 +459,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// already stored, forego the allocation and return a pointer to the previously inserted
     /// element. Checks the longer-lived storage first.
     pub fn alloc_expr(&mut self, e: Expr<'t>) -> ExprPtr<'t> {
-        if let Some(idx) = self.export_file.dag.exprs.get_index_of(&e) {
+        let hash = e.get_hash();
+        if let Some(idx) = self.export_file.dag.exprs.get_index_of_prehashed(hash, &e) {
             Ptr::from(DagMarker::ExportFile, idx)
         } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.exprs.insert_full(e).0)
+            Ptr::from(DagMarker::TcCtx, self.dag.exprs.insert_prehashed(hash, e).0)
         }
     }
 
@@ -518,7 +586,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         let hash = hash64!(crate::expr::APP_HASH, fun, arg);
         let num_loose_bvars = self.num_loose_bvars(fun).max(self.num_loose_bvars(arg));
         let has_fvars = self.has_fvars(fun) || self.has_fvars(arg);
-        self.alloc_expr(Expr::App { fun, arg, num_loose_bvars, has_fvars, hash })
+        let meta = crate::expr::pack_meta_no_binder(num_loose_bvars, has_fvars);
+        self.alloc_expr(Expr::App { fun, arg, meta, hash })
     }
 
     pub fn mk_lambda(
@@ -531,7 +600,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         let hash = hash64!(crate::expr::LAMBDA_HASH, binder_name, binder_style, binder_type, body);
         let num_loose_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
         let has_fvars = self.has_fvars(binder_type) || self.has_fvars(body);
-        self.alloc_expr(Expr::Lambda { binder_name, binder_style, binder_type, body, num_loose_bvars, has_fvars, hash })
+        let meta = crate::expr::pack_meta(num_loose_bvars, has_fvars, binder_style);
+        self.alloc_expr(Expr::Lambda { binder_name, binder_type, body, meta, hash })
     }
 
     pub fn mk_pi(
@@ -544,7 +614,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         let hash = hash64!(crate::expr::PI_HASH, binder_name, binder_style, binder_type, body);
         let num_loose_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
         let has_fvars = self.has_fvars(binder_type) || self.has_fvars(body);
-        self.alloc_expr(Expr::Pi { binder_name, binder_style, binder_type, body, num_loose_bvars, has_fvars, hash })
+        let meta = crate::expr::pack_meta(num_loose_bvars, has_fvars, binder_style);
+        self.alloc_expr(Expr::Pi { binder_name, binder_type, body, meta, hash })
     }
 
     pub fn mk_let(
@@ -560,14 +631,16 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             .num_loose_bvars(binder_type)
             .max(self.num_loose_bvars(val).max(self.num_loose_bvars(body).saturating_sub(1)));
         let has_fvars = self.has_fvars(binder_type) || self.has_fvars(val) || self.has_fvars(body);
-        self.alloc_expr(Expr::Let { binder_name, binder_type, val, body, num_loose_bvars, has_fvars, hash, nondep })
+        let meta = crate::expr::pack_meta_no_binder(num_loose_bvars, has_fvars);
+        self.alloc_expr(Expr::Let { binder_name, binder_type, val, body, meta, hash, nondep })
     }
 
     pub fn mk_proj(&mut self, ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>) -> ExprPtr<'t> {
         let hash = hash64!(crate::expr::PROJ_HASH, ty_name, idx, structure);
         let num_loose_bvars = self.num_loose_bvars(structure);
         let has_fvars = self.has_fvars(structure);
-        self.alloc_expr(Expr::Proj { ty_name, idx, structure, num_loose_bvars, has_fvars, hash })
+        let meta = crate::expr::pack_meta_no_binder(num_loose_bvars, has_fvars);
+        self.alloc_expr(Expr::Proj { ty_name, idx, structure, meta, hash })
     }
 
     pub fn mk_string_lit(&mut self, string_ptr: StringPtr<'t>) -> Option<ExprPtr<'t>> {
@@ -669,9 +742,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
 #[derive(Debug)]
 pub struct LeanDag<'a> {
-    pub names: UniqueIndexSet<Name<'a>>,
-    pub levels: UniqueIndexSet<Level<'a>>,
-    pub exprs: UniqueIndexSet<Expr<'a>>,
+    pub names: DedupVec<Name<'a>>,
+    pub levels: DedupVec<Level<'a>>,
+    pub exprs: DedupVec<Expr<'a>>,
     pub uparams: FxIndexSet<Arc<[LevelPtr<'a>]>>,
     pub strings: FxIndexSet<CowStr<'a>>,
     pub bignums: Option<FxIndexSet<BigUint>>,
@@ -685,17 +758,23 @@ impl<'a> LeanDag<'a> {
     /// So when creating a new parser, we need to begin by placing `Anon` and `Zero` in the 0th position
     /// of their backing storage, satisfying the exporter's assumption.
     pub fn new(config: &Config) -> Self {
+        Self::new_presized(config, 0, 0, 0)
+    }
+
+    /// Create a LeanDag with pre-sized IndexSets to avoid repeated rehashing.
+    /// The hints are target capacities for names, levels, and exprs respectively.
+    pub fn new_presized(config: &Config, name_hint: usize, level_hint: usize, expr_hint: usize) -> Self {
         let mut out = Self {
-            names: new_unique_index_set(),
-            levels: new_unique_index_set(),
-            exprs: new_unique_index_set(),
-            uparams: new_fx_index_set(),
-            strings: new_fx_index_set(),
-            bignums: if config.nat_extension { Some(new_fx_index_set()) } else { None },
+            names: DedupVec::with_capacity(name_hint),
+            levels: DedupVec::with_capacity(level_hint),
+            exprs: DedupVec::with_capacity(expr_hint),
+            uparams: FxIndexSet::with_capacity_and_hasher(16, Default::default()),
+            strings: FxIndexSet::with_capacity_and_hasher(16, Default::default()),
+            bignums: if config.nat_extension { Some(FxIndexSet::with_capacity_and_hasher(16, Default::default())) } else { None },
         };
 
-        let _ = out.names.insert(Name::Anon);
-        let _ = out.levels.insert(Level::Zero);
+        let _ = out.names.insert_full(Name::Anon);
+        let _ = out.levels.insert_full(Level::Zero);
         out
     }
 

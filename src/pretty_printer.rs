@@ -527,9 +527,10 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     /// later, etc.
     fn parse_binders(&mut self, mut e: ExprPtr<'t>) -> (Vec<ParsedBinder<'t>>, ExprPtr<'t>) {
         let (mut binders, mut binder_tys) = (Vec::<ParsedBinder>::new(), Vec::new());
-        while let Pi { binder_name, binder_style, binder_type, body, .. }
-        | Lambda { binder_name, binder_style, binder_type, body, .. } = self.ctx.read_expr(e)
+        while let Pi { binder_name, binder_type, body, meta, .. }
+        | Lambda { binder_name, binder_type, body, meta, .. } = self.ctx.read_expr(e)
         {
+            let binder_style = crate::expr::meta_binder_style(meta);
             let binder_type = self.ctx.inst(binder_type, binder_tys.as_slice());
             let local = self.ctx.mk_unique(binder_name, binder_style, binder_type);
             let is_pi = matches!(self.ctx.read_expr(e), Pi { .. });
@@ -615,7 +616,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
         self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, |tc| {
             let ty = tc.infer_then_whnf(fun, crate::tc::InferFlag::InferOnly);
             match tc.ctx.read_expr(ty) {
-                Pi { binder_style, .. } => binder_style != BinderStyle::Default,
+                Pi { meta, .. } => crate::expr::meta_binder_style(meta) != BinderStyle::Default,
                 _ => false,
             }
         })

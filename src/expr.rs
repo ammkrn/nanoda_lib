@@ -39,8 +39,8 @@ pub enum Expr<'a> {
         /// `q` will have idx 1.
         idx: usize,
         structure: ExprPtr<'a>,
-        num_loose_bvars: u16,
-        has_fvars: bool,
+        /// Packed metadata: bits 0-12 = num_loose_bvars, bit 13 = has_fvars, bits 14-15 unused.
+        meta: u16,
     },
     /// A bound variable represented by a deBruijn index.
     Var {
@@ -60,26 +60,24 @@ pub enum Expr<'a> {
         hash: u64,
         fun: ExprPtr<'a>,
         arg: ExprPtr<'a>,
-        num_loose_bvars: u16,
-        has_fvars: bool,
+        /// Packed metadata: bits 0-12 = num_loose_bvars, bit 13 = has_fvars, bits 14-15 unused.
+        meta: u16,
     },
     Pi {
         hash: u64,
         binder_name: NamePtr<'a>,
-        binder_style: BinderStyle,
         binder_type: ExprPtr<'a>,
         body: ExprPtr<'a>,
-        num_loose_bvars: u16,
-        has_fvars: bool,
+        /// Packed metadata: bits 0-12 = num_loose_bvars, bit 13 = has_fvars, bits 14-15 = binder_style.
+        meta: u16,
     },
     Lambda {
         hash: u64,
         binder_name: NamePtr<'a>,
-        binder_style: BinderStyle,
         binder_type: ExprPtr<'a>,
         body: ExprPtr<'a>,
-        num_loose_bvars: u16,
-        has_fvars: bool,
+        /// Packed metadata: bits 0-12 = num_loose_bvars, bit 13 = has_fvars, bits 14-15 = binder_style.
+        meta: u16,
     },
     Let {
         hash: u64,
@@ -87,8 +85,8 @@ pub enum Expr<'a> {
         binder_type: ExprPtr<'a>,
         val: ExprPtr<'a>,
         body: ExprPtr<'a>,
-        num_loose_bvars: u16,
-        has_fvars: bool,
+        /// Packed metadata: bits 0-12 = num_loose_bvars, bit 13 = has_fvars, bits 14-15 unused.
+        meta: u16,
         nondep: bool
     },
     /// A free variable with binder information, and either a unique
@@ -149,6 +147,56 @@ pub enum BinderStyle {
     InstanceImplicit,
 }
 
+impl From<BinderStyle> for u16 {
+    fn from(bs: BinderStyle) -> u16 {
+        match bs {
+            BinderStyle::Default => 0,
+            BinderStyle::Implicit => 1,
+            BinderStyle::StrictImplicit => 2,
+            BinderStyle::InstanceImplicit => 3,
+        }
+    }
+}
+
+impl From<u16> for BinderStyle {
+    fn from(v: u16) -> BinderStyle {
+        match v & 0x3 {
+            0 => BinderStyle::Default,
+            1 => BinderStyle::Implicit,
+            2 => BinderStyle::StrictImplicit,
+            3 => BinderStyle::InstanceImplicit,
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Pack num_loose_bvars, has_fvars, and binder_style into a single u16.
+/// Bits 0-12 = num_loose_bvars (max 8191), bit 13 = has_fvars, bits 14-15 = binder_style.
+pub(crate) fn pack_meta(num_loose_bvars: u16, has_fvars: bool, binder_style: BinderStyle) -> u16 {
+    (num_loose_bvars & 0x1FFF) | ((has_fvars as u16) << 13) | (u16::from(binder_style) << 14)
+}
+
+/// Pack num_loose_bvars and has_fvars into a single u16 (for App/Proj/Let which have no binder_style).
+/// Bits 0-12 = num_loose_bvars (max 8191), bit 13 = has_fvars, bits 14-15 = 0.
+pub(crate) fn pack_meta_no_binder(num_loose_bvars: u16, has_fvars: bool) -> u16 {
+    (num_loose_bvars & 0x1FFF) | ((has_fvars as u16) << 13)
+}
+
+/// Extract num_loose_bvars from packed meta (bits 0-12).
+pub(crate) fn meta_num_loose_bvars(meta: u16) -> u16 {
+    meta & 0x1FFF
+}
+
+/// Extract has_fvars from packed meta (bit 13).
+pub(crate) fn meta_has_fvars(meta: u16) -> bool {
+    (meta >> 13) & 1 != 0
+}
+
+/// Extract binder_style from packed meta (bits 14-15).
+pub(crate) fn meta_binder_style(meta: u16) -> BinderStyle {
+    BinderStyle::from(meta >> 14)
+}
+
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub(crate) fn inst_forall_params(&mut self, mut e: ExprPtr<'t>, n: usize, all_args: &[ExprPtr<'t>]) -> ExprPtr<'t> {
         for _ in 0..n {
@@ -185,12 +233,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     let arg = self.inst_aux(arg, substs, offset);
                     self.mk_app(fun, arg)
                 }
-                Pi { binder_name, binder_style, binder_type, body, .. } => {
+                Pi { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = meta_binder_style(meta);
                     let binder_type = self.inst_aux(binder_type, substs, offset);
                     let body = self.inst_aux(body, substs, offset + 1);
                     self.mk_pi(binder_name, binder_style, binder_type, body)
                 }
-                Lambda { binder_name, binder_style, binder_type, body, .. } => {
+                Lambda { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = meta_binder_style(meta);
                     let binder_type = self.inst_aux(binder_type, substs, offset);
                     let body = self.inst_aux(body, substs, offset + 1);
                     self.mk_lambda(binder_name, binder_style, binder_type, body)
@@ -242,12 +292,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     let arg = self.abstr_aux_levels(arg, start_pos, num_open_binders);
                     self.mk_app(fun, arg)
                 }
-                Pi { binder_name, binder_style, binder_type, body, .. } => {
+                Pi { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = meta_binder_style(meta);
                     let binder_type = self.abstr_aux_levels(binder_type, start_pos, num_open_binders);
                     let body = self.abstr_aux_levels(body, start_pos, num_open_binders + 1);
                     self.mk_pi(binder_name, binder_style, binder_type, body)
                 }
-                Lambda { binder_name, binder_style, binder_type, body, .. } => {
+                Lambda { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = meta_binder_style(meta);
                     let binder_type = self.abstr_aux_levels(binder_type, start_pos, num_open_binders);
                     let body = self.abstr_aux_levels(body, start_pos, num_open_binders + 1);
                     self.mk_lambda(binder_name, binder_style, binder_type, body)
@@ -294,12 +346,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     let arg = self.abstr_aux(arg, locals, offset);
                     self.mk_app(fun, arg)
                 }
-                Pi { binder_name, binder_style, binder_type, body, .. } => {
+                Pi { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = meta_binder_style(meta);
                     let binder_type = self.abstr_aux(binder_type, locals, offset);
                     let body = self.abstr_aux(body, locals, offset + 1);
                     self.mk_pi(binder_name, binder_style, binder_type, body)
                 }
-                Lambda { binder_name, binder_style, binder_type, body, .. } => {
+                Lambda { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = meta_binder_style(meta);
                     let binder_type = self.abstr_aux(binder_type, locals, offset);
                     let body = self.abstr_aux(body, locals, offset + 1);
                     self.mk_lambda(binder_name, binder_style, binder_type, body)
@@ -349,12 +403,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     let arg = self.subst_aux(arg, ks, vs);
                     self.mk_app(fun, arg)
                 }
-                Pi { binder_name, binder_style, binder_type, body, .. } => {
+                Pi { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = meta_binder_style(meta);
                     let binder_type = self.subst_aux(binder_type, ks, vs);
                     let body = self.subst_aux(body, ks, vs);
                     self.mk_pi(binder_name, binder_style, binder_type, body)
                 }
-                Lambda { binder_name, binder_style, binder_type, body, .. } => {
+                Lambda { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = meta_binder_style(meta);
                     let binder_type = self.subst_aux(binder_type, ks, vs);
                     let body = self.subst_aux(body, ks, vs);
                     self.mk_lambda(binder_name, binder_style, binder_type, body)
@@ -755,11 +811,11 @@ impl<'t> Expr<'t> {
         match self {
             Sort { .. } | Const { .. } | Local { .. } | StringLit { .. } | NatLit { .. } => 0,
             Var { dbj_idx, .. } => dbj_idx + 1,
-            App { num_loose_bvars, .. }
-            | Pi { num_loose_bvars, .. }
-            | Lambda { num_loose_bvars, .. }
-            | Let { num_loose_bvars, .. }
-            | Proj { num_loose_bvars, .. } => *num_loose_bvars,
+            App { meta, .. }
+            | Pi { meta, .. }
+            | Lambda { meta, .. }
+            | Let { meta, .. }
+            | Proj { meta, .. } => meta_num_loose_bvars(*meta),
         }
     }
 
@@ -767,11 +823,11 @@ impl<'t> Expr<'t> {
         match self {
             Local { .. } => true,
             Var { .. } | Sort { .. } | Const { .. } | NatLit { .. } | StringLit { .. } => false,
-            App { has_fvars, .. }
-            | Pi { has_fvars, .. }
-            | Lambda { has_fvars, .. }
-            | Let { has_fvars, .. }
-            | Proj { has_fvars, .. } => *has_fvars,
+            App { meta, .. }
+            | Pi { meta, .. }
+            | Lambda { meta, .. }
+            | Let { meta, .. }
+            | Proj { meta, .. } => meta_has_fvars(*meta),
         }
     }
 }
