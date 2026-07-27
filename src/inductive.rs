@@ -8,6 +8,25 @@ impl<'t, 'p: 't> ExportFile<'p> {
     pub(crate) fn check_inductive_declar(&self, d: &Declar<'t>) {
         let (ind, env_limit) = match d {
             Declar::Inductive(ind) => {
+                // Assert computed `is_recursive` value matches the export file.
+                let is_recursive = self.with_ctx(|ctx| {
+                    for ctor_name in ind.all_ctor_names.iter() {
+                        match self.declars.get(ctor_name).unwrap() {
+                            Declar::Constructor(ctor_data @ ConstructorData {..}) => {
+                                let mut ctor_ty = ctor_data.info.ty;
+                                while let Pi {binder_type, body, ..} = ctx.read_expr(ctor_ty) {
+                                    if ctx.find_const(binder_type, |n| ind.all_ind_names.iter().any(|nn| n == *nn)) {
+                                        return true
+                                    }
+                                    ctor_ty = body;
+                                }
+                            },
+                            _ => panic!()
+                        }
+                    }
+                    false
+                });
+                assert_eq!(ind.is_recursive, is_recursive);
                 let (start, size) = self.mutual_block_sizes.get(&ind.info.name).unwrap();
                 (ind, crate::env::EnvLimit::ByIndex(start + size))
             }
@@ -1181,6 +1200,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         for name in base_ind.all_ind_names.iter() {
             match (self.env.get_old_declar(name), self.env.get_temp_declar(name)) {
                 (Some(Declar::Inductive(old)), Some(Declar::Inductive(new))) => {
+                    assert!(old.aux_data_ck(new));
                     debug_assert!(!std::ptr::eq(old, new));
                     self.tc_cache.clear();
                     self.assert_def_eq(old.info.ty, new.info.ty);
@@ -1196,6 +1216,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             for ctor in inductive.ctors.iter() {
                 match (self.env.get_old_declar(&ctor.name), self.env.get_temp_declar(&ctor.name)) {
                     (Some(Declar::Constructor(old)), Some(Declar::Constructor(new))) => {
+                        assert!(old.aux_data_ck(new));
                         debug_assert!(!std::ptr::eq(old, new));
                         self.tc_cache.clear();
                         self.assert_def_eq(old.info.ty, new.info.ty);
@@ -1229,10 +1250,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         for new_rec in recursors {
             match (self.env.get_old_declar(&new_rec.info().name), new_rec) {
                 (
-                    Some(old @ Declar::Recursor(RecursorData { rec_rules: old_rec_rules, .. })),
-                    new @ Declar::Recursor(RecursorData { rec_rules: new_rec_rules, .. })
+                    Some(old @ Declar::Recursor(old_r @ RecursorData { rec_rules: old_rec_rules, .. })),
+                    new @ Declar::Recursor(new_r @ RecursorData { rec_rules: new_rec_rules, .. })
                 ) => {
                     self.tc_cache.clear();
+                    assert!(old_r.aux_data_ck(new_r));
                     assert!(!std::ptr::eq(old, new));
                     // Should be structurally != because they come from different envs.
                     assert_ne!(old, new);
@@ -1589,6 +1611,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let resolved_rec_name = nested_rec_name_to_rec_name.get(&rec_name).copied().unwrap_or(rec_name);
         match self.env.get_old_declar(&resolved_rec_name) {
             Some(Declar::Recursor(original @ RecursorData { .. })) => {
+                assert!(original.aux_data_ck(&restored));
                 self.tc_cache.clear();
                 self.assert_def_eq(original.info.ty, restored.info.ty);
                 // have to do the rec rules as well.
@@ -1639,6 +1662,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         old_ctor: &ConstructorData<'t>,
     ) {
         let new_ctor @ ConstructorData { .. } = self.env.get_constructor(&old_ctor.info.name).unwrap();
+        assert!(old_ctor.aux_data_ck(&new_ctor));
         let new_ty = self.restore_e(st, new_ctor.info.ty, rec_name_map);
         self.tc_cache.clear();
         self.assert_def_eq(old_ctor.info.ty, new_ty);
@@ -1657,6 +1681,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 self.env.get_temp_declar(&unmodified_ind_type.name),
             ) {
                 (Some(Declar::Inductive(old)), Some(Declar::Inductive(new))) => {
+                    assert!(old.aux_data_ck(new));
                     debug_assert!(!std::ptr::eq(old, new));
                     self.tc_cache.clear();
                     self.assert_def_eq(old.info.ty, new.info.ty);
