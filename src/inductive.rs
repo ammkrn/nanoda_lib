@@ -21,12 +21,34 @@ impl<'t, 'p: 't> ExportFile<'p> {
                                     ctor_ty = body;
                                 }
                             },
-                            _ => panic!()
+                            _ => panic!("expected constructor")
                         }
                     }
                     false
                 });
                 assert_eq!(ind.is_recursive, is_recursive);
+                self.with_ctx(|ctx| {
+                    let nested_pfx = ctx.str1("_nested");
+                    assert!(!ctx.has_nested_pfx(ind.info.ty, nested_pfx));
+                    for ind_name in ind.all_ind_names.iter() {
+                        match self.declars.get(ind_name).unwrap() {
+                            Declar::Inductive(ind_data @ InductiveData {..}) => {
+                                assert!(!ctx.has_nested_pfx(ind_data.info.ty, nested_pfx))
+                            },
+                            _ => panic!("expected inductive declar")
+                        }
+                        
+                    }
+                    for ctor_name in ind.all_ctor_names.iter() {
+                        match self.declars.get(ctor_name).unwrap() {
+                            Declar::Constructor(ctor_data @ ConstructorData {..}) => {
+                                assert!(!ctx.has_nested_pfx(ctor_data.info.ty, nested_pfx))
+                            },
+                            _ => panic!("expected constructor")
+                        }
+                    }
+                });
+
                 let (start, size) = self.mutual_block_sizes.get(&ind.info.name).unwrap();
                 (ind, crate::env::EnvLimit::ByIndex(start + size))
             }
