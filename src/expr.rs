@@ -675,6 +675,47 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         e
     }
 
+    pub(crate) fn has_nested_pfx(&self, e: ExprPtr<'t>, nested_pfx: NamePtr<'t>) -> bool {
+        debug_assert_eq!("_nested", format!("{:?}", self.debug_print(nested_pfx)));
+        self.find_e(e, |eprime| {
+            match self.read_expr(eprime) {
+                Const {name, ..} | Proj {ty_name: name, ..} => self.get_pfx(name) == nested_pfx,
+                _ => false
+            }
+        })
+    }
+
+    pub(crate) fn find_e<F>(&self, e: ExprPtr<'t>, pred: F) -> bool
+    where
+        F: FnOnce(ExprPtr<'t>) -> bool + Copy, {
+        let mut cache = crate::util::new_fx_hash_map();
+        self.find_aux(e, pred, &mut cache)
+    }
+
+    fn find_aux<F>(&self, e: ExprPtr<'t>, pred: F, cache: &mut FxHashMap<ExprPtr<'t>, bool>) -> bool
+    where
+        F: FnOnce(ExprPtr<'t>) -> bool + Copy, {
+        if let Some(cached) = cache.get(&e) {
+            *cached
+        } else {
+            let r = match self.read_expr(e) {
+                Var { .. } | Sort { .. } | NatLit { .. } | StringLit { .. } | Const { .. } => pred(e),
+                App { fun, arg, .. } => pred(e) || self.find_aux(fun, pred, cache) || self.find_aux(arg, pred, cache),
+                Pi { binder_type, body, .. } | Lambda { binder_type, body, .. } =>
+                    pred(e) || self.find_aux(binder_type, pred, cache) || self.find_aux(body, pred, cache),
+                Let { binder_type, val, body, .. } =>
+                    pred(e) 
+                        || self.find_aux(binder_type, pred, cache)
+                        || self.find_aux(val, pred, cache)
+                        || self.find_aux(body, pred, cache),
+                Local { binder_type, .. } => pred(e) || self.find_aux(binder_type, pred, cache),
+                Proj { structure, .. } => pred(e) || self.find_aux(structure, pred, cache),
+            };
+            cache.insert(e, r);
+            r
+        }
+    }
+
     pub(crate) fn find_const<F>(&self, e: ExprPtr<'t>, pred: F) -> bool
     where
         F: FnOnce(NamePtr<'t>) -> bool + Copy, {

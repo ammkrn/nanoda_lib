@@ -871,8 +871,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn def_eq_proj(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
         match self.ctx.read_expr_pair(x, y) {
-            (Proj { idx: idx_l, structure: structure_l, .. }, Proj { idx: idx_r, structure: structure_r, .. }) =>
-                idx_l == idx_r && self.def_eq(structure_l, structure_r),
+            (
+                Proj { ty_name: ty_name_l, idx: idx_l, structure: structure_l, .. },
+                Proj { ty_name: ty_name_r, idx: idx_r, structure: structure_r, .. }
+            ) => ty_name_l == ty_name_r && idx_l == idx_r && self.def_eq(structure_l, structure_r),
             _ => false,
         }
     }

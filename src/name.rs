@@ -27,6 +27,22 @@ impl<'a> Name<'a> {
 }
 
 impl<'x, 't: 'x, 'p: 't> TcCtx<'t, 'p> {
+    pub(crate) fn get_pfx(&self, mut n: NamePtr<'t>) -> NamePtr<'t> {
+        let anonymous = self.anonymous();
+        loop {
+            match self.read_name(n) {
+                Anon => return n,
+                Str(pfx, ..) | Num(pfx, ..) => { 
+                    if pfx == anonymous {
+                        return n
+                    } else {
+                        n = pfx 
+                    }
+                },
+            }
+        }
+    }
+
     pub(crate) fn concat_name(&mut self, n1: NamePtr<'t>, n2: NamePtr<'t>) -> NamePtr<'t> {
         match self.read_name(n2) {
             Anon => n1,
