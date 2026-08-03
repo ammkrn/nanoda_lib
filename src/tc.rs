@@ -1,7 +1,6 @@
 use crate::env::ReducibilityHint;
 use crate::env::{ConstructorData, Declar, DeclarInfo, Env, InductiveData, RecRule, RecursorData};
 use crate::expr::Expr;
-use crate::level::Level;
 use crate::util::{
     nat_div, nat_mod, nat_sub, nat_gcd, nat_land, nat_lor, 
     nat_xor, nat_shr, nat_shl, ExportFile, ExprPtr, LevelPtr, 
@@ -429,11 +428,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         self.whnf(ty)
     }
 
-    #[allow(non_snake_case)]
     fn infer_proj(&mut self, _ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
-        let structure_ty = self.infer(structure, flag);
-        let structure_ty = self.whnf(structure_ty);
-        let structure_ty_is_prop = self.is_proposition(structure_ty).0;
+        let structure_ty = self.infer_then_whnf(structure, flag);
+        let structure_ty_may_be_prop = self.may_be_prop(structure_ty).0;
         let (_, struct_ty_name, struct_ty_levels, struct_ty_args) = self.ctx.unfold_const_apps(structure_ty).unwrap();
 
         let InductiveData { info: inductive_info, all_ctor_names, num_params, .. } =
@@ -455,7 +452,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             match self.ctx.read_expr(ctor_ty) {
                 Pi { binder_type, body, .. } => {
                     if self.ctx.num_loose_bvars(body) != 0 {
-                      if structure_ty_is_prop && !self.is_proposition(binder_type).0 {
+                      if structure_ty_may_be_prop && !self.is_prop(binder_type).0 {
                           panic!("infer_proj prop")
                       }
                       let arg = self.ctx.mk_proj(inductive_info.name, i, structure);
@@ -470,7 +467,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let reduced = self.whnf(ctor_ty);
         match self.ctx.read_expr(reduced) {
             Pi { binder_type, .. } => {
-                if structure_ty_is_prop && !self.is_proposition(binder_type).0 {
+                if structure_ty_may_be_prop && !self.is_prop(binder_type).0 {
                     panic!("infer_proj prop")
                 }
                 binder_type
@@ -668,7 +665,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             if !reduce_types && matches!(self.ctx.read_expr(ty), Sort {..}) {
                 return e
             }
-            if !reduce_proofs && self.is_proposition(ty).0 {
+            if !reduce_proofs && self.is_prop(ty).0 {
                 return e
             }
         }
@@ -1023,9 +1020,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             let e_type_f = self.ctx.unfold_apps_fun(e_type);
             match self.ctx.read_expr(e_type_f) {
                 Const { name, .. } if name == ind_name => {
-                    let e_sort = self.infer_then_whnf(e_type, InferOnly);
                     // If it's a prop, return the original `e`
-                    if e_sort == self.ctx.prop() {
+                    if self.may_be_prop(e_type).0 {
                         e
                     } else {
                         // if it's not a prop, try to eta expand
@@ -1280,21 +1276,25 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
     }
 
-    pub fn is_sort_zero(&mut self, e: ExprPtr<'t>) -> bool {
-        let e = self.whnf(e);
-        match self.ctx.read_expr(e) {
-            Sort { level, .. } => self.ctx.read_level(level) == Level::Zero,
-            _ => false,
+    pub fn is_prop(&mut self, e: ExprPtr<'t>) -> (bool, ExprPtr<'t>) {
+        let ty = self.infer_then_whnf(e, InferOnly);
+        match self.ctx.read_expr(ty) {
+            Sort { level, .. } => (self.ctx.is_zero(level), ty),
+            _ => (false, ty),
         }
     }
-    pub fn is_proposition(&mut self, e: ExprPtr<'t>) -> (bool, ExprPtr<'t>) {
-        let infd = self.infer(e, InferOnly);
-        (self.is_sort_zero(infd), infd)
+
+    pub fn may_be_prop(&mut self, e: ExprPtr<'t>) -> (bool, ExprPtr<'t>) {
+        let ty = self.infer_then_whnf(e, InferOnly);
+        match self.ctx.read_expr(ty) {
+            Sort { level, .. } => (self.ctx.may_be_prop(level), ty),
+            _ => (false, ty),
+        }
     }
 
     pub fn is_proof(&mut self, e: ExprPtr<'t>) -> (bool, ExprPtr<'t>) {
         let infd = self.infer(e, InferOnly);
-        (self.is_proposition(infd).0, infd)
+        (self.is_prop(infd).0, infd)
     }
 
     fn proof_irrel_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
