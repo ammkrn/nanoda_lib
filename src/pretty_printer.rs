@@ -348,6 +348,13 @@ impl<'p> ExportFile<'p> {
     pub fn pp_selected_declars(&self, pp_destination: Option<&mut PpDestination>) -> Vec<Box<dyn std::error::Error>> {
         let mut errs = Vec::new();
         if let Some(pp_destination) = pp_destination {
+            if self.config.print_progress {
+                if let Some(ref path) = self.config.pp_output_path {
+                    eprintln!("Pretty printing to {}...", path.display());
+                } else {
+                    eprintln!("Pretty printing to stdout...");
+                }
+            }
             self.with_ctx(|ctx| {
                 let mut pp_declars = Vec::new();
                 if let Some(pp_declar_strings) = self.config.pp_declars.as_ref() {

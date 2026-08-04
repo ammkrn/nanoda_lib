@@ -1,6 +1,7 @@
 use nanoda_lib::util::Config;
 use std::error::Error;
 use std::path::Path;
+use std::time::Instant;
 
 fn main() -> Result<(), MainError> {
     let mut args = std::env::args();
@@ -20,6 +21,7 @@ fn main() -> Result<(), MainError> {
 
 // Returns an optional success message.
 fn use_config(config_path: &Path) -> Result<Option<String>, Box<dyn Error>> {
+    let total_start = Instant::now();
     let cfg = Config::try_from(config_path)?;
     // Make sure the target pretty printer destination is accessible before doing any real work.
     let mut pp_destination = cfg.get_pp_destination()?;
@@ -28,6 +30,7 @@ fn use_config(config_path: &Path) -> Result<Option<String>, Box<dyn Error>> {
     export_file.check_all_declars();
     // Pretty print as necessary
     let pp_errs = export_file.pp_selected_declars(pp_destination.as_mut());
+    if export_file.config.print_progress { eprintln!("Total time: {:.1}s", total_start.elapsed().as_secs_f64()); }
     if export_file.config.print_success_message {
         if pp_errs.is_empty() {
             if skipped_axioms.is_empty() {
