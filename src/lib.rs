@@ -17,7 +17,6 @@ pub mod quot;
 pub mod tc;
 #[cfg(test)]
 mod tests;
-pub mod union_find;
 pub mod unique_hasher;
 pub mod util;
 

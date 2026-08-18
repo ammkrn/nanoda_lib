@@ -4,7 +4,7 @@ use crate::expr::Expr;
 use crate::util::{
     nat_div, nat_mod, nat_sub, nat_gcd, nat_land, nat_lor, 
     nat_xor, nat_shr, nat_shl, ExportFile, ExprPtr, LevelPtr, 
-    LevelsPtr, NamePtr, TcCache, TcCtx, StringPtr
+    LevelsPtr, NamePtr, TcCache, TcCtx, StringPtr, SortedPair
 };
 use std::error::Error;
 use num_traits::pow::Pow;
@@ -964,7 +964,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             }
         };
         if result {
-            self.tc_cache.eq_cache.union(x, y);
+            self.tc_cache.eq_cache.insert(SortedPair::new(x, y));
         }
         result
     }
@@ -1139,7 +1139,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         if x == y {
             return Some(true)
         }
-        if self.tc_cache.eq_cache.check_uf_eq(x, y) {
+        if self.tc_cache.eq_cache.contains(&SortedPair::new(x, y)) {
             return Some(true)
         }
         if let Some(r) = self.def_eq_sort(x, y) {
@@ -1152,13 +1152,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
 
     fn failure_cache_contains(&self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
-        let pr = if x.get_hash() <= y.get_hash() { (x, y) } else { (y, x) };
-        self.tc_cache.failure_cache.contains(&pr)
+        self.tc_cache.failure_cache.contains(&SortedPair::new(x, y))
     }
 
     fn failure_cache_insert(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) {
-        let pr = if x.get_hash() <= y.get_hash() { (x, y) } else { (y, x) };
-        self.tc_cache.failure_cache.insert(pr);
+        self.tc_cache.failure_cache.insert(SortedPair::new(x, y));
     }
 
     fn try_eq_const_app(
@@ -1280,7 +1278,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let ty = self.infer_then_whnf(e, InferOnly);
         match self.ctx.read_expr(ty) {
             Sort { level, .. } => (self.ctx.is_zero(level), ty),
-            _ => (false, ty),
+            _ => panic!("expected a sort")
         }
     }
 
@@ -1288,7 +1286,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let ty = self.infer_then_whnf(e, InferOnly);
         match self.ctx.read_expr(ty) {
             Sort { level, .. } => (self.ctx.may_be_prop(level), ty),
-            _ => (false, ty),
+            _ => panic!("expected a sort")
         }
     }
 

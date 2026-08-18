@@ -4,7 +4,6 @@ use crate::level::Level;
 use crate::name::Name;
 use crate::pretty_printer::{PpOptions, PrettyPrinter};
 use crate::tc::TypeChecker;
-use crate::union_find::UnionFind;
 use crate::unique_hasher::UniqueHasher;
 use indexmap::{IndexMap, IndexSet};
 use num_bigint::BigUint;
@@ -816,14 +815,27 @@ pub struct NameCache<'p> {
     pub(crate) list_cons: Option<NamePtr<'p>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SortedPair<'t>(ExprPtr<'t>, ExprPtr<'t>);
+
+impl<'t> SortedPair<'t> {
+    pub fn new(a: ExprPtr<'t>, b: ExprPtr<'t>) -> Self {
+        if a.get_hash() <= b.get_hash() {
+            Self(a, b)
+        } else {
+            Self(b, a)
+        }
+    }
+}
+
 pub(crate) struct TcCache<'t> {
     pub(crate) infer_cache_check: UniqueHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) infer_cache_no_check: UniqueHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) whnf_cache: UniqueHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) whnf_no_unfolding_cache: UniqueHashMap<ExprPtr<'t>, ExprPtr<'t>>,
-    pub(crate) eq_cache: UnionFind<ExprPtr<'t>>,
+    pub(crate) eq_cache: FxHashSet<SortedPair<'t>>,
     /// A cache of congruence failures during the lazy delta step procedure.
-    pub(crate) failure_cache: FxHashSet<(ExprPtr<'t>, ExprPtr<'t>)>,
+    pub(crate) failure_cache: FxHashSet<SortedPair<'t>>,
     /// Strong reduction is not used during type-checking, this is more of a library/inspection feature.
     pub(crate) strong_cache: UniqueHashMap<(ExprPtr<'t>, bool, bool), ExprPtr<'t>>,
 }
@@ -835,7 +847,7 @@ impl<'t> TcCache<'t> {
             infer_cache_no_check: new_unique_hash_map(),
             whnf_cache: new_unique_hash_map(),
             whnf_no_unfolding_cache: new_unique_hash_map(),
-            eq_cache: UnionFind::new(),
+            eq_cache: new_fx_hash_set(),
             failure_cache: new_fx_hash_set(),
             strong_cache: new_unique_hash_map(),
         }

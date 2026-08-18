@@ -5,11 +5,10 @@ use crate::util::{FxHashSet, ExportFile, ExprPtr, FxIndexMap, LevelPtr, LevelsPt
 use std::sync::Arc;
 
 impl<'t, 'p: 't> ExportFile<'p> {
-    pub(crate) fn check_inductive_declar(&self, d: &Declar<'t>) {
-        let (ind, env_limit) = match d {
+    pub(crate) fn is_recursive(&self, ind_name: &NamePtr<'t>) -> bool {
+        match self.declars.get(ind_name).unwrap() {
             Declar::Inductive(ind) => {
-                // Assert computed `is_recursive` value matches the export file.
-                let is_recursive = self.with_ctx(|ctx| {
+                self.with_ctx(|ctx| {
                     for ctor_name in ind.all_ctor_names.iter() {
                         match self.declars.get(ctor_name).unwrap() {
                             Declar::Constructor(ctor_data @ ConstructorData {..}) => {
@@ -25,8 +24,20 @@ impl<'t, 'p: 't> ExportFile<'p> {
                         }
                     }
                     false
-                });
-                assert_eq!(ind.is_recursive, is_recursive);
+                })
+
+            },
+            _ => panic!("Not an inductive declaration")
+        }
+    }
+
+    pub(crate) fn check_inductive_declar(&self, d: &Declar<'t>) {
+        let (ind, env_limit) = match d {
+            Declar::Inductive(ind) => {
+                // Assert computed `is_recursive` value matches the export file. Lean considers
+                // all types in a mutual block to be `is_rec: true` if any one of them is recursive.
+                let block_is_recursive = ind.all_ind_names.iter().any(|ind_name| self.is_recursive(ind_name));
+                assert_eq!(ind.is_recursive, block_is_recursive);
                 self.with_ctx(|ctx| {
                     let nested_pfx = ctx.str1("_nested");
                     assert!(!ctx.has_nested_pfx(ind.info.ty, nested_pfx));
