@@ -1,7 +1,7 @@
 use crate::env::{ConstructorData, Declar, DeclarInfo, DeclarMap, InductiveData, RecRule, RecursorData};
 use crate::expr::{BinderStyle, Expr::*};
 use crate::tc::{InferFlag, TypeChecker};
-use crate::util::{ExportFile, ExprPtr, FxIndexMap, LevelPtr, LevelsPtr, NamePtr, TcCtx};
+use crate::util::{FxHashSet, ExportFile, ExprPtr, FxIndexMap, LevelPtr, LevelsPtr, NamePtr, TcCtx, new_fx_hash_set};
 use std::sync::Arc;
 
 impl<'t, 'p: 't> ExportFile<'p> {
@@ -105,8 +105,20 @@ impl<'t, 'p: 't> ExportFile<'p> {
 
             ctx.with_tc_and_env_ext(&recursor_extension, env_limit, |tc| {
                 if st.is_nested() {
-                    tc.restore_and_check(&st, &unmodified_tys_ctors, &ind.all_ind_names);
+                    let base_rec_names = tc.ctx.mk_base_rec_names(ind.all_ind_names.as_ref());
+                    let specialized_to_unspecialized_rec_names = tc.mk_specialized_rec_to_unspecialized_map(&unmodified_tys_ctors);
+                    // Just unions the unspecialized nested recursor names with the base ind type recursor names.
+                    let all_rec_names = {
+                        let mut base = base_rec_names.clone();
+                        for unspecialized_rec_name in specialized_to_unspecialized_rec_names.values().copied() {
+                            base.insert(unspecialized_rec_name);
+                        }
+                        base
+                    };
+                    tc.ctx.ck_recursor_names_simple(&d.info().name, all_rec_names);
+                    tc.restore_and_check(&st, &unmodified_tys_ctors, &ind.all_ind_names, &base_rec_names, &specialized_to_unspecialized_rec_names);
                 } else {
+                    tc.ctx.ck_recursor_names_simple(&d.info().name, recursors.iter().map(|x| x.info().name).collect());
                     // Do the definitional equality assertions of new/old here.
                     tc.assert_nonnested_tys_def_eq(ind, &st);
                     tc.assert_nonnested_ctors_def_eq(&st);
@@ -118,6 +130,34 @@ impl<'t, 'p: 't> ExportFile<'p> {
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
+    /// Make the `_.rec` names for the base inductive type, or the base types for a mutual block
+    /// (uses the `all_ind_names` of the declaration currently being checked).
+    fn mk_base_rec_names(&mut self, all_ind_names: &[NamePtr<'t>]) -> FxHashSet<NamePtr<'t>> {
+        let rec_str_ptr = self.alloc_string(std::borrow::Cow::Borrowed("rec"));
+        let mut out = new_fx_hash_set();
+        for ind_name in all_ind_names.iter().copied() {
+            out.insert(self.str(ind_name, rec_str_ptr));
+        }
+        out
+    }
+
+    /// Require that the set of un-specialized names for the derived recursors matches the set
+    /// of recursor names that appeared in the export file. Prevents addition to the environment 
+    /// of new recursors that don't belong.
+    fn ck_recursor_names_simple(&self, ind_name: &NamePtr<'t>, derived: FxHashSet<NamePtr<'t>>) {
+        let from_parser = self.export_file.ind_name_to_recursor_names.get(ind_name).unwrap();
+        if &derived == from_parser {
+            return
+        } else {
+            panic!(
+                "for inductive type {:?},\nexpected recursors {:?},\nwhile export file contained recursors {:?}",
+                self.debug_print(*ind_name),
+                self.debug_print(derived.iter().copied().collect::<Vec<_>>()),
+                self.debug_print(from_parser.iter().copied().collect::<Vec<_>>()),
+            )
+        }
+    }
+
     /// Extend the current environment with the inductive specifications,
     /// including modifications to accommodate any temporary declarations
     /// that come from nested inductives.
@@ -1655,13 +1695,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         st: &InductiveCheckState<'t>,
         specialized_rec_name_to_rec_name: &FxIndexMap<NamePtr<'t>, NamePtr<'t>>,
         ind_names_no_specialized: &Arc<[NamePtr<'t>]>,
+        // e.g. `Lean.Syntax.Node.rec`, `SExpr.rec`
+        base_rec_names: &FxHashSet<NamePtr<'t>>
     ) {
         // Check the recursors for the base inductives (NOT the specialized types)
-        for old_ind_name in ind_names_no_specialized.iter().copied() {
-            let rec_name = {
-                let rec_str_ptr = self.ctx.alloc_string(std::borrow::Cow::Borrowed("rec"));
-                self.ctx.str(old_ind_name, rec_str_ptr)
-            };
+        for rec_name in base_rec_names.iter().copied() {
             self.check_restored_recursor1(st, ind_names_no_specialized, specialized_rec_name_to_rec_name, rec_name)
         }
 
@@ -1695,8 +1733,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         st: &InductiveCheckState<'t>,
         unmodified_mutuals: &Vec<IndTyHeader<'t>>,
         ind_names_no_specialized: &Arc<[NamePtr<'t>]>,
+        base_rec_names: &FxHashSet<NamePtr<'t>>,
+        specialized_to_unspecialized_rec_names: &FxIndexMap<NamePtr<'t>, NamePtr<'t>>,
     ) {
-        let specialized_to_unspecialized_rec_names = self.mk_specialized_rec_to_unspecialized_map(unmodified_mutuals);
         for unmodified_ind_type in unmodified_mutuals.iter() {
             match (
                 self.env.get_old_declar(&unmodified_ind_type.name),
@@ -1719,6 +1758,6 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 self.check_restored_ctor1(st, &specialized_to_unspecialized_rec_names, &ctor);
             }
         }
-        self.restore_recursors(st, &specialized_to_unspecialized_rec_names, ind_names_no_specialized);
+        self.restore_recursors(st, &specialized_to_unspecialized_rec_names, ind_names_no_specialized, base_rec_names)
     }
 }

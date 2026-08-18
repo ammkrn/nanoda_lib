@@ -6,7 +6,7 @@ use crate::hash64;
 use crate::level::Level;
 use crate::name::Name;
 use crate::util::{
-    new_fx_hash_map, new_fx_index_map, BigUintPtr, Config, DagMarker, ExprPtr, FxHashMap, FxIndexMap,
+    new_fx_hash_map, new_fx_index_map, new_fx_hash_set, BigUintPtr, Config, DagMarker, ExprPtr, FxHashMap, FxIndexMap,
     LeanDag, LevelPtr, LevelsPtr, NamePtr, StringPtr,
 };
 use num_bigint::BigUint;
@@ -417,13 +417,37 @@ pub(crate) fn parse_export_file<'p, R: BufRead>(
     }
     
     let name_cache = parser.dag.mk_name_cache();
+    // Maps inductive names to exported recursor names. This is later reused in the inductive
+    // module to require that the set of derived recursors matches the set of exported recursors,
+    // so that additional "unassociated" recursors cannot be added to the environment.
+    let mut ind_name_to_recursor_names = new_fx_hash_map();
+    for declar in parser.declars.values() {
+        match declar {
+            Declar::Constructor(ConstructorData {inductive_name, info, ..}) => {
+                match parser.declars.get(inductive_name).unwrap() {
+                    Declar::Inductive(InductiveData {all_ctor_names, ..}) => {
+                        assert!(all_ctor_names.contains(&info.name))
+                    },
+                    _ => panic!("failed to find inductive {:?}", parser.name_to_string(*inductive_name))
+                }
+            }
+            Declar::Recursor(RecursorData {all_inductives, info, ..}) => {
+                for ind_name in all_inductives.iter().copied() {
+                    ind_name_to_recursor_names.entry(ind_name).or_insert(new_fx_hash_set()).insert(info.name);
+                }
+            },
+            _ => continue
+        }
+    }
+    
     let export_file = crate::util::ExportFile {
         dag: parser.dag,
         declars: parser.declars,
         notations: parser.notations,
         name_cache,
         config: parser.config,
-        mutual_block_sizes: parser.mutual_block_sizes
+        mutual_block_sizes: parser.mutual_block_sizes,
+        ind_name_to_recursor_names,
     };
     Ok((export_file, parser.skipped))
 }
