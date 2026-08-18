@@ -212,7 +212,8 @@ pub struct ExportFile<'p> {
     pub name_cache: NameCache<'p>,
     pub config: Config,
     // Information used for setting EnvLimit during inductive checking.
-    pub mutual_block_sizes: FxHashMap<NamePtr<'p>, (usize, usize)>
+    pub mutual_block_sizes: FxHashMap<NamePtr<'p>, (usize, usize)>,
+    pub ind_name_to_recursor_names: FxHashMap<NamePtr<'p>, FxHashSet<NamePtr<'p>>>
 }
 
 impl<'p> ExportFile<'p> {
