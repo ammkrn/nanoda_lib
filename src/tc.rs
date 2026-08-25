@@ -97,8 +97,42 @@ impl<'p> ExportFile<'p> {
             }
             Recursor(recursor_data) => {
                 self.with_tc_and_declar(*d.info(), |tc| tc.check_declar_info(d).unwrap());
+                match recursor_data.all_inductives.get(0) {
+                    None => self.with_ctx(|ctx| {
+                        panic!("Recursors must be derived from an associated inductive type, but recursor {:?} had none", ctx.debug_print(recursor_data.info.name))
+                    }),
+                    Some(ind_name) => match self.declars.get(ind_name) {
+                        None => self.with_ctx(|ctx| {
+                            panic!("Recursors must be derived from an associated inductive declaration. Inductive declaration {:?} does not exist", ctx.debug_print(*ind_name))
+                        }),
+                        Some(Inductive {..}) => (),
+                        Some(_) => self.with_ctx(|ctx| {
+                            panic!("Recursors must be derived from an associated inductive type. Declaration {:?} is not an inductive type", ctx.debug_print(*ind_name))
+                        }),
+                    }
+                }
+                let recursor_idx = self.declars.get_index_of(&recursor_data.info.name).unwrap();
                 for ind_name in recursor_data.all_inductives.iter() {
-                    assert!(self.declars.get(ind_name).is_some())
+                    match self.declars.get_index_of(ind_name) {
+                        None => self.with_ctx(|ctx| {
+                            panic!(
+                                "Recursor {:?} references inductive declaration {:?} which does not exist.",
+                                ctx.debug_print(recursor_data.info.name),
+                                ctx.debug_print(*ind_name)
+                            )
+                        }),
+                        Some(ind_idx) => if recursor_idx <= ind_idx {
+                            self.with_ctx(|ctx| {
+                                panic!(
+                                    "Inductive declarations must be exported prior to any derived recursors. ({:?}, {}), ({:?}, {})",
+                                    ctx.debug_print(recursor_data.info.name),
+                                    recursor_idx,
+                                    ctx.debug_print(*ind_name),
+                                    ind_idx
+                                )
+                            })
+                        } 
+                    }
                 }
             }
         }
