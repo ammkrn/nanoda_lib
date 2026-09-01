@@ -429,7 +429,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut param_locals = Vec::with_capacity(num_params as usize);
         for _ in 0..num_params {
             match self.ctx.read_expr(e) {
-                Pi { binder_name, binder_style, binder_type, body, .. } => {
+                Pi { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = crate::expr::meta_binder_style(meta);
                     let local_ = self.ctx.mk_unique(binder_name, binder_style, binder_type);
                     e = self.ctx.inst(body, &[local_]);
                     e = self.whnf(e);
@@ -450,7 +451,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         ind_ty_cursor = self.whnf(ind_ty_cursor);
         let mut indices_locals = Vec::new();
         let mut i = 0;
-        while let Pi { binder_name, binder_style, binder_type, body, .. } = self.ctx.read_expr(ind_ty_cursor) {
+        while let Pi { binder_name, binder_type, body, meta, .. } = self.ctx.read_expr(ind_ty_cursor) {
+            let binder_style = crate::expr::meta_binder_style(meta);
             if i < st.local_params.len() {
                 let local_ = st.local_params[i];
                 match self.ctx.read_expr(local_) {
@@ -488,7 +490,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut ind_ty_cursor = self.whnf(ind.ty);
         let mut indices_locals = Vec::new();
         let mut i = 0;
-        while let Pi { binder_name, binder_style, binder_type, body, .. } = self.ctx.read_expr(ind_ty_cursor) {
+        while let Pi { binder_name, binder_type, body, meta, .. } = self.ctx.read_expr(ind_ty_cursor) {
+            let binder_style = crate::expr::meta_binder_style(meta);
             if i < st.local_params.len() {
                 ind_ty_cursor = self.ctx.inst(body, &[st.local_params[i]]);
                 ind_ty_cursor = self.whnf(ind_ty_cursor);
@@ -710,12 +713,14 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         } else {
             match self.ctx.read_expr(e) {
                 Var { .. } | Sort { .. } | Const { .. } | Local { .. } | NatLit { .. } | StringLit { .. } => e,
-                Pi { binder_name, binder_style, binder_type, body, .. } => {
+                Pi { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = crate::expr::meta_binder_style(meta);
                     let binder_type = self.replace_all_nested(binder_type, st, outgoing_params);
                     let body = self.replace_all_nested(body, st, outgoing_params);
                     self.ctx.mk_pi(binder_name, binder_style, binder_type, body)
                 }
-                Lambda { binder_name, binder_style, binder_type, body, .. } => {
+                Lambda { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = crate::expr::meta_binder_style(meta);
                     let binder_type = self.replace_all_nested(binder_type, st, outgoing_params);
                     let body = self.replace_all_nested(body, st, outgoing_params);
                     self.ctx.mk_lambda(binder_name, binder_style, binder_type, body)
@@ -760,7 +765,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             ctor_type_cursor = self.whnf(ctor_type_cursor);
             match self.ctx.read_expr(ctor_type_cursor) {
                 _any if !self.has_ind_occ(ctor_type_cursor, st.ind_consts.as_ref()) => return,
-                Pi { binder_name, binder_style, binder_type, body, .. } => {
+                Pi { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = crate::expr::meta_binder_style(meta);
                     if self.has_ind_occ(binder_type, st.ind_consts.as_ref()) {
                         panic!("non-positive occurrence");
                     }
@@ -896,7 +902,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             }
         }
         // Non-param constructor args.
-        while let Pi { binder_name, binder_type, binder_style, body, .. } = self.ctx.read_expr(ctor_type_cursor) {
+        while let Pi { binder_name, binder_type, body, meta, .. } = self.ctx.read_expr(ctor_type_cursor) {
+            let binder_style = crate::expr::meta_binder_style(meta);
             let s = self.ensure_infers_as_sort(binder_type);
             // The inductive being constructed either has to be a `Prop`,
             // or the constructor argument's type has to be <= the inductive's
@@ -939,12 +946,14 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut non_prop_ctor_telescope_elems = Vec::new();
         loop {
             match self.ctx.read_expr(ctor_type_cursor) {
-                Pi { binder_name, binder_style, binder_type, body, .. } if rem_params != 0 => {
+                Pi { binder_name, binder_type, body, meta, .. } if rem_params != 0 => {
+                    let binder_style = crate::expr::meta_binder_style(meta);
                     let local = self.ctx.mk_unique(binder_name, binder_style, binder_type);
                     ctor_type_cursor = self.ctx.inst(body, &[local]);
                     rem_params -= 1;
                 }
-                Pi { binder_name, binder_style, binder_type, body, .. } => {
+                Pi { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = crate::expr::meta_binder_style(meta);
                     let local = self.ctx.mk_unique(binder_name, binder_style, binder_type);
                     ctor_type_cursor = self.ctx.inst(body, &[local]);
                     let binder_type_level = self.ensure_infers_as_sort(binder_type);
@@ -1081,7 +1090,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn is_rec_argument(&mut self, st: &InductiveCheckState<'t>, mut ctor_btype_cursor: ExprPtr<'t>) -> Option<usize> {
         ctor_btype_cursor = self.whnf(ctor_btype_cursor);
-        if let Pi { binder_name, binder_style, binder_type, body, .. } = self.ctx.read_expr(ctor_btype_cursor) {
+        if let Pi { binder_name, binder_type, body, meta, .. } = self.ctx.read_expr(ctor_btype_cursor) {
+            let binder_style = crate::expr::meta_binder_style(meta);
             let local = self.ctx.mk_unique(binder_name, binder_style, binder_type);
             ctor_btype_cursor = self.ctx.inst(body, &[local]);
             self.is_rec_argument(st, ctor_btype_cursor)
@@ -1092,7 +1102,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn handle_rec_args_aux(&mut self, mut rec_arg_cursor: ExprPtr<'t>) -> (ExprPtr<'t>, Vec<ExprPtr<'t>>) {
         let mut xs = Vec::new();
-        while let Pi { binder_name, binder_style, binder_type, body, .. } = self.ctx.read_expr(rec_arg_cursor) {
+        while let Pi { binder_name, binder_type, body, meta, .. } = self.ctx.read_expr(rec_arg_cursor) {
+            let binder_style = crate::expr::meta_binder_style(meta);
             let local = self.ctx.mk_unique(binder_name, binder_style, binder_type);
             rec_arg_cursor = self.ctx.inst(body, &[local]);
             rec_arg_cursor = self.whnf(rec_arg_cursor);
@@ -1118,7 +1129,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 _ => panic!(),
             }
         }
-        while let Pi { binder_name, binder_style, binder_type, body, .. } = self.ctx.read_expr(ctor_type_cursor) {
+        while let Pi { binder_name, binder_type, body, meta, .. } = self.ctx.read_expr(ctor_type_cursor) {
+            let binder_style = crate::expr::meta_binder_style(meta);
             let local = self.ctx.mk_unique(binder_name, binder_style, binder_type);
             ctor_type_cursor = self.ctx.inst(body, &[local]);
             all_args.push(local);
@@ -1488,7 +1500,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             Some(out) => out,
             None => match self.ctx.read_expr(e) {
                 Var { .. } | Sort { .. } | Const { .. } | Local { .. } | StringLit { .. } | NatLit { .. } => e,
-                Lambda { binder_name, binder_style, binder_type, body, .. } => {
+                Lambda { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = crate::expr::meta_binder_style(meta);
                     let binder_type = self.restore_replace(
                         binder_type,
                         local_params,
@@ -1499,7 +1512,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                         self.restore_replace(body, local_params, st, specialized_rec_names_to_unspecialized_rec_names);
                     self.ctx.mk_lambda(binder_name, binder_style, binder_type, body)
                 }
-                Pi { binder_name, binder_style, binder_type, body, .. } => {
+                Pi { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = crate::expr::meta_binder_style(meta);
                     let binder_type = self.restore_replace(
                         binder_type,
                         local_params,
@@ -1618,8 +1632,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         for _ in 0..st.local_params.len() {
             match self.ctx.read_expr(e) {
                 // Also match on Lambda for restoring recursor rules.
-                Pi { binder_name, binder_style, binder_type, body, .. }
-                | Lambda { binder_name, binder_style, binder_type, body, .. } => {
+                Pi { binder_name, binder_type, body, meta, .. }
+                | Lambda { binder_name, binder_type, body, meta, .. } => {
+                    let binder_style = crate::expr::meta_binder_style(meta);
                     let local = self.ctx.mk_unique(binder_name, binder_style, binder_type);
                     e = self.ctx.inst(body, &[local]);
                     locals.push(local);

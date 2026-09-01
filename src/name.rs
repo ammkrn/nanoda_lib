@@ -18,7 +18,7 @@ impl<'a> std::hash::Hash for Name<'a> {
 }
 
 impl<'a> Name<'a> {
-    fn get_hash(&self) -> u64 {
+    pub(crate) fn get_hash(&self) -> u64 {
         match self {
             Anon => ANON_HASH,
             Str(.., hash) | Num(.., hash) => *hash,
