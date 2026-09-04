@@ -56,7 +56,19 @@ pub(crate) enum InferFlag {
 }
 
 pub struct TypeChecker<'x, 't, 'p> {
-    pub(crate) ctx: &'x mut TcCtx<'t, 'p>,
+    /// Public so a caller can build expressions while this checker is alive.
+    ///
+    /// Inference and construction are otherwise mutually exclusive from outside the crate:
+    /// `TypeChecker::new` requires `dbj_level_counter == 0`, so no checker may be created once a
+    /// binder has been opened with `mk_dbj_level`, and this field was `pub(crate)`, so a live
+    /// checker could not be used to build. That ruled out doing from outside what this crate does
+    /// internally throughout: descend under a binder by turning it into a free variable, then
+    /// infer the resulting open term.
+    ///
+    /// A field rather than an accessor: `fn ctx(&mut self) -> &mut TcCtx` reborrows all of
+    /// `self`, so it would block `env`, `tc_cache` and `declar_info` for the borrow's duration.
+    /// Field access is disjoint.
+    pub ctx: &'x mut TcCtx<'t, 'p>,
     /// An immutable reference to an environment, which contains declarations and notation.
     /// To accommodate the temporary declarations created while checking nested inductives,
     /// the environment may have a temporary extension which also holds declarations, and
@@ -187,20 +199,6 @@ impl<'p> ExportFile<'p> {
 }
 
 impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
-    /// The underlying `TcCtx`, so a caller can build expressions while this checker is alive.
-    ///
-    /// Inference and construction are otherwise mutually exclusive from outside the crate:
-    /// `TypeChecker::new` requires `dbj_level_counter == 0`, so no checker may be created once a
-    /// binder has been opened with `mk_dbj_level`, and the `ctx` field is `pub(crate)` so a live
-    /// checker cannot be used to build. That leaves no way to do from outside what this crate
-    /// does internally — descend under a binder by turning it into a free variable, then infer
-    /// the resulting open term.
-    ///
-    /// Exposes nothing new in effect: every `TcCtx` method this gives access to is already `pub`.
-    pub fn ctx(&mut self) -> &mut TcCtx<'t, 'p> {
-        self.ctx
-    }
-
     pub fn new(dag: &'x mut TcCtx<'t, 'p>, env: &'x Env<'x, 't>, declar_info: Option<DeclarInfo<'t>>) -> Self {
         assert_eq!(dag.dbj_level_counter, 0);
         Self { ctx: dag, env, tc_cache: TcCache::new(), declar_info } 
