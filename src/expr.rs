@@ -163,7 +163,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     /// Instantiate `e` with the substitutions in `substs`
     pub fn inst(&mut self, e: ExprPtr<'t>, substs: &[ExprPtr<'t>]) -> ExprPtr<'t> {
-        self.expr_cache.inst_cache.clear();
+        if self.expr_cache.inst_cache.capacity() > 1024 { 
+            self.expr_cache.inst_cache = crate::util::new_fx_hash_map(); 
+        } else { 
+            self.expr_cache.inst_cache.clear(); 
+        }
         self.inst_aux(e, substs, 0)
     }
 
@@ -271,7 +275,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub fn abstr_levels(&mut self, e: ExprPtr<'t>, start_pos: u16) -> ExprPtr<'t> {
-        self.expr_cache.abstr_cache_levels.clear();
+        if self.expr_cache.abstr_cache_levels.capacity() > 1024 { 
+            self.expr_cache.abstr_cache_levels = crate::util::new_fx_hash_map(); 
+        } else { 
+            self.expr_cache.abstr_cache_levels.clear(); 
+        } 
         self.abstr_aux_levels(e, start_pos, self.dbj_level_counter)
     }
 
@@ -326,7 +334,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// Abstraction of unique identifiers; replaces free variables with the appropriate
     /// bound variable, if the free variable is in `locals`.
     pub fn abstr(&mut self, e: ExprPtr<'t>, locals: &[ExprPtr<'t>]) -> ExprPtr<'t> {
-        self.expr_cache.abstr_cache.clear();
+        if self.expr_cache.abstr_cache.capacity() > 1024 { 
+            self.expr_cache.abstr_cache = crate::util::new_fx_hash_map(); 
+        } else { 
+            self.expr_cache.abstr_cache.clear(); 
+        } 
         self.abstr_aux(e, locals, 0u16)
     }
 
@@ -383,7 +395,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if let Some(cached) = self.expr_cache.dsubst_cache.get(&(e, ks, vs)).copied() {
             return cached
         }
-        self.expr_cache.subst_cache.clear();
+        if self.expr_cache.subst_cache.capacity() > 1024 { 
+            self.expr_cache.subst_cache = crate::util::new_fx_hash_map(); 
+        } else { 
+            self.expr_cache.subst_cache.clear(); 
+        } 
         assert_eq!(self.read_levels(ks).len(), self.read_levels(vs).len());
         let out = self.subst_aux(e, ks, vs);
         self.expr_cache.dsubst_cache.insert((e, ks, vs), out);
