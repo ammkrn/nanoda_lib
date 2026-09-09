@@ -18,7 +18,7 @@ pub enum Level<'a> {
 }
 
 impl<'a> Level<'a> {
-    fn get_hash(&self) -> u64 {
+    pub(crate) fn get_hash(&self) -> u64 {
         match self {
             Zero => ZERO_HASH,
             Succ(.., hash) | Max(.., hash) | IMax(.., hash) | Param(.., hash) => *hash,
