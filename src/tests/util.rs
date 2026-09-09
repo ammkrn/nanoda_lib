@@ -108,26 +108,51 @@ pub(crate) fn rand_string<'t>(rng: &mut ThreadRng, size: usize) -> CowStr<'t> {
 
 #[test]
 fn hash_test0() -> Result<(), Box<dyn Error>> {
+    use crate::expr::Expr;
     use crate::hash64;
-    use num_bigint::RandBigInt;
+    use num_bigint::{BigUint, RandBigInt};
     use rand::thread_rng;
-    test_export_file(None, |export| {
-        let mut rng = thread_rng();
-        export.with_ctx(|ctx| {
-            for size in 0..100 {
-                for _ in 0..100 {
-                    let s = rand_string(&mut rng, size);
-                    let (l, r) = (ctx.mk_string_lit_quick(s.clone()), ctx.mk_string_lit_quick(s));
-                    assert_eq!(hash64!(l), hash64!(r));
-                    assert_eq!(l, r)
+
+    let (disabled_export, _) = test_get_export_file(None)?;
+    disabled_export.with_ctx(|ctx| {
+        assert!(ctx.mk_string_lit_quick(CowStr::Borrowed("disabled")).is_none());
+        assert!(ctx.mk_nat_lit_quick(BigUint::from(0u8)).is_none());
+    });
+
+    let mut enabled_config = disabled_export.config.clone();
+    enabled_config.nat_extension = true;
+    enabled_config.string_extension = true;
+    let (export, _) = enabled_config.to_export_file()?;
+
+    let mut rng = thread_rng();
+    export.with_ctx(|ctx| {
+        for size in 0..100 {
+            for _ in 0..100 {
+                let s = rand_string(&mut rng, size);
+                let l = ctx.mk_string_lit_quick(s.clone()).expect("string extension should construct a literal");
+                let r =
+                    ctx.mk_string_lit_quick(s.clone()).expect("string extension should construct a repeated literal");
+                match ctx.read_expr(l) {
+                    Expr::StringLit { ptr, .. } => assert_eq!(ctx.read_string(ptr), &s),
+                    other => panic!("expected StringLit, got {:?}", other),
                 }
-                for _ in 0..100 {
-                    let s = rng.gen_biguint(size as u64);
-                    let (l, r) = (ctx.mk_nat_lit_quick(s.clone()), ctx.mk_nat_lit_quick(s));
-                    assert_eq!(hash64!(l), hash64!(r));
-                    assert_eq!(l, r)
-                }
+                assert_eq!(hash64!(l), hash64!(r));
+                assert_eq!(l, r);
             }
-        })
-    })
+            for _ in 0..100 {
+                let n = rng.gen_biguint(size as u64);
+                let l = ctx.mk_nat_lit_quick(n.clone()).expect("nat extension should construct a literal");
+                let r = ctx.mk_nat_lit_quick(n.clone()).expect("nat extension should construct a repeated literal");
+                match ctx.read_expr(l) {
+                    Expr::NatLit { ptr, .. } => {
+                        assert_eq!(ctx.read_bignum(ptr).expect("enabled nat DAG should store bignums"), &n)
+                    }
+                    other => panic!("expected NatLit, got {:?}", other),
+                }
+                assert_eq!(hash64!(l), hash64!(r));
+                assert_eq!(l, r);
+            }
+        }
+    });
+    Ok(())
 }
