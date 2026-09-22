@@ -888,20 +888,23 @@ impl<'a, R: BufRead> Parser<'a, R> {
     }
 }
 
-
 /// Decimal string -> BigUint in sub-quadratic time. `BigUint::from_str` is quadratic in the digit count,
 /// which makes nat literals with millions of digits (as in large `decide`/`norm_num` proofs) take days.
 /// This splits the digit string by 10^(BASE_DIGITS * 2^j) and combines with big multiplications
 /// (Karatsuba/Toom-3), so cost is that of multiplication times a log factor. Same value as `from_str`.
-fn parse_decimal_fast(s: &str) -> Result<BigUint, String> {
+pub(crate) fn parse_decimal_fast(s: &str) -> Result<BigUint, String> {
     use std::str::FromStr;
     const BASE_DIGITS: usize = 2048;
     if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
         return Err("expected a non-empty string of ASCII digits".to_string());
     }
-    fn go(s: &[u8], pows: &mut Vec<BigUint>) -> BigUint {
+    let s = s.trim_start_matches('0');
+    if s.is_empty() {
+        return Ok(BigUint::ZERO);
+    }
+    fn go(s: &str, pows: &mut Vec<BigUint>) -> BigUint {
         if s.len() <= 2 * BASE_DIGITS {
-            return BigUint::from_str(std::str::from_utf8(s).unwrap()).unwrap();
+            return BigUint::from_str(s).expect("validated nonempty ASCII digits");
         }
         // largest j with BASE_DIGITS * 2^j < s.len()
         let mut j = 0usize;
@@ -920,7 +923,7 @@ fn parse_decimal_fast(s: &str) -> Result<BigUint, String> {
         hi_v * &pows[j] + lo_v
     }
     let mut pows: Vec<BigUint> = Vec::new();
-    Ok(go(s.as_bytes(), &mut pows))
+    Ok(go(s, &mut pows))
 }
 
 #[cfg(test)]
@@ -954,7 +957,6 @@ mod parse_decimal_fast_tests {
 /// https://github.com/leanprover/lean4export/blob/ddeb0869b0b5679b0104e16291ffd929fbaa6a48/format_ndjson.md?plain=1#L186
 fn deserialize_biguint_from_string<'de, D>(deserializer: D) -> Result<BigUint, D::Error>
 where D: Deserializer<'de> {
-    use std::str::FromStr;
     struct BigUintStringVisitor;
 
     impl<'de> Visitor<'de> for BigUintStringVisitor {

@@ -1,6 +1,6 @@
 use crate::util::{Config, CowStr, ExportFile, ExprPtr, LevelPtr, TcCtx};
-use rand::distributions::Alphanumeric;
-use rand::{rngs::ThreadRng, Rng};
+use rand::distr::Alphanumeric;
+use rand::rngs::ThreadRng;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -102,6 +102,7 @@ fn check_proj_from_prop() {
 }
 
 pub(crate) fn rand_string<'t>(rng: &mut ThreadRng, size: usize) -> CowStr<'t> {
+    use rand::RngExt;
     let rand_string: String = rng.sample_iter(&Alphanumeric).take(size).map(char::from).collect();
     CowStr::Owned(rand_string)
 }
@@ -109,10 +110,9 @@ pub(crate) fn rand_string<'t>(rng: &mut ThreadRng, size: usize) -> CowStr<'t> {
 #[test]
 fn hash_test0() -> Result<(), Box<dyn Error>> {
     use crate::hash64;
-    use num_bigint::RandBigInt;
-    use rand::thread_rng;
+    use num_bigint::BigRng010;
     test_export_file(None, |export| {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         export.with_ctx(|ctx| {
             for size in 0..100 {
                 for _ in 0..100 {
@@ -122,7 +122,7 @@ fn hash_test0() -> Result<(), Box<dyn Error>> {
                     assert_eq!(l, r)
                 }
                 for _ in 0..100 {
-                    let s = rng.gen_biguint(size as u64);
+                    let s = rng.random_biguint(size as u64);
                     let (l, r) = (ctx.mk_nat_lit_quick(s.clone()), ctx.mk_nat_lit_quick(s));
                     assert_eq!(hash64!(l), hash64!(r));
                     assert_eq!(l, r)
