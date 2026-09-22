@@ -888,11 +888,75 @@ impl<'a, R: BufRead> Parser<'a, R> {
     }
 }
 
+/// Decimal string -> BigUint in sub-quadratic time. `BigUint::from_str` is quadratic in the digit count,
+/// which makes nat literals with millions of digits (as in large `decide`/`norm_num` proofs) take days.
+/// This splits the digit string by 10^(BASE_DIGITS * 2^j) and combines with big multiplications
+/// (Karatsuba/Toom-3), so cost is that of multiplication times a log factor. Same value as `from_str`.
+pub(crate) fn parse_decimal_fast(s: &str) -> Result<BigUint, String> {
+    use std::str::FromStr;
+    const BASE_DIGITS: usize = 2048;
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("expected a non-empty string of ASCII digits".to_string());
+    }
+    let s = s.trim_start_matches('0');
+    if s.is_empty() {
+        return Ok(BigUint::ZERO);
+    }
+    fn go(s: &str, pows: &mut Vec<BigUint>) -> BigUint {
+        if s.len() <= 2 * BASE_DIGITS {
+            return BigUint::from_str(s).expect("validated nonempty ASCII digits");
+        }
+        // largest j with BASE_DIGITS * 2^j < s.len()
+        let mut j = 0usize;
+        while BASE_DIGITS << (j + 1) < s.len() { j += 1; }
+        while pows.len() <= j {
+            let next = match pows.last() {
+                None => num_traits::pow::pow(BigUint::from(10u8), BASE_DIGITS),
+                Some(last) => last * last,
+            };
+            pows.push(next);
+        }
+        let m = BASE_DIGITS << j;
+        let (hi, lo) = s.split_at(s.len() - m);
+        let hi_v = go(hi, pows);
+        let lo_v = go(lo, pows);
+        hi_v * &pows[j] + lo_v
+    }
+    let mut pows: Vec<BigUint> = Vec::new();
+    Ok(go(s, &mut pows))
+}
+
+#[cfg(test)]
+mod parse_decimal_fast_tests {
+    use super::*;
+    use std::str::FromStr;
+    #[test]
+    fn matches_from_str() {
+        let mut x: u64 = 88172645463325252;
+        let mut next = || { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x };
+        let lens = [1usize, 2, 9, 4095, 4096, 4097, 4098, 6144, 8191, 8192, 8193, 12345, 40000, 100_000, 300_001];
+        for &l in &lens {
+            for trial in 0..3 {
+                let mut st = String::with_capacity(l);
+                for i in 0..l {
+                    let d = if trial == 1 && i < l / 2 { 0 } else { (next() % 10) as u8 }; // leading zeros too
+                    st.push((b'0' + d) as char);
+                }
+                assert_eq!(parse_decimal_fast(&st).unwrap(), BigUint::from_str(&st).unwrap(), "len {l} trial {trial}");
+            }
+        }
+        assert_eq!(parse_decimal_fast("0").unwrap(), BigUint::from(0u8));
+        let nines = "9".repeat(20000);
+        assert_eq!(parse_decimal_fast(&nines).unwrap(), BigUint::from_str(&nines).unwrap());
+        assert!(parse_decimal_fast("").is_err());
+        assert!(parse_decimal_fast("12a").is_err());
+    }
+}
+
 /// Needed because the lean4export format serializes nat literals as strings: 
 /// https://github.com/leanprover/lean4export/blob/ddeb0869b0b5679b0104e16291ffd929fbaa6a48/format_ndjson.md?plain=1#L186
 fn deserialize_biguint_from_string<'de, D>(deserializer: D) -> Result<BigUint, D::Error>
 where D: Deserializer<'de> {
-    use std::str::FromStr;
     struct BigUintStringVisitor;
 
     impl<'de> Visitor<'de> for BigUintStringVisitor {
@@ -903,7 +967,7 @@ where D: Deserializer<'de> {
         }
 
         fn visit_str<E>(self, v: &str) -> Result<BigUint, E> where E: DeError {
-            BigUint::from_str(v).map_err(|e| E::custom(format!("invalid BigUint decimal string: {e}")))
+            parse_decimal_fast(v).map_err(|e| E::custom(format!("invalid BigUint decimal string: {e}")))
         }
 
         fn visit_string<E>(self, v: String) -> Result<BigUint, E> where E: DeError {
