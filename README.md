@@ -36,6 +36,8 @@ If `"unsafe_permit_all_axioms"` is set to `true`, all axioms will be admitted to
 
 `"pp_declars"` is a list of declarations to be printed back by the pretty printer.
 
+`"print_axioms"` determines whether the axioms admitted to the environment are also printed back by the pretty printer. Like `"pp_declars"`, they are only printed if `"pp_to_stdout"` or `"pp_output_path"` is set. Defaults to `true`.
+
 `"pp_options"` are the options to be used by the pretty printer.
 
 `"pp_to_stdout"` determines whether the pretty printer output is written to stdout. This is not mutually exclusive with `"pp_output_path"`; if both options are set, the pretty printer output will be written to both stdout and the specified path.
