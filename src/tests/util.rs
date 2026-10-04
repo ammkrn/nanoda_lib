@@ -1,3 +1,5 @@
+use crate::env::EnvLimit;
+use crate::expr::BinderStyle;
 use crate::util::{Config, CowStr, ExportFile, ExprPtr, LevelPtr, TcCtx};
 use rand::distr::Alphanumeric;
 use rand::rngs::ThreadRng;
@@ -99,6 +101,33 @@ fn check_proj_from_prop() {
             }
         },
     )
+}
+
+#[test]
+fn projection_type_name_participates_in_def_eq() -> Result<(), Box<dyn Error>> {
+    test_export_file(Some(Path::new("test_resources/ProjectionIdentity/config.json")), |export| {
+        export.with_tc(EnvLimit::PpUnlimited, |tc| {
+            let pprod = tc.ctx.str1("PProd");
+            let other = tc.ctx.str1("Other");
+            let binder = tc.ctx.str1("p");
+            let one = tc.ctx.succ(tc.ctx.zero());
+            let levels = tc.ctx.alloc_levels_slice(&[one, one]);
+            let field_type = tc.ctx.mk_sort(one);
+            let pprod_type = tc.ctx.mk_const(pprod, levels);
+            let pprod_type = tc.ctx.mk_app(pprod_type, field_type);
+            let pprod_type = tc.ctx.mk_app(pprod_type, field_type);
+            let structure = tc.ctx.mk_dbj_level(binder, BinderStyle::Default, pprod_type);
+
+            let left = tc.ctx.mk_proj(pprod, 0, structure);
+            let same = tc.ctx.mk_proj(pprod, 0, structure);
+            let other_index = tc.ctx.mk_proj(pprod, 1, structure);
+            let other_type = tc.ctx.mk_proj(other, 0, structure);
+
+            assert!(tc.def_eq(left, same));
+            assert!(!tc.def_eq(left, other_index));
+            assert!(!tc.def_eq(left, other_type));
+        })
+    })
 }
 
 pub(crate) fn rand_string<'t>(rng: &mut ThreadRng, size: usize) -> CowStr<'t> {
