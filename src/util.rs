@@ -938,7 +938,7 @@ impl TryFrom<&Path> for Config {
         match OpenOptions::new().read(true).truncate(false).open(p) {
             Err(e) => Err(Box::from(format!("failed to open configuration file: {:?}", e))),
             Ok(config_file) => {
-                let config = serde_json::from_reader::<_, Config>(BufReader::new(config_file)).unwrap();
+                let config = serde_json::from_reader::<_, Config>(BufReader::new(config_file))?;
                 if config.export_file_path.is_none() && !config.use_stdin {
                     return Err(Box::from(format!("incompatible config options: must specify a path to an export file OR set `use_stdin: true`")))
                 }
