@@ -483,14 +483,16 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         self.whnf(ty)
     }
 
-    fn infer_proj(&mut self, _ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
+    fn infer_proj(&mut self, ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
         let structure_ty = self.infer_then_whnf(structure, flag);
         let structure_ty_may_be_prop = self.may_be_prop(structure_ty).0;
         let (_, struct_ty_name, struct_ty_levels, struct_ty_args) = self.ctx.unfold_const_apps(structure_ty).unwrap();
 
         let InductiveData { info: inductive_info, all_ctor_names, num_params, .. } =
             self.env.get_structure(&struct_ty_name, true).unwrap();
-
+        if inductive_info.name != ty_name {
+            panic!("Invalid projection: {:?} != {:?}", self.ctx.debug_print(inductive_info.name), self.ctx.debug_print(ty_name));
+        }
         let ConstructorData { info: ctor_info, .. } = self.env.get_constructor(&all_ctor_names[0]).unwrap();
         let mut ctor_ty = self.ctx.subst_declar_info_levels(*ctor_info, struct_ty_levels);
         for i in 0..(*num_params) {
