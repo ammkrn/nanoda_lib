@@ -1,6 +1,6 @@
 use crate::tests::util::test_ctx;
-use rand::prelude::*;
 use std::error::Error;
+use rand::RngExt;
 
 #[test]
 fn leq_test0() -> Result<(), Box<dyn Error>> {
@@ -67,9 +67,9 @@ fn leq_test3() -> Result<(), Box<dyn Error>> {
 fn leq_test4() -> Result<(), Box<dyn Error>> {
     test_ctx(None, |ctx| {
         for _ in 0..100 {
-            let mut rng = thread_rng();
+            let mut rng = rand::rng();
             let (small, large) = {
-                let (x, y): (u8, u8) = rng.gen();
+                let (x, y): (u8, u8) = rng.random();
                 (x.min(y), x.max(y))
             };
 
@@ -84,10 +84,10 @@ fn leq_test4() -> Result<(), Box<dyn Error>> {
 fn leq_test5() -> Result<(), Box<dyn Error>> {
     test_ctx(None, |ctx| {
         let (p, q) = (ctx.param_quick("p"), ctx.param_quick("q"));
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         for _ in 0..100 {
             let (small, large) = {
-                let (x, y): (u8, u8) = rng.gen();
+                let (x, y): (u8, u8) = rng.random();
                 (x.min(y) as u64, x.max(y) as u64)
             };
             let lhs = {
@@ -110,10 +110,10 @@ fn leq_test5() -> Result<(), Box<dyn Error>> {
 fn leq_test6() -> Result<(), Box<dyn Error>> {
     test_ctx(None, |ctx| {
         let (p, q) = (ctx.param_quick("p"), ctx.param_quick("q"));
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         for _ in 0..100 {
             let (small, large) = {
-                let (x, y): (u8, u8) = rng.gen();
+                let (x, y): (u8, u8) = rng.random();
                 (x.min(y) as u64, x.max(y) as u64)
             };
             let lhs = {
@@ -136,10 +136,10 @@ fn leq_test6() -> Result<(), Box<dyn Error>> {
 fn leq_test7() -> Result<(), Box<dyn Error>> {
     test_ctx(None, |ctx| {
         let (p, q) = (ctx.param_quick("p"), ctx.param_quick("q"));
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         for _ in 0..100 {
             let (u, v, w) = {
-                let (u, v, w): (u8, u8, u8) = rng.gen();
+                let (u, v, w): (u8, u8, u8) = rng.random();
                 (u as u64, v as u64, w as u64)
             };
             let lhs = {

@@ -51,7 +51,8 @@ fn is_letterlike_rest(c: char) -> bool {
 }
 
 fn partition_slice<T>(s: &[T], f: impl Fn(&T) -> bool) -> (&[T], &[T]) {
-    let idx = s.partition_point(f);
+    // The predicate can hold again after the first nonmatching binder.
+    let idx = s.iter().position(|x| !f(x)).unwrap_or(s.len());
     (&s[0..idx], &s[idx..])
 }
 

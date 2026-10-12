@@ -1,6 +1,6 @@
 use crate::util::{Config, CowStr, ExportFile, ExprPtr, LevelPtr, TcCtx};
-use rand::distributions::Alphanumeric;
-use rand::{rngs::ThreadRng, Rng};
+use rand::distr::Alphanumeric;
+use rand::rngs::ThreadRng;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -104,25 +104,48 @@ fn check_proj_from_prop() {
 #[test]
 #[should_panic(expected = "infer_proj prop")]
 fn omitted_num_threads_still_checks_declarations() {
-    let (export, _) = test_get_export_file(Some(Path::new(
-        "test_resources/ProjFromProp/config.json",
-    )))
-    .expect("failed to load ProjFromProp test fixture");
+    let (export, _) = test_get_export_file(Some(Path::new("test_resources/ProjFromProp/config.json")))
+        .expect("failed to load ProjFromProp test fixture");
     export.check_all_declars();
 }
 
 #[test]
 #[should_panic(expected = "infer_proj prop")]
 fn zero_num_threads_still_checks_declarations() {
-    let (mut export, _) = test_get_export_file(Some(Path::new(
-        "test_resources/ProjFromProp/config.json",
-    )))
-    .expect("failed to load ProjFromProp test fixture");
+    let (mut export, _) = test_get_export_file(Some(Path::new("test_resources/ProjFromProp/config.json")))
+        .expect("failed to load ProjFromProp test fixture");
     export.config.num_threads = 0;
     export.check_all_declars();
 }
 
+#[test]
+fn config_invalid_json_returns_error() {
+    let error = Config::try_from(Path::new("test_resources/Config/invalid_json.json")).unwrap_err();
+    let json_error = error.downcast_ref::<serde_json::Error>().expect("JSON parsing error");
+    assert!(json_error.is_eof());
+    assert!(json_error.line() > 0);
+}
+
+#[test]
+fn config_invalid_option_type_returns_error() {
+    let error = Config::try_from(Path::new("test_resources/Config/invalid_option_type.json")).unwrap_err();
+    let json_error = error.downcast_ref::<serde_json::Error>().expect("JSON parsing error");
+    assert!(json_error.is_data());
+    assert!(json_error.line() > 0);
+    assert!(json_error.column() > 0);
+}
+
+#[test]
+fn config_valid_json_is_loaded() -> Result<(), Box<dyn Error>> {
+    let config = Config::try_from(Path::new("test_resources/Config/valid.json"))?;
+    assert!(config.use_stdin);
+    assert!(config.export_file_path.is_none());
+    assert_eq!(config.num_threads, 2);
+    Ok(())
+}
+
 pub(crate) fn rand_string<'t>(rng: &mut ThreadRng, size: usize) -> CowStr<'t> {
+    use rand::RngExt;
     let rand_string: String = rng.sample_iter(&Alphanumeric).take(size).map(char::from).collect();
     CowStr::Owned(rand_string)
 }
@@ -130,10 +153,9 @@ pub(crate) fn rand_string<'t>(rng: &mut ThreadRng, size: usize) -> CowStr<'t> {
 #[test]
 fn hash_test0() -> Result<(), Box<dyn Error>> {
     use crate::hash64;
-    use num_bigint::RandBigInt;
-    use rand::thread_rng;
+    use num_bigint::BigRng010;
     test_export_file(None, |export| {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         export.with_ctx(|ctx| {
             for size in 0..100 {
                 for _ in 0..100 {
@@ -143,7 +165,7 @@ fn hash_test0() -> Result<(), Box<dyn Error>> {
                     assert_eq!(l, r)
                 }
                 for _ in 0..100 {
-                    let s = rng.gen_biguint(size as u64);
+                    let s = rng.random_biguint(size as u64);
                     let (l, r) = (ctx.mk_nat_lit_quick(s.clone()), ctx.mk_nat_lit_quick(s));
                     assert_eq!(hash64!(l), hash64!(r));
                     assert_eq!(l, r)
