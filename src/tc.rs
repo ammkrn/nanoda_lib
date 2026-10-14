@@ -369,8 +369,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn do_nat_bin(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>, op: NatBinOp) -> Option<ExprPtr<'t>> {
         use NatBinOp::*;
-        let (x, y) = (self.whnf(x), self.whnf(y));
-        let (arg1, arg2) = (self.ctx.get_bignum_from_expr(x)?, self.ctx.get_bignum_from_expr(y)?);
+        let x = self.whnf(x);
+        let arg1 = self.ctx.get_bignum_from_expr(x)?;
+        let y = self.whnf(y);
+        let arg2 = self.ctx.get_bignum_from_expr(y)?;
         match op {
             Add => self.ctx.mk_nat_lit_quick(arg1 + arg2),
             Sub => self.ctx.mk_nat_lit_quick(nat_sub(arg1, arg2)),
