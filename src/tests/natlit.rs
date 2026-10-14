@@ -184,6 +184,28 @@ fn nat_shl_eq() {
     }
 }
 
+/// Checks that zero shifted left by any count remains zero. The zero shortcut
+/// must run before converting the count to `u64` or constructing the value 2^y,
+/// which can overflow the conversion or require an infeasible allocation.
+#[test]
+fn nat_shl_zero_large_counts() {
+    use crate::util::nat_shl;
+
+    for y in [
+        // Include the identity case: zero shifted by zero is still zero.
+        BigUint::zero(),
+        // Exercise the u64 conversion limit and a count beyond that limit.
+        BigUint::from(u64::MAX),
+        BigUint::from(u128::MAX),
+        // Counts beyond u128 ensure the shortcut handles arbitrary BigUint counts.
+        BigUint::one() << 128u32,
+        BigUint::one() << 129u32,
+        BigUint::one() << 1024u32,
+    ] {
+        assert_eq!(nat_shl(BigUint::zero(), y), BigUint::zero());
+    }
+}
+
 #[test]
 fn nat_gcd_eq() {
     use crate::util::nat_gcd;
@@ -859,3 +881,36 @@ fn nat_mod_eq_sub_mod() {
 //    }
 //}
 //
+
+#[test]
+fn nat_shl_shr() {
+    use num_traits::{ Pow };
+
+    fn nat_shl_old(x: BigUint, y: BigUint) -> BigUint {
+        x * BigUint::from(2u8).pow(y)
+    }
+    
+    fn nat_shr_old(x: BigUint, y: BigUint) -> BigUint {
+        x / BigUint::from(2u8).pow(y)
+    }
+
+    for i in 0..20 {
+        for j in 0..20 {
+            let x = BigUint::from(i as u32);
+            let y = BigUint::from(j as u32);
+            assert_eq!(crate::util::nat_shl(x.clone(), y.clone()), nat_shl_old(x.clone(), y.clone()));
+            assert_eq!(crate::util::nat_shr(x.clone(), y.clone()), nat_shr_old(x, y));
+        }
+    }
+}
+
+#[test]
+fn size_overflows() {
+    let x = BigUint::from(usize::MAX);
+    let y = usize::try_from(x.clone());
+    assert!(y.is_ok());
+    assert_eq!(BigUint::from(y.unwrap()), x);
+    assert!(usize::try_from(x.clone() + 1u8).is_err());
+    assert!(usize::try_from(x * 2u8).is_err());
+}
+
