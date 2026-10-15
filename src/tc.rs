@@ -227,7 +227,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             }
             self.ctx.subst_declar_info_levels(declar_info, c_uparams)
         } else {
-            panic!("declaration not found in infer_const, {:?}", self.ctx.debug_print(c_name))
+            if let Some(parent_declar_info) = self.declar_info {
+                panic!("infer_const: declaration {:?} depends on {:?} which was not found in the environment", self.ctx.debug_print(parent_declar_info.name), self.ctx.debug_print(c_name))
+            } else {
+                panic!("infer_const: declaration {:?} was not found in the environment", self.ctx.debug_print(c_name))
+            }
         }
     }
 
