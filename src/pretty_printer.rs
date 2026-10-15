@@ -3,52 +3,16 @@ use crate::expr::{BinderStyle, Expr::*, FVarId};
 use crate::hash64;
 use crate::level::Level;
 use crate::name::Name;
-use crate::util::{ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr, TcCtx};
+use crate::util::{ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, TcCtx};
 use serde::Deserialize;
 use std::error::Error;
 use std::rc::Rc;
 use BinderStyle::*;
 use Doc::*;
 
-// Lexical structure was taken from:
-// https://github.com/leanprover/lean4/blob/504b6dc93f46785ccddb8c5ff4a8df5be513d887/doc/lexical_structure.md?plain=1#L40
-//
-// If a name ends up being anonymous in a position that otherwise should require an identifier,
-// it's printed as an empty escape sequence `«»`.
-//
-// If a name uses characters that otherwise should not be valid, it's escaped with double
-// french quotes.
-const NOT_GREEK: &[char] = &['λ', 'Π', 'Σ'];
-const GREEK0: std::ops::Range<char> = 'α'..'ω';
-const GREEK1: std::ops::Range<char> = 'Α'..'Ω';
-const GREEK2: std::ops::Range<char> = 'ἀ'..'῾';
-const COPTIC: std::ops::Range<char> = 'ϊ'..'ϻ';
-const LETTERLIKE_SYMBOL: std::ops::Range<char> = '℀'..'\u{214f}';
-const SUBSCRIPT0: std::ops::Range<char> = '₀'..'₉';
-const SUBSCRIPT1: std::ops::Range<char> = 'ₐ'..'ₜ';
-const SUBSCRIPT2: std::ops::Range<char> = 'ᵢ'..'ᵪ';
 const fn default_width() -> usize { 120 }
 const fn default_indent() -> usize { 2 }
 const MAX_LEVEL: usize = 1024;
-
-fn is_letterlike_start(c: char) -> bool {
-    c.is_ascii_alphabetic()
-        || c == '_'
-        || (!NOT_GREEK.contains(&c)) && (GREEK0.contains(&c) || GREEK1.contains(&c) || GREEK2.contains(&c))
-        || COPTIC.contains(&c)
-        || LETTERLIKE_SYMBOL.contains(&c)
-}
-
-fn is_letterlike_rest(c: char) -> bool {
-    is_letterlike_start(c)
-        || c.is_ascii_digit()
-        || c == '!'
-        || c == '?'
-        || c == '\''
-        || SUBSCRIPT0.contains(&c)
-        || SUBSCRIPT1.contains(&c)
-        || SUBSCRIPT2.contains(&c)
-}
 
 fn partition_slice<T>(s: &[T], f: impl Fn(&T) -> bool) -> (&[T], &[T]) {
     // The predicate can hold again after the first nonmatching binder.
@@ -343,6 +307,7 @@ impl<'a> ParsedBinder<'a> {
     fn is_lambda(&self) -> bool { !self.is_pi }
 }
 
+use crate::name::{format_name, parse_name};
 use crate::util::PpDestination;
 impl<'p> ExportFile<'p> {
     // Need to get better information about escaping/use of double french quotes.
@@ -353,8 +318,12 @@ impl<'p> ExportFile<'p> {
                 let mut pp_declars = Vec::new();
                 if let Some(pp_declar_strings) = self.config.pp_declars.as_ref() {
                     for declar_name in pp_declar_strings.iter() {
-                        let n = ctx.name_from_str(declar_name);
-                        pp_declars.push((declar_name.clone(), n));
+                        if let Some(components) = parse_name(declar_name) {
+                            let n = ctx.name_from_components(&components);
+                            pp_declars.push((declar_name.clone(), n));
+                        } else {
+                            errs.push(Box::<dyn Error>::from(format!("invalid name in pp_declars: {:?}", declar_name)));
+                        }
                     }
                 }
                 if self.config.print_axioms {
@@ -397,24 +366,6 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     pub(crate) fn new(ctx: &'x mut TcCtx<'t, 'p>) -> Self { Self { ctx } }
 
     pub(crate) fn options(&self) -> &PpOptions { &self.ctx.export_file.config.pp_options }
-
-    /// Returns `true` if this string segment of a name can be displayed
-    /// without needing to escape; if the characters are lexically correct,
-    /// or if the issue is `_@` which accompanies hygienic names.
-    fn ok_str(&self, s: StringPtr<'t>) -> bool {
-        let s = self.ctx.read_string(s);
-        (s.chars().take(1).all(is_letterlike_start) && s.chars().skip(1).all(is_letterlike_rest)) || s == "_@"
-    }
-
-    fn should_be_escaped(&self, n: NamePtr<'t>) -> bool { n == self.ctx.anonymous() || self.should_be_escaped_aux(n) }
-
-    fn should_be_escaped_aux(&self, n: NamePtr<'t>) -> bool {
-        match self.ctx.read_name(n) {
-            Name::Anon => false,
-            Name::Str(pfx, sfx, _) => !self.ok_str(sfx) || self.should_be_escaped_aux(pfx),
-            Name::Num(pfx, ..) => self.should_be_escaped_aux(pfx),
-        }
-    }
 
     fn mk_parsed_binder(
         &self,
@@ -551,39 +502,13 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     /// FIXME: We need to come back and update this when we have more "official" information 
     /// from upstream about how quoting interacts with elements like hygienic identifiers
     fn pp_name_safe(&self, n: NamePtr<'t>) -> DocPtr {
-        let doc = self.name_to_string(n).as_str().into();
-        if self.should_be_escaped(n) {
-            DocPtr::from("«").concat(doc).concat(DocPtr::from("»"))
+        if n == self.ctx.anonymous() {
+            DocPtr::from("«»")
         } else {
-            doc
+            format_name(&self.ctx.name_components(n)).as_str().into()
         }
     }
     
-    /// Create a string from a name `n`, leaving the dot-separator in the output string.\
-    ///
-    /// Example: name_to_string(`Foo.Bar.Baz`) == "Foo.Bar.Baz"
-    fn name_to_string(&self, n: NamePtr<'t>) -> String {
-        match self.ctx.read_name(n) {
-            Name::Anon => String::new(),
-            Name::Str(pfx, sfx, _) => {
-                let mut out = self.name_to_string(pfx);
-                if !out.is_empty() {
-                    out.push('.');
-                }
-                out.push_str(self.ctx.read_string(sfx).as_ref());
-                out
-            }
-            Name::Num(pfx, sfx, _) => {
-                let mut out = self.name_to_string(pfx);
-                if !out.is_empty() {
-                    out.push('.');
-                }
-                out.push_str(format!("{}", sfx).as_str());
-                out
-            }
-        }
-    }
-
     fn pp_level(&self, lvl: LevelPtr<'t>) -> Parenable {
         use Level::*;
         match self.ctx.read_level(lvl) {
