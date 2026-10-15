@@ -2,7 +2,7 @@ use crate::env::Declar;
 use crate::expr::{BinderStyle, Expr::*, FVarId};
 use crate::hash64;
 use crate::level::Level;
-use crate::name::Name;
+use crate::name::{is_id_first, is_id_rest, Name};
 use crate::util::{ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr, TcCtx};
 use serde::Deserialize;
 use std::error::Error;
@@ -10,45 +10,9 @@ use std::rc::Rc;
 use BinderStyle::*;
 use Doc::*;
 
-// Lexical structure was taken from:
-// https://github.com/leanprover/lean4/blob/504b6dc93f46785ccddb8c5ff4a8df5be513d887/doc/lexical_structure.md?plain=1#L40
-//
-// If a name ends up being anonymous in a position that otherwise should require an identifier,
-// it's printed as an empty escape sequence `«»`.
-//
-// If a name uses characters that otherwise should not be valid, it's escaped with double
-// french quotes.
-const NOT_GREEK: &[char] = &['λ', 'Π', 'Σ'];
-const GREEK0: std::ops::Range<char> = 'α'..'ω';
-const GREEK1: std::ops::Range<char> = 'Α'..'Ω';
-const GREEK2: std::ops::Range<char> = 'ἀ'..'῾';
-const COPTIC: std::ops::Range<char> = 'ϊ'..'ϻ';
-const LETTERLIKE_SYMBOL: std::ops::Range<char> = '℀'..'\u{214f}';
-const SUBSCRIPT0: std::ops::Range<char> = '₀'..'₉';
-const SUBSCRIPT1: std::ops::Range<char> = 'ₐ'..'ₜ';
-const SUBSCRIPT2: std::ops::Range<char> = 'ᵢ'..'ᵪ';
 const fn default_width() -> usize { 120 }
 const fn default_indent() -> usize { 2 }
 const MAX_LEVEL: usize = 1024;
-
-fn is_letterlike_start(c: char) -> bool {
-    c.is_ascii_alphabetic()
-        || c == '_'
-        || (!NOT_GREEK.contains(&c)) && (GREEK0.contains(&c) || GREEK1.contains(&c) || GREEK2.contains(&c))
-        || COPTIC.contains(&c)
-        || LETTERLIKE_SYMBOL.contains(&c)
-}
-
-fn is_letterlike_rest(c: char) -> bool {
-    is_letterlike_start(c)
-        || c.is_ascii_digit()
-        || c == '!'
-        || c == '?'
-        || c == '\''
-        || SUBSCRIPT0.contains(&c)
-        || SUBSCRIPT1.contains(&c)
-        || SUBSCRIPT2.contains(&c)
-}
 
 fn partition_slice<T>(s: &[T], f: impl Fn(&T) -> bool) -> (&[T], &[T]) {
     // The predicate can hold again after the first nonmatching binder.
@@ -403,9 +367,14 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     /// or if the issue is `_@` which accompanies hygienic names.
     fn ok_str(&self, s: StringPtr<'t>) -> bool {
         let s = self.ctx.read_string(s);
-        (s.chars().take(1).all(is_letterlike_start) && s.chars().skip(1).all(is_letterlike_rest)) || s == "_@"
+        (s.chars().take(1).all(is_id_first) && s.chars().skip(1).all(is_id_rest)) || s == "_@"
     }
 
+    // If a name ends up being anonymous in a position that otherwise should require an identifier,
+    // it's printed as an empty escape sequence `«»`.
+    //
+    // If a name uses characters that otherwise should not be valid, it's escaped with double
+    // french quotes.
     fn should_be_escaped(&self, n: NamePtr<'t>) -> bool { n == self.ctx.anonymous() || self.should_be_escaped_aux(n) }
 
     fn should_be_escaped_aux(&self, n: NamePtr<'t>) -> bool {
