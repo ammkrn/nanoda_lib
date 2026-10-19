@@ -402,9 +402,6 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         if !self.ctx.export_file.config.nat_extension {
             return None
         }
-        if self.ctx.has_fvars(e) {
-            return None
-        }
         let (f, args) = self.ctx.unfold_apps(e);
         let out = match (self.ctx.read_expr(f), args.as_slice()) {
             (Const { name, .. }, [arg]) if Some(name) == self.ctx.export_file.name_cache.nat_succ => {
