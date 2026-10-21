@@ -1207,6 +1207,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         if self.tc_cache.eq_cache.contains(&SortedPair::new(x, y)) {
             return Some(true)
         }
+        if self.ctx.alpha_eq(x, y) {
+            self.tc_cache.eq_cache.insert(SortedPair::new(x, y));
+            return Some(true)
+        }
         if let Some(r) = self.def_eq_sort(x, y) {
             return Some(r)
         }

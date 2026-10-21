@@ -1,5 +1,5 @@
 //! Implementation of Lean expressions
-use crate::util::{BigUintPtr, ExprPtr, FxHashMap, LevelPtr, LevelsPtr, NamePtr, StringPtr, TcCtx};
+use crate::util::{BigUintPtr, ExprPtr, FxHashMap, LevelPtr, LevelsPtr, NamePtr, StringPtr, TcCtx, SortedPair};
 use num_bigint::BigUint;
 use num_traits::identities::Zero;
 use Expr::*;
@@ -150,6 +150,58 @@ pub enum BinderStyle {
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
+    pub(crate) fn alpha_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
+        if self.expr_cache.alpha_eq_visited.capacity() > 1024 { 
+            self.expr_cache.alpha_eq_visited = crate::util::new_fx_hash_set(); 
+        } else { 
+            self.expr_cache.alpha_eq_visited.clear(); 
+        } 
+        let mut todo = vec![(x, y)];
+        while let Some((x, y)) = todo.pop() {
+            if x == y || !self.expr_cache.alpha_eq_visited.insert(SortedPair::new(x, y)) {
+                continue
+            }
+            match self.read_expr_pair(x, y) {
+                (Const { name: a, levels: u, .. }, Const { name: b, levels: v, .. }) => {
+                    debug_assert!((a != b) || (u != v));
+                    return false
+                },
+                (App { fun: f, arg: a, .. }, App { fun: g, arg: b, .. }) => {
+                    todo.push((f, g));
+                    todo.push((a, b));
+                }
+                (Lambda { binder_type: a, body: b, .. }, Lambda { binder_type: c, body: d, .. })
+                | (Pi { binder_type: a, body: b, .. }, Pi { binder_type: c, body: d, .. }) => {
+                    todo.push((a, c));
+                    todo.push((b, d));
+                }
+                (
+                    Let { binder_type: a, val: v, body: b, nondep: n, .. },
+                    Let { binder_type: c, val: w, body: d, nondep: m, .. },
+                ) if n == m => {
+                    todo.push((a, c));
+                    todo.push((v, w));
+                    todo.push((b, d));
+                }
+                (
+                    Proj { ty_name: a, idx: i, structure: s, .. },
+                    Proj { ty_name: b, idx: j, structure: t, .. },
+                ) if a == b && i == j => todo.push((s, t)),
+                // De Bruijn levels can be reused with different types in this
+                // checker, so a matching free-variable ID alone is insufficient.
+                (Local { id: i, binder_type: a, .. }, Local { id: j, binder_type: b, .. }) if i == j => {
+                    todo.push((a, b));
+                }
+                (Sort { level: a, .. }, Sort { level: b, .. })       => { debug_assert_ne!(a, b); return false },
+                (Var { dbj_idx: a, .. }, Var { dbj_idx: b, .. })     => { debug_assert_ne!(a, b); return false },
+                (NatLit { ptr: a, .. }, NatLit { ptr: b, .. })       => { debug_assert_ne!(a, b); return false },
+                (StringLit { ptr: a, .. }, StringLit { ptr: b, .. }) => { debug_assert_ne!(a, b); return false },
+                _ => return false,
+            }
+        }
+        true
+    }
+    
     pub(crate) fn inst_forall_params(&mut self, mut e: ExprPtr<'t>, n: usize, all_args: &[ExprPtr<'t>]) -> ExprPtr<'t> {
         for _ in 0..n {
             if let Pi { body, .. } = self.read_expr(e) {
