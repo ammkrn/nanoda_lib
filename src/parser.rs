@@ -4,7 +4,7 @@ use crate::env::{
 use crate::expr::{BinderStyle, Expr};
 use crate::hash64;
 use crate::level::Level;
-use crate::name::Name;
+use crate::name::{format_name, parse_name, Name, NameComponent};
 use crate::util::{
     new_fx_hash_map, new_fx_index_map, new_fx_hash_set, BigUintPtr, Config, DagMarker, ExprPtr, FxHashMap, FxIndexMap,
     LeanDag, LevelPtr, LevelsPtr, NamePtr, StringPtr,
@@ -44,6 +44,9 @@ pub struct Parser<'a, R: BufRead> {
     declars: FxIndexMap<NamePtr<'a>, Declar<'a>>,
     notations: FxHashMap<NamePtr<'a>, Notation<'a>>,
     config: Config,
+    /// The names in `config.permitted_axioms`. Entries that don't parse are rejected when a config
+    /// file is loaded, and can't match any name otherwise.
+    permitted_axioms: Vec<Vec<NameComponent>>,
     /// Tracks axiom names that were found in the export file, but not white-listed,
     /// for use when `unpermitted_axiom_hard_error: false`
     skipped: Vec<String>,
@@ -386,6 +389,9 @@ pub(crate) fn parse_export_file<'p, R: BufRead>(
     config: Config,
 
 ) -> Result<(crate::util::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
+    if let Some(name) = config.pp_declars.iter().flatten().find(|name| parse_name(name).is_none()) {
+        return Err(Box::from(format!("invalid name in pp_declars: {:?}", name)))
+    }
     let mut parser = Parser::new(buf_reader, config);
     let mut line_buffer = String::new();
 
@@ -404,13 +410,12 @@ pub(crate) fn parse_export_file<'p, R: BufRead>(
     // in the export file.
     if parser.config.unknown_pp_declar_hard_error {
         if let Some(pp_declars) = parser.config.pp_declars.as_ref() {
-            let mut pp_declar_names = pp_declars.iter().map(|s| s.as_str()).collect::<crate::util::FxHashSet<&str>>();
+            let mut pp_declar_names = pp_declars.iter().filter_map(|s| parse_name(s)).collect::<crate::util::FxHashSet<_>>();
             for declar_name in parser.declars.keys() {
-                let n = parser.name_to_string(*declar_name);
-                pp_declar_names.remove(n.as_str());
+                pp_declar_names.remove(&parser.name_components(*declar_name));
             }
             if pp_declar_names.len() > 0 {
-                let list = pp_declar_names.into_iter().collect::<Vec<&str>>();
+                let list = pp_declar_names.into_iter().map(|n| format_name(&n)).collect::<Vec<_>>();
                 return Err(Box::from(format!("these pp_declars were not found in the exported environment: {:#?}", list)))
             }
         }
@@ -460,15 +465,15 @@ impl<'a, R: BufRead> Parser<'a, R> {
             dag: LeanDag::new(&config),
             declars: new_fx_index_map(),
             notations: new_fx_hash_map(),
+            permitted_axioms: config.permitted_axioms.iter().flatten().filter_map(|s| parse_name(s)).collect(),
             config,
             skipped: Vec::new(),
             mutual_block_sizes: new_fx_hash_map()
         }
     }
     
-    fn axiom_permitted(&self, n: NamePtr<'a>) -> bool {
-        self.config.unsafe_permit_all_axioms ||
-            self.config.permitted_axioms.as_ref().map(|v| v.contains(&self.name_to_string(n))).unwrap_or(false)
+    fn axiom_permitted(&self, components: &[NameComponent]) -> bool {
+        self.config.unsafe_permit_all_axioms || self.permitted_axioms.iter().any(|permitted| permitted == components)
     }
 
     fn num_loose_bvars(&self, e: ExprPtr<'a>) -> u16 {
@@ -524,6 +529,22 @@ impl<'a, R: BufRead> Parser<'a, R> {
     }
 
     // Used for the axiom whitelist feature.
+    fn name_components(&self, n: NamePtr<'a>) -> Vec<NameComponent> {
+        match self.dag.names.get_index(n.idx()).copied().unwrap() {
+            Name::Anon => Vec::new(),
+            Name::Str(pfx, sfx, _) => {
+                let mut components = self.name_components(pfx);
+                components.push(NameComponent::Str(self.dag.strings.get_index(sfx.idx()).unwrap().to_string()));
+                components
+            }
+            Name::Num(pfx, sfx, _) => {
+                let mut components = self.name_components(pfx);
+                components.push(NameComponent::Num(sfx));
+                components
+            }
+        }
+    }
+
     fn name_to_string(&self, n: NamePtr<'a>) -> String {
         match self.dag.names.get_index(n.idx()).copied().unwrap() {
             Name::Anon => String::new(),
@@ -769,10 +790,11 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let ty = self.get_expr_ptr(ty);
                 let info = DeclarInfo { name, ty, uparams };
                 let axiom = Declar::Axiom { info };
-                if self.axiom_permitted(name) {
+                let components = self.name_components(name);
+                if self.axiom_permitted(&components) {
                     assert!(self.declars.insert(name, axiom).is_none());
                 } else {
-                    let name_string = self.name_to_string(name);
+                    let name_string = format_name(&components);
                     if self.config.unpermitted_axiom_hard_error {
                         return Err(Box::from(format!("export file declares unpermitted axiom {:?}", name_string)))
                     } else {
