@@ -6,7 +6,7 @@ use crate::hash64;
 use crate::level::Level;
 use crate::name::Name;
 use crate::util::{
-    new_fx_hash_map, new_fx_index_map, new_fx_hash_set, BigUintPtr, Config, DagMarker, ExprPtr, FxHashMap, FxIndexMap,
+    new_fx_hash_map, new_fx_index_map, new_fx_hash_set, BigUintPtr, Config, DagMarker, ExprPtr, FxHashMap, FxHashSet, FxIndexMap,
     LeanDag, LevelPtr, LevelsPtr, NamePtr, StringPtr,
 };
 use num_bigint::BigUint;
@@ -485,7 +485,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
 
     fn get_level_ptr(&self, idx: u32) -> LevelPtr<'a> {
         let out = crate::util::Ptr::from(DagMarker::ExportFile, idx as usize);
-        assert!((idx as usize) < self.dag.levels.len());
+        assert!((idx as usize) < self.dag.levels.len(), "level back-reference {} must refer to an earlier level", idx);
         out
     }
     fn get_names(&self, idxs: &[u32]) -> Vec<NamePtr<'a>> {
@@ -512,9 +512,69 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn get_levels_ptr(&mut self, idxs: &[u32]) -> LevelsPtr<'a> {
         let mut levels = Vec::new();
         for idx in idxs.iter().copied() {
-            levels.push(LevelPtr::from(DagMarker::ExportFile, idx as usize));
+            levels.push(self.get_level_ptr(idx));
         }
         LevelsPtr::from(DagMarker::ExportFile, self.dag.uparams.insert_full(Arc::from(levels)).0)
+    }
+
+    /// Check ownership before flattening a block into the declaration map. The
+    /// reconstruction checks follow the exported `all` and `ctors` lists, so
+    /// those lists must cover exactly the declarations actually in this block.
+    fn check_inductive_block(
+        &self,
+        types: &[IndInfo],
+        ctors: &[Constructor],
+        recs: &[Recursor],
+    ) -> Result<(), Box<dyn Error>> {
+        fn same_names(names: &[u32], expected: &FxHashSet<u32>) -> bool {
+            names.len() == expected.len() && names.iter().copied().collect::<FxHashSet<_>>() == *expected
+        }
+
+        let error = |message: String| -> Box<dyn Error> {
+            format!("invalid inductive block at line {}: {}", self.line_num + 1, message).into()
+        };
+        if types.is_empty() {
+            return Err(error("expected at least one inductive type".to_owned()))
+        }
+
+        let mut member_names = new_fx_hash_set();
+        for name in types.iter().map(|t| t.name)
+            .chain(ctors.iter().map(|c| c.name))
+            .chain(recs.iter().map(|r| r.name))
+        {
+            if !member_names.insert(name) {
+                return Err(error(format!("duplicate declaration name index {}", name)))
+            }
+        }
+
+        let type_names = types.iter().map(|t| t.name).collect::<FxHashSet<_>>();
+        let mut ctors_by_type = new_fx_hash_map();
+        for ctor in ctors {
+            if !type_names.contains(&ctor.induct) {
+                return Err(error(format!("constructor {} must belong to an inductive in the same block", ctor.name)))
+            }
+            ctors_by_type.entry(ctor.induct).or_insert_with(new_fx_hash_set).insert(ctor.name);
+        }
+
+        let empty = new_fx_hash_set();
+        for ty in types {
+            if !same_names(&ty.all, &type_names) {
+                return Err(error(format!("inductive {} must list exactly the block's types without duplicates", ty.name)))
+            }
+            let expected_ctors = ctors_by_type.get(&ty.name).unwrap_or(&empty);
+            if !same_names(&ty.ctors, expected_ctors) {
+                return Err(error(format!("inductive {} must list exactly its constructors in this block without duplicates", ty.name)))
+            }
+        }
+
+        for rec in recs {
+            if !same_names(&rec.all, &type_names) {
+                return Err(error(format!("recursor {} must list exactly the block's types without duplicates", rec.name)))
+            }
+            // Rule constructors may belong to earlier container types for a
+            // nested inductive. Reconstruction validates those associations.
+        }
+        Ok(())
     }
 
     fn get_expr_ptr(&self, idx: u32) -> ExprPtr<'a> {
@@ -818,6 +878,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 assert!(self.declars.insert(name, quot).is_none());
             }
             Inductive {ind_vals, ctor_vals, rec_vals} => {
+                self.check_inductive_block(&ind_vals, &ctor_vals, &rec_vals)?;
                 let block_start = self.declars.len();
                 let block_size = ind_vals.len() + ctor_vals.len() + rec_vals.len();
                 for IndInfo {name, ty, uparams, all, ctors, is_rec, num_nested, num_params, num_indices, is_unsafe, ..} in ind_vals {
