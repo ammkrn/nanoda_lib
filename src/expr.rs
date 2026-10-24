@@ -536,7 +536,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     pub(crate) fn abstr_pis<I>(&mut self, binders: I, body: ExprPtr<'t>) -> ExprPtr<'t>
     where
-        I: Iterator<Item = ExprPtr<'t>> + DoubleEndedIterator, {
+        I: Iterator<Item = ExprPtr<'t>>, {
         let binders: Vec<ExprPtr<'t>> = binders.collect();
         self.abstr_pi_telescope(&binders, body)
     }
@@ -734,7 +734,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         e
     }
 
-    /// Abstract `e` with the binders in `binders`, creating a lambda
+    /// Abstract `e` with the binders in `binders`, creating a pi 
     /// telescope while backing out.
     ///
     /// `[a, b, c], e` ~> `(Pi (a b c) => e)`
