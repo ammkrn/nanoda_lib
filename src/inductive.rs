@@ -1237,10 +1237,17 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let handled_rec_args = self.handle_rec_ctor_args_rec_rule(st, rec_ctor_args.as_slice());
         let comp_rhs = self.ctx.foldl_apps(this_minor, all_ctor_args.iter().copied());
         let comp_rhs = self.ctx.foldl_apps(comp_rhs, handled_rec_args.iter().copied());
-        let comp_rhs = self.ctx.abstr_lambda_telescope(all_ctor_args.as_slice(), comp_rhs);
-        let comp_rhs = self.ctx.abstr_lambda_telescope(flat_mapped_minors, comp_rhs);
-        let comp_rhs = self.ctx.abstr_lambda_telescope(st.motives.as_slice(), comp_rhs);
-        let comp_rhs = self.ctx.abstr_lambda_telescope(st.local_params.as_slice(), comp_rhs);
+        // One telescope over the parameters, motives, minor premises and the constructor's
+        // arguments, outermost first.
+        let binders: Vec<ExprPtr<'t>> = st
+            .local_params
+            .iter()
+            .chain(st.motives.iter())
+            .chain(flat_mapped_minors.iter())
+            .chain(all_ctor_args.iter())
+            .copied()
+            .collect();
+        let comp_rhs = self.ctx.abstr_lambda_telescope(binders.as_slice(), comp_rhs);
         let num_fields = self.ctx.pi_telescope_size(ctor.ty) as usize - st.local_params.len();
         RecRule {
             ctor_name: ctor.name,
@@ -1356,11 +1363,18 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let motive_app_base = self.ctx.foldl_apps(motive, local_indices.iter().copied());
         let motive_app = self.ctx.mk_app(motive_app_base, major);
 
-        let rec_ty = self.ctx.abstr_pi(major, motive_app);
-        let rec_ty = self.ctx.abstr_pi_telescope(local_indices, rec_ty);
-        let rec_ty = self.ctx.abstr_pi_telescope(flat_mapped_minors, rec_ty);
-        let rec_ty = self.ctx.abstr_pi_telescope(st.motives.as_slice(), rec_ty);
-        let rec_ty = self.ctx.abstr_pi_telescope(st.local_params.as_slice(), rec_ty);
+        // One telescope over the parameters, motives, minor premises, indices and
+        // major premise, outermost first.
+        let binders: Vec<ExprPtr<'t>> = st
+            .local_params
+            .iter()
+            .chain(st.motives.iter())
+            .chain(flat_mapped_minors.iter())
+            .chain(local_indices.iter())
+            .chain(std::iter::once(&major))
+            .copied()
+            .collect();
+        let rec_ty = self.ctx.abstr_pi_telescope(binders.as_slice(), motive_app);
 
         let recursor = RecursorData {
             info: DeclarInfo {

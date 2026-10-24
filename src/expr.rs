@@ -534,13 +534,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         fun
     }
 
-    pub(crate) fn abstr_pis<I>(&mut self, mut binders: I, mut body: ExprPtr<'t>) -> ExprPtr<'t>
+    pub(crate) fn abstr_pis<I>(&mut self, binders: I, body: ExprPtr<'t>) -> ExprPtr<'t>
     where
-        I: Iterator<Item = ExprPtr<'t>> + DoubleEndedIterator, {
-        while let Some(local) = binders.next_back() {
-            body = self.abstr_pi(local, body)
-        }
-        body
+        I: Iterator<Item = ExprPtr<'t>>, {
+        let binders: Vec<ExprPtr<'t>> = binders.collect();
+        self.abstr_pi_telescope(&binders, body)
     }
 
     pub(crate) fn abstr_pi(&mut self, binder: ExprPtr<'t>, body: ExprPtr<'t>) -> ExprPtr<'t> {
@@ -553,16 +551,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    pub(crate) fn apply_lambda(&mut self, binder: ExprPtr<'t>, body: ExprPtr<'t>) -> ExprPtr<'t> {
-        match self.read_expr(binder) {
-            Local { binder_name, binder_style, binder_type, .. } => {
-                let body = self.abstr(body, &[binder]);
-                self.mk_lambda(binder_name, binder_style, binder_type, body)
-            }
-            _ => unreachable!("Cannot apply lambda with non-local domain type"),
-        }
-    }
-    
     pub(crate) fn is_nat_zero(&mut self, e: ExprPtr<'t>) -> bool {
         match self.read_expr(e) {
             Const { .. } => self.c_nat_zero() == Some(e),
@@ -723,24 +711,35 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// telescope while backing out.
     ///
     /// `[a, b, c], e` ~> `(fun (a b c) => e)`
-    pub(crate) fn abstr_lambda_telescope(&mut self, mut binders: &[ExprPtr<'t>], mut e: ExprPtr<'t>) -> ExprPtr<'t> {
-        while let [tl @ .., binder] = binders {
-            e = self.apply_lambda(*binder, e);
-            binders = tl;
+    pub(crate) fn abstr_lambda_telescope(&mut self, binders: &[ExprPtr<'t>], e: ExprPtr<'t>) -> ExprPtr<'t> {
+        self.abstr_telescope(binders, e, false)
+    }
+
+    /// The telescope over `binders`, in one pass over `e` (and one over each binder's type, for
+    /// the binders before it) instead of one pass over the whole term per binder, which is
+    /// quadratic: a large mutual inductive's recursor rules have dozens of binders.
+    fn abstr_telescope(&mut self, binders: &[ExprPtr<'t>], e: ExprPtr<'t>, pi: bool) -> ExprPtr<'t> {
+        let mut e = self.abstr(e, binders);
+        for i in (0..binders.len()).rev() {
+            let Local { binder_name, binder_style, binder_type, .. } = self.read_expr(binders[i]) else {
+                unreachable!("Cannot make a telescope over a non-local")
+            };
+            let binder_type = self.abstr(binder_type, &binders[..i]);
+            e = if pi {
+                self.mk_pi(binder_name, binder_style, binder_type, e)
+            } else {
+                self.mk_lambda(binder_name, binder_style, binder_type, e)
+            };
         }
         e
     }
 
-    /// Abstract `e` with the binders in `binders`, creating a lambda
+    /// Abstract `e` with the binders in `binders`, creating a pi 
     /// telescope while backing out.
     ///
     /// `[a, b, c], e` ~> `(Pi (a b c) => e)`
-    pub(crate) fn abstr_pi_telescope(&mut self, mut binders: &[ExprPtr<'t>], mut e: ExprPtr<'t>) -> ExprPtr<'t> {
-        while let [tl @ .., binder] = binders {
-            e = self.abstr_pi(*binder, e);
-            binders = tl;
-        }
-        e
+    pub(crate) fn abstr_pi_telescope(&mut self, binders: &[ExprPtr<'t>], e: ExprPtr<'t>) -> ExprPtr<'t> {
+        self.abstr_telescope(binders, e, true)
     }
 
     pub(crate) fn has_nested_pfx(&self, e: ExprPtr<'t>, nested_pfx: NamePtr<'t>) -> bool {
