@@ -824,7 +824,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     let e = self.whnf_no_unfolding_aux(e, cheap_proj);
                     (true, e)
                 } else {
-                    (false, self.ctx.foldl_apps(e_fun, args.into_iter()))
+                    (false, e)
                 },
             Sort { level, .. } => {
                 debug_assert!(args.is_empty());
@@ -843,7 +843,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             }
             Lambda { .. } => {
                 debug_assert!(args.is_empty());
-                (false, self.ctx.foldl_apps(e_fun, args.into_iter()))
+                (false, e)
             }
             Let { val, body, .. } => {
                 let e = self.ctx.inst(body, &[val]);
@@ -856,7 +856,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 } else if let Some(reduced) = self.reduce_rec(name, levels, &args) {
                     (true, self.whnf_no_unfolding_aux(reduced, cheap_proj))
                 } else {
-                    (false, self.ctx.foldl_apps(e_fun, args.into_iter()))
+                    (false, e)
                 },
             Var { .. } => panic!("Loose bvars are not allowed"),
             Pi { .. } => {
@@ -864,7 +864,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 (false, e_fun)
             }
             App { .. } => panic!(),
-            Local { .. } | NatLit { .. } | StringLit { .. } => (false, self.ctx.foldl_apps(e_fun, args.into_iter())),
+            Local { .. } | NatLit { .. } | StringLit { .. } => (false, e),
         };
         if should_cache && !cheap_proj {
             self.tc_cache.whnf_no_unfolding_cache.insert(e, eprime);
