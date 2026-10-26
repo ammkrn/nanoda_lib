@@ -934,7 +934,7 @@ pub struct Config {
     pub print_success_message: bool,
 
     /// If `true`, the typechecker will print the axioms actually admitted to the environment
-    /// when typechecking is finished. 
+    /// to the pretty printer destination (if any) when typechecking is finished.
     #[serde(default = "default_true")]
     pub print_axioms: bool,
 

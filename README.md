@@ -36,11 +36,13 @@ If `"unsafe_permit_all_axioms"` is set to `true`, all axioms will be admitted to
 
 `"pp_declars"` is a list of declarations to be printed back by the pretty printer.
 
+`"print_axioms"` determines whether the axioms admitted to the environment are also printed back by the pretty printer. Like `"pp_declars"`, they are only printed if `"pp_to_stdout"` or `"pp_output_path"` is set. Defaults to `true`.
+
 `"pp_options"` are the options to be used by the pretty printer.
 
 `"pp_to_stdout"` determines whether the pretty printer output is written to stdout. This is not mutually exclusive with `"pp_output_path"`; if both options are set, the pretty printer output will be written to both stdout and the specified path.
 
-`"pp_output_path"` can be set if the pretty printer output should be written to a file path. This is not mutually exclusive with `"pp_output_path"`; if both options are set, the pretty printer output will be written to both stdout and the specified path.
+`"pp_output_path"` can be set if the pretty printer output should be written to a file path. This is not mutually exclusive with `"pp_to_stdout"`; if both options are set, the pretty printer output will be written to both stdout and the specified path.
 
 `"declar_sep"` is a separator to print between each pretty printed declaration. A default of "\n\n" will end each declaration with a newline, then put a blank line between successive declarations. While this does allow for the injection of arbitrary strings into the pretty printer output, it's rejected if not valid UTF-8, and the configuration file is controlled entirely by the operator of the type checker, so I don't consider this any more of a vector for attack than specifying an incorrect export file path or knowingly whitelisting an unsound axiom.
 
