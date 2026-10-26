@@ -12,6 +12,16 @@ The binary takes a single argument, which is a path to a json configuration file
 
 Export files can be created with [lean4export](https://github.com/leanprover/lean4export).
 
+### Errors and exit status
+
+`nanoda_bin` exits with status 0 when checking succeeds, including runs that skipped unpermitted axioms that no declaration used. Errors returned by the pretty printer after checking do not change this exit status.
+
+Errors returned by the binary are printed to stderr as `Error: ...`, and the process exits with status 1. Examples include missing arguments, configuration or file-access errors, export deserialization errors, unsupported export format versions, and Nat or String literals whose extensions are disabled. Rejecting an unpermitted axiom with `"unpermitted_axiom_hard_error": true` also exits 1, as does requesting a declaration absent from the retained environment with `"unknown_pp_declar_hard_error": true` (the default).
+
+If the name, level or expression back-references in the export file are not continuous, the checker declines the export: it prints `Declined: ...` to stderr and exits with status 2. This means the export was not checked, not that a declaration failed to type-check.
+
+Type-checking failures currently cause panics, including attempts to use an unpermitted axiom skipped with `"unpermitted_axiom_hard_error": false`. Some malformed or unsupported exports also cause panics before checking begins. Panic diagnostics are printed to stderr; with the default build settings, a panic that terminates the program gives exit status 101, so this status alone does not establish that a declaration failed to type-check. With `"num_threads"` at most 1, checking stops at the first panic. With multiple workers, several workers can report failures, and the main thread also reports a panic when joining a failed worker; the worker diagnostics show the underlying failures.
+
 ## Using the library
 
 The library component can be imported and used as a normal rust crate by specifying it as a dependency in a `Cargo.toml` file.
