@@ -1,3 +1,4 @@
+use crate::name::{format_name, is_id_first, is_id_rest, parse_name, NameComponent};
 use crate::tests::util::test_ctx;
 use std::error::Error;
 use std::borrow::Cow;
@@ -42,4 +43,98 @@ fn pfx_test_str1() -> Result<(), Box<dyn Error>> {
     })
 }
 
+#[test]
+fn identifier_characters() {
+    // Both ends of each of Lean's ranges, and the characters just outside them.
+    let first =
+        ['a', 'z', 'A', 'Z', '_', 'α', 'ω', 'Α', 'Ω', 'ϊ', 'ϻ', 'ἀ', '῾', '℀', '⅏', '𝒜', '𝖟', 'À', 'ÿ', 'Ā', 'ſ'];
+    let rest = ['0', '9', '\'', '!', '?', '₀', '₉', 'ₐ', 'ₜ', 'ᵢ', 'ᵪ', 'ⱼ'];
+    let neither = [
+        'λ', 'Π', 'Σ', '×', '÷', 'ΐ', 'Ϊ', 'ΰ', 'ϼ', 'ỿ', '\u{1fff}', '\u{20ff}', '⅐', '𝒛', '𝖠', '¿', 'ƀ', 'ⁿ', '₊',
+        '\u{208f}', '\u{209d}', 'ᵡ', 'ᵫ', 'ⱻ', 'ⱽ', '.', ' ', '«', '»', '-', '#',
+    ];
+    for c in first {
+        assert!(is_id_first(c) && is_id_rest(c), "{c:?}");
+    }
+    for c in rest {
+        assert!(!is_id_first(c) && is_id_rest(c), "{c:?}");
+    }
+    for c in neither {
+        assert!(!is_id_first(c) && !is_id_rest(c), "{c:?}");
+    }
+}
 
+fn str_comp(s: &str) -> NameComponent { NameComponent::Str(s.to_string()) }
+
+fn num_comp(n: u64) -> NameComponent { NameComponent::Num(n) }
+
+#[test]
+fn parse_name_components() {
+    assert_eq!(parse_name("propext"), Some(vec![str_comp("propext")]));
+    assert_eq!(parse_name("Quot.sound"), Some(vec![str_comp("Quot"), str_comp("sound")]));
+    assert_eq!(parse_name("x'.a_b!.c?"), Some(vec![str_comp("x'"), str_comp("a_b!"), str_comp("c?")]));
+    assert_eq!(parse_name("α₁.ω.é"), Some(vec![str_comp("α₁"), str_comp("ω"), str_comp("é")]));
+}
+
+#[test]
+fn parse_name_escaped_components() {
+    assert_eq!(parse_name("«Quot.sound»"), Some(vec![str_comp("Quot.sound")]));
+    assert_eq!(parse_name("«».propext"), Some(vec![str_comp(""), str_comp("propext")]));
+    assert_eq!(parse_name("A.«b c».d"), Some(vec![str_comp("A"), str_comp("b c"), str_comp("d")]));
+    assert_eq!(parse_name("«x»"), Some(vec![str_comp("x")]));
+    assert_eq!(parse_name("««a»"), Some(vec![str_comp("«a")]));
+}
+
+#[test]
+fn parse_name_numeric_components() {
+    assert_eq!(parse_name("a.1"), Some(vec![str_comp("a"), num_comp(1)]));
+    assert_eq!(parse_name("a.007"), Some(vec![str_comp("a"), num_comp(7)]));
+    assert_eq!(parse_name("a.«1»"), Some(vec![str_comp("a"), str_comp("1")]));
+    assert_eq!(parse_name("1.a"), Some(vec![num_comp(1), str_comp("a")]));
+    assert_eq!(parse_name("a.18446744073709551615"), Some(vec![str_comp("a"), num_comp(u64::MAX)]));
+    assert_eq!(parse_name("a.18446744073709551616"), None);
+}
+
+#[test]
+fn parse_name_rejects_malformed_names() {
+    let malformed =
+        ["", ".", "a.", ".a", "a..b", "«a", "a.«b", "«a»b", "a b", "a-b", "1a", "λ", "₁", "a.'b", "?u", "[anonymous]"];
+    for s in malformed {
+        assert_eq!(parse_name(s), None, "input: {s:?}");
+    }
+}
+
+#[test]
+fn format_name_escapes_components() {
+    assert_eq!(format_name(&[str_comp("Quot"), str_comp("sound")]), "Quot.sound");
+    assert_eq!(format_name(&[str_comp("Quot.sound")]), "«Quot.sound»");
+    assert_eq!(format_name(&[str_comp(""), str_comp("propext")]), "«».propext");
+    assert_eq!(format_name(&[str_comp("a"), num_comp(1), str_comp("1")]), "a.1.«1»");
+    assert_eq!(format_name(&[str_comp("α₁"), str_comp("b c")]), "α₁.«b c»");
+    assert_eq!(format_name(&[str_comp("₁"), str_comp("'a"), str_comp("x✝")]), "«₁».«'a».«x✝»");
+    assert_eq!(format_name(&[str_comp("a»b")]), "a»b");
+    assert_eq!(format_name(&[]), "[anonymous]");
+}
+
+#[test]
+fn format_name_round_trips() {
+    use rand::{rngs::StdRng, RngExt, SeedableRng};
+
+    // Identifier and non-identifier characters, but not `»`, which can't be escaped.
+    const CHARS: &[char] = &['a', 'Z', '_', '0', '9', '.', ' ', '«', '\'', '!', '?', 'α', 'λ', '₁', 'é', '×'];
+    let mut rng = StdRng::seed_from_u64(0);
+    for _ in 0..10_000 {
+        let name: Vec<NameComponent> = (0..rng.random_range(1..=4))
+            .map(|_| {
+                if rng.random_bool(0.2) {
+                    NameComponent::Num(rng.random())
+                } else {
+                    NameComponent::Str(
+                        (0..rng.random_range(0..=4)).map(|_| CHARS[rng.random_range(0..CHARS.len())]).collect(),
+                    )
+                }
+            })
+            .collect();
+        assert_eq!(parse_name(&format_name(&name)), Some(name));
+    }
+}

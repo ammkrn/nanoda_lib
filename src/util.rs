@@ -1,7 +1,7 @@
 use crate::env::{DeclarMap, Env, NotationMap, EnvLimit};
 use crate::expr::{BinderStyle, Expr, FVarId};
 use crate::level::Level;
-use crate::name::Name;
+use crate::name::{parse_name, Name};
 use crate::pretty_printer::{PpOptions, PrettyPrinter};
 use crate::tc::TypeChecker;
 use crate::unique_hasher::UniqueHasher;
@@ -964,6 +964,9 @@ impl TryFrom<&Path> for Config {
                     if config.permitted_axioms.is_some() {
                         return Err(Box::from(format!("incompatible config options: unsafe_permit_all_axioms && nonempty permitted_axioms list")))
                     }
+                }
+                if let Some(name) = config.permitted_axioms.iter().flatten().find(|name| parse_name(name).is_none()) {
+                    return Err(Box::from(format!("invalid name in permitted_axioms: {:?}", name)))
                 }
                 Ok(config)
             }
