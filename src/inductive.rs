@@ -588,7 +588,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn mk_unique_name(&mut self, n: NamePtr<'t>, st: &mut InductiveCheckState<'t>) -> NamePtr<'t> {
         for idx in st.next_ngen_idx..u64::MAX {
             let tester = self.ctx.append_index_after(n, idx);
-            if !self.env.get_old_declar(&tester).is_some() {
+            // Require no declaration is found, and this is not a name used anywhere in the export environment.
+            if (tester.dag_marker() == crate::util::DagMarker::TcCtx) && (!self.env.get_declar(&tester).is_some()) {
                 st.next_ngen_idx = idx + 1;
                 return tester
             }
