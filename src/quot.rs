@@ -136,6 +136,8 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Decla
     let levels_uv = ctx.alloc_levels_slice(&[u_level, v_level]);
     let quot_name = ctx.export_file.name_cache.quot.unwrap();
     let quot_mk_name = ctx.export_file.name_cache.quot_mk.unwrap();
+    let quot_lift_name = ctx.str2("Quot", "lift");
+    let quot_ind_name = ctx.str2("Quot", "ind");
 
     let A_name = ctx.str1("A");
     let B_name = ctx.str1("B");
@@ -143,6 +145,10 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Decla
     let f_name = ctx.str1("f");
     let a_name = ctx.str1("a");
     let b_name = ctx.str1("b");
+    assert!(matches!(ctx.export_file.declars.get(&quot_name), Some(Declar::Quot {..})));
+    assert!(matches!(ctx.export_file.declars.get(&quot_mk_name), Some(Declar::Quot {..})));
+    assert!(matches!(ctx.export_file.declars.get(&quot_lift_name), Some(Declar::Quot {..})));
+    assert!(matches!(ctx.export_file.declars.get(&quot_ind_name), Some(Declar::Quot {..})));
 
     // local for `{A : Sort u}`
     let A = ctx.mk_unique(A_name, Implicit, sort_u);
@@ -210,7 +216,7 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Decla
         let env = ctx.export_file.new_env(EnvLimit::ByName(quot_mk_name));
         let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
         tc.assert_def_eq(declar.info().ty, expected_quot_mk.info().ty);
-    } else if declar.info().name == ctx.str2("Quot", "lift") {
+    } else if declar.info().name == quot_lift_name {
         check_eq(ctx, declar);
         // Quot.lift : Π {A : Sort u} {r : A → A → Prop} {B : Sort v} (f : A → B),
         //   (∀ (a b : A), r a b → f a = f b) → @Quot A r → B
@@ -237,7 +243,7 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Decla
         let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
         tc.assert_def_eq(declar.info().ty, expected_quot_lift.info().ty);
         return
-    } else if declar.info().name == ctx.str2("Quot", "ind") {
+    } else if declar.info().name == quot_ind_name {
         // {B : @Quot A r → Prop}
         let quot_A_r_prop = arrow!(in ctx; quot_A_r, prop);
 
