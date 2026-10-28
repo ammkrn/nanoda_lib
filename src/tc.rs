@@ -555,7 +555,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             App { .. } => self.infer_app(e, flag),
             Pi { .. } => self.infer_pi(e, flag),
             Lambda { .. } => self.infer_lambda(e, flag),
-            Let { binder_type, val, body, .. } => self.infer_let(binder_type, val, body, flag),
+            Let { binder_name, binder_type, val, body, .. } => self.infer_let(binder_name, binder_type, val, body, flag),
             Const { name, levels, .. } => self.infer_const(name, levels, flag),
             Proj { ty_name, idx, structure, .. } => self.infer_proj(ty_name, idx, structure, flag),
             NatLit { .. } => {
@@ -704,6 +704,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn infer_let(
         &mut self,
+        binder_name: NamePtr<'t>,
         binder_type: ExprPtr<'t>,
         val: ExprPtr<'t>,
         body: ExprPtr<'t>,
@@ -716,8 +717,15 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             // assert that the type annotation of the let value is appropriate.
             self.assert_def_eq(val_ty, binder_type);
         }
-        let body = self.ctx.inst(body, &[val]);
-        self.infer(body, flag)
+        // As the reference kernel's `infer_let`: check the body with a free variable that has a
+        // value (unfolded lazily by `whnf`), so that `Nat` arithmetic on the variable is not
+        // evaluated eagerly, then substitute the value back into the inferred type.
+        let x = self.ctx.mk_unique(binder_name, crate::expr::BinderStyle::Default, binder_type);
+        self.tc_cache.let_vals.insert(x, val);
+        let body = self.ctx.inst(body, &[x]);
+        let ty = self.infer(body, flag);
+        let ty = self.ctx.abstr(ty, &[x]);
+        self.ctx.inst(ty, &[val])
     }
     
     // Not well tested, used for introspection/debugging.
@@ -867,6 +875,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 (false, e_fun)
             }
             App { .. } => panic!(),
+            Local { .. } if self.tc_cache.let_vals.contains_key(&e_fun) => {
+                let v = self.tc_cache.let_vals[&e_fun];
+                let e = self.ctx.foldl_apps(v, args.into_iter());
+                (true, self.whnf_no_unfolding_aux(e, cheap_proj))
+            }
             Local { .. } | NatLit { .. } | StringLit { .. } => (false, e),
         };
         if should_cache && !cheap_proj {

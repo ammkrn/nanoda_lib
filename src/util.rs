@@ -852,6 +852,9 @@ pub(crate) struct TcCache<'t> {
     pub(crate) defeq_fail_cache: FxHashSet<(ExprPtr<'t>, ExprPtr<'t>, bool)>,
     /// Strong reduction is not used during type-checking, this is more of a library/inspection feature.
     pub(crate) strong_cache: UniqueHashMap<(ExprPtr<'t>, bool, bool), ExprPtr<'t>>,
+    /// Values of the free variables standing for `let`-bound variables while the body of the `let`
+    /// is being checked; `whnf` unfolds them lazily, as the reference kernel's local context does.
+    pub(crate) let_vals: FxHashMap<ExprPtr<'t>, ExprPtr<'t>>,
 }
 
 impl<'t> TcCache<'t> {
@@ -865,6 +868,7 @@ impl<'t> TcCache<'t> {
             congr_fail_cache: new_fx_hash_set(),
             defeq_fail_cache: new_fx_hash_set(),
             strong_cache: new_unique_hash_map(),
+            let_vals: new_fx_hash_map(),
         }
     }
 
@@ -877,6 +881,7 @@ impl<'t> TcCache<'t> {
         self.congr_fail_cache.clear();
         self.defeq_fail_cache.clear();
         self.strong_cache.clear();
+        self.let_vals.clear();
     }
 }
 
