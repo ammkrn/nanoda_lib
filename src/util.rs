@@ -27,6 +27,8 @@ use serde::Deserialize;
 
 pub(crate) const fn default_true() -> bool { true }
 
+pub(crate) const fn default_stack_size_bytes() -> usize { 32 * 1024 * 1024 }
+
 pub(crate) type UniqueIndexSet<A> = IndexSet<A, BuildHasherDefault<UniqueHasher>>;
 pub(crate) type FxIndexSet<A> = IndexSet<A, BuildHasherDefault<FxHasher>>;
 pub(crate) type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
@@ -900,9 +902,14 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub unpermitted_axiom_hard_error: bool,
 
-    /// Number of threads to use for type checking.
+    /// Number of worker threads to use for type checking. Values of 0 or 1 use one worker.
     #[serde(default)]
     pub num_threads: usize,
+
+    /// Stack size in bytes for each checking worker, including serial checking.
+    /// Must be positive. Defaults to 32 MiB.
+    #[serde(default = "default_stack_size_bytes")]
+    pub stack_size_bytes: usize,
 
     #[serde(default)] 
     pub nat_extension: bool,

@@ -26,6 +26,10 @@ Given that lean4export already uses json as its export format, adding a json par
 
 Users can either specify a path to the export file to be checked, or set `"use_stdin": true`, in which case the program will wait for the export file to be passed via stdin. If the `"export_file_path"` key is not defined, then `"use_stdin"` must be set to `true`. Specifying an export file and setting `"use_stdin": true` are mutually exclusive, and will result in a hard error.
 
+`"num_threads"` sets the number of checking workers. If omitted or set to 0 or 1, checking runs serially in one worker.
+
+`"stack_size_bytes"` sets the requested stack size in bytes for each checking worker, including serial checking. It must be a positive integer and defaults to 32 mb. For example, `"stack_size_bytes": 1073741824` requests 1 GB per worker for proofs that require deeper recursion. This setting takes precedence over `RUST_MIN_STACK`; it does not change the stack used for parsing or pretty printing, or for direct library calls to `check_declar`.
+
 The `"permitted_axioms"` list is where users specify the axioms an export file is permitted to use. For axioms to be permitted, they must be identified in the config file. The average Lean user will want to permit the three semi-official axioms, which are `Quot.sound`, `Classical.choice`, and `propext`, and most export files will also rely on `Lean.trustCompiler`.
 
 if `"unpermitted_axiom_hard_error"` is set to `true`, the presence of an axiom in the export file that is not in the `permitted_axioms` list will cause a hard error and abort checking, regardless of whether it's used by any later declarations. If set to `false`, the unpermitted axiom will simply be ignored, meaning it will not be checked, will not be added to the environment, and will cause a hard error only if another exported declaration actually tries to use it. This value is currently set to `true` by default out of an abundance of caution, but this may change; most users will probably want to set this to `false`, since things like the prelude's `sorryAx` are declared so that they may be used by metaprograms, but will not actually be invoked by other declarations in the file and are therefore safe to just skip.
@@ -52,6 +56,8 @@ An example configuration file:
 {
     "export_file_path": "MyLeanProject/export",
     "use_stdin": false,
+    "num_threads": 4,
+    "stack_size_bytes": 33554432,
     "permitted_axioms": [
         "propext",
         "Classical.choice",

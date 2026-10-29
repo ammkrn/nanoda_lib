@@ -148,44 +148,45 @@ impl<'p> ExportFile<'p> {
         }
     }
 
-    /// Check all declarations in this export file, spawning `num_threads` as
-    /// checkers.
-    fn check_all_declars_par(&self, num_threads: usize) {
+    /// Check all declarations using workers with the configured stack size.
+    /// Values of `num_threads` <= 1 run serially in one worker.
+    pub fn check_all_declars(&self) {
         use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-        use std::thread;
+        let num_threads = self.config.num_threads.max(1);
+        assert!(self.config.stack_size_bytes > 0, "stack_size_bytes must be greater than zero");
         let task_num = AtomicUsize::new(0);
-        thread::scope(|sco| {
+        std::thread::scope(|sco| {
             let mut handles = Vec::new();
             for i in 0..num_threads {
                 handles.push(
-                    thread::Builder::new()
+                    std::thread::Builder::new()
                         .name(format!("thread_{}", i))
-                        .stack_size(crate::STACK_SIZE)
-                        .spawn_scoped(sco, || loop {
-                            let idx = task_num.fetch_add(1, Relaxed);
-                            if let Some((_, declar)) = self.declars.get_index(idx) {
-                                self.check_declar(declar);
+                        .stack_size(self.config.stack_size_bytes)
+                        .spawn_scoped(sco, || {
+                            if num_threads == 1 {
+                                self.check_all_declars_serial();
                             } else {
-                                break
+                                loop {
+                                    let idx = task_num.fetch_add(1, Relaxed);
+                                    if let Some((_, declar)) = self.declars.get_index(idx) {
+                                        self.check_declar(declar);
+                                    } else {
+                                        break
+                                    }
+                                }
                             }
                         })
-                        .unwrap(),
+                        .unwrap_or_else(|e| {
+                            panic!("failed to spawn checking thread {} with stack_size_bytes={}: {}", i, self.config.stack_size_bytes, e)
+                        }),
                 )
             }
             for t in handles {
-                t.join().expect("A thread in `check_all_declars` panicked while being joined");
+                if let Err(payload) = t.join() {
+                    std::panic::resume_unwind(payload);
+                }
             }
         });
-    }
-
-    /// Check all of the declarations in this export file on the specified number
-    /// of threads (checking will be serial on the main thread is num_threads <= 1).
-    pub fn check_all_declars(&self) {
-        if self.config.num_threads > 1 {
-            self.check_all_declars_par(self.config.num_threads)
-        } else {
-            self.check_all_declars_serial()
-        }
     }
 }
 
