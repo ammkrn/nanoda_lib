@@ -29,7 +29,8 @@ pub(crate) fn test_get_export_file<'p>(config_path: Option<&Path>) -> Result<(Ex
             num_threads: 1,
             print_success_message: true,
             print_axioms: true,
-            unsafe_permit_all_axioms: false
+            unsafe_permit_all_axioms: false,
+            stack_size_bytes: crate::util::default_stack_size_bytes()
         },
         Some(config_path) => Config::try_from(config_path)?,
     };
