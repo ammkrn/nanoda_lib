@@ -448,6 +448,7 @@ pub(crate) fn parse_export_file<'p, R: BufRead>(
         config: parser.config,
         mutual_block_sizes: parser.mutual_block_sizes,
         ind_name_to_recursor_names,
+        checked_blocks: std::sync::Mutex::new(new_fx_hash_map()),
     };
     Ok((export_file, parser.skipped))
 }

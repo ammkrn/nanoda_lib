@@ -1,7 +1,7 @@
 use crate::env::{ConstructorData, Declar, DeclarInfo, DeclarMap, InductiveData, RecRule, RecursorData};
 use crate::expr::{BinderStyle, Expr::*};
 use crate::tc::{InferFlag, TypeChecker};
-use crate::util::{FxHashSet, ExportFile, ExprPtr, FxIndexMap, LevelPtr, LevelsPtr, NamePtr, TcCtx, new_fx_hash_set};
+use crate::util::{CheckedBlock, FxHashSet, ExportFile, ExprPtr, FxIndexMap, LevelPtr, LevelsPtr, NamePtr, TcCtx, new_fx_hash_set};
 use std::sync::Arc;
 
 impl<'t, 'p: 't> ExportFile<'p> {
@@ -32,7 +32,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
     }
 
     pub(crate) fn check_inductive_declar(&self, d: &Declar<'t>) {
-        let (ind, env_limit) = match d {
+        let (ind, block) = match d {
             Declar::Inductive(ind) => {
                 // Assert computed `is_recursive` value matches the export file. Lean considers
                 // all types in a mutual block to be `is_rec: true` if any one of them is recursive.
@@ -61,11 +61,31 @@ impl<'t, 'p: 't> ExportFile<'p> {
                 });
 
                 let (start, size) = self.mutual_block_sizes.get(&ind.info.name).unwrap();
-                (ind, crate::env::EnvLimit::ByIndex(start + size))
+                (ind, (*start, *size))
             }
             _ => panic!("expected inductive")
         };
-        self.with_ctx(|ctx| {
+        let env_limit = crate::env::EnvLimit::ByIndex(block.0 + block.1);
+        let hashes = |names: &[NamePtr<'t>]| {
+            let mut v: Vec<u64> = names.iter().map(|n| n.get_hash()).collect();
+            v.sort_unstable();
+            v
+        };
+        // A mutual block is checked once, from its first member checked. Everything after this
+        // member's own type depends only on the block, given the uparams, parameter count and
+        // member list this member gives, so a later member with the same ones needs only its
+        // own type checked, and its recursors named as those derived.
+        let done = self.checked_blocks.lock().unwrap().get(&block).cloned();
+        if let Some(done) = done {
+            assert_eq!(done.uparams, ind.info.uparams.get_hash());
+            assert_eq!(done.num_params, ind.num_params);
+            assert_eq!(done.all_ind_names, hashes(&ind.all_ind_names));
+            self.with_ctx(|ctx| ctx.with_tc(env_limit, |tc| tc.check_declar_info(d).unwrap()));
+            let from_parser: Vec<NamePtr<'p>> = self.ind_name_to_recursor_names.get(&d.info().name).unwrap().iter().copied().collect();
+            assert_eq!(done.recursor_names, hashes(&from_parser), "a member of a mutual block names other recursors");
+            return;
+        }
+        let recursor_names = self.with_ctx(|ctx| {
             // The **unmodified** types and constructors for all of the types in this mutual block.
             let unmodified_tys_ctors = ctx.with_tc(env_limit, |tc| {
                 tc.check_declar_info(d).unwrap();
@@ -126,17 +146,31 @@ impl<'t, 'p: 't> ExportFile<'p> {
                         }
                         base
                     };
-                    tc.ctx.ck_recursor_names_simple(&d.info().name, all_rec_names);
+                    tc.ctx.ck_recursor_names_simple(&d.info().name, all_rec_names.clone());
                     tc.restore_and_check(&st, &unmodified_tys_ctors, &ind.all_ind_names, &base_rec_names, &specialized_to_unspecialized_rec_names);
+                    let mut v: Vec<u64> = all_rec_names.iter().map(|n| n.get_hash()).collect();
+                    v.sort_unstable();
+                    v
                 } else {
-                    tc.ctx.ck_recursor_names_simple(&d.info().name, recursors.iter().map(|x| x.info().name).collect());
+                    let names: FxHashSet<NamePtr<'_>> = recursors.iter().map(|x| x.info().name).collect();
+                    tc.ctx.ck_recursor_names_simple(&d.info().name, names.clone());
                     // Do the definitional equality assertions of new/old here.
                     tc.assert_nonnested_tys_def_eq(ind, &st);
                     tc.assert_nonnested_ctors_def_eq(&st);
                     tc.assert_nonnested_recursors_def_eq(&st, &recursors);
+                    let mut v: Vec<u64> = names.iter().map(|n| n.get_hash()).collect();
+                    v.sort_unstable();
+                    v
                 }
             })
-        })
+        });
+        let checked = CheckedBlock {
+            uparams: ind.info.uparams.get_hash(),
+            num_params: ind.num_params,
+            all_ind_names: hashes(&ind.all_ind_names),
+            recursor_names,
+        };
+        self.checked_blocks.lock().unwrap().insert(block, checked);
     }
 }
 
