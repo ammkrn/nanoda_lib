@@ -29,7 +29,8 @@ pub(crate) fn test_get_export_file<'p>(config_path: Option<&Path>) -> Result<(Ex
             num_threads: 1,
             print_success_message: true,
             print_axioms: true,
-            unsafe_permit_all_axioms: false
+            unsafe_permit_all_axioms: false,
+            stack_size_bytes: crate::util::default_stack_size_bytes()
         },
         Some(config_path) => Config::try_from(config_path)?,
     };
@@ -99,6 +100,32 @@ fn check_proj_from_prop() {
             }
         },
     )
+}
+
+#[test]
+fn config_invalid_json_returns_error() {
+    let error = Config::try_from(Path::new("test_resources/Config/invalid_json.json")).unwrap_err();
+    let json_error = error.downcast_ref::<serde_json::Error>().expect("JSON parsing error");
+    assert!(json_error.is_eof());
+    assert!(json_error.line() > 0);
+}
+
+#[test]
+fn config_invalid_option_type_returns_error() {
+    let error = Config::try_from(Path::new("test_resources/Config/invalid_option_type.json")).unwrap_err();
+    let json_error = error.downcast_ref::<serde_json::Error>().expect("JSON parsing error");
+    assert!(json_error.is_data());
+    assert!(json_error.line() > 0);
+    assert!(json_error.column() > 0);
+}
+
+#[test]
+fn config_valid_json_is_loaded() -> Result<(), Box<dyn Error>> {
+    let config = Config::try_from(Path::new("test_resources/Config/valid.json"))?;
+    assert!(config.use_stdin);
+    assert!(config.export_file_path.is_none());
+    assert_eq!(config.num_threads, 2);
+    Ok(())
 }
 
 pub(crate) fn rand_string<'t>(rng: &mut ThreadRng, size: usize) -> CowStr<'t> {

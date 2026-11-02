@@ -84,7 +84,10 @@ impl<'p> ExportFile<'p> {
         match d {
             Axiom { .. } => self.with_tc_and_declar(*d.info(), |tc| tc.check_declar_info(d).unwrap()),
             Inductive(..) => self.check_inductive_declar(d),
-            Quot { .. } => self.with_ctx(|ctx| crate::quot::check_quot(ctx, d)),
+            Quot { .. } => {
+                self.with_tc_and_declar(*d.info(), |tc| tc.check_declar_info(d).unwrap());
+                self.with_ctx(|ctx| crate::quot::check_quot(ctx, d))
+            }
             Definition { val, .. } | Theorem { val, .. } | Opaque { val, .. } =>
                 self.with_tc_and_declar(*d.info(), |tc| {
                     tc.check_declar_info(d).unwrap();
@@ -145,44 +148,45 @@ impl<'p> ExportFile<'p> {
         }
     }
 
-    /// Check all declarations in this export file, spawning `num_threads` as
-    /// checkers.
-    fn check_all_declars_par(&self, num_threads: usize) {
+    /// Check all declarations using workers with the configured stack size.
+    /// Values of `num_threads` <= 1 run serially in one worker.
+    pub fn check_all_declars(&self) {
         use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-        use std::thread;
+        let num_threads = self.config.num_threads.max(1);
+        assert!(self.config.stack_size_bytes > 0, "stack_size_bytes must be greater than zero");
         let task_num = AtomicUsize::new(0);
-        thread::scope(|sco| {
+        std::thread::scope(|sco| {
             let mut handles = Vec::new();
             for i in 0..num_threads {
                 handles.push(
-                    thread::Builder::new()
+                    std::thread::Builder::new()
                         .name(format!("thread_{}", i))
-                        .stack_size(crate::STACK_SIZE)
-                        .spawn_scoped(sco, || loop {
-                            let idx = task_num.fetch_add(1, Relaxed);
-                            if let Some((_, declar)) = self.declars.get_index(idx) {
-                                self.check_declar(declar);
+                        .stack_size(self.config.stack_size_bytes)
+                        .spawn_scoped(sco, || {
+                            if num_threads == 1 {
+                                self.check_all_declars_serial();
                             } else {
-                                break
+                                loop {
+                                    let idx = task_num.fetch_add(1, Relaxed);
+                                    if let Some((_, declar)) = self.declars.get_index(idx) {
+                                        self.check_declar(declar);
+                                    } else {
+                                        break
+                                    }
+                                }
                             }
                         })
-                        .unwrap(),
+                        .unwrap_or_else(|e| {
+                            panic!("failed to spawn checking thread {} with stack_size_bytes={}: {}", i, self.config.stack_size_bytes, e)
+                        }),
                 )
             }
             for t in handles {
-                t.join().expect("A thread in `check_all_declars` panicked while being joined");
+                if let Err(payload) = t.join() {
+                    std::panic::resume_unwind(payload);
+                }
             }
         });
-    }
-
-    /// Check all of the declarations in this export file on the specified number
-    /// of threads (checking will be serial on the main thread is num_threads <= 1).
-    pub fn check_all_declars(&self) {
-        if self.config.num_threads > 1 {
-            self.check_all_declars_par(self.config.num_threads)
-        } else {
-            self.check_all_declars_serial()
-        }
     }
 }
 
@@ -227,7 +231,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             }
             self.ctx.subst_declar_info_levels(declar_info, c_uparams)
         } else {
-            panic!("declaration not found in infer_const, {:?}", self.ctx.debug_print(c_name))
+            if let Some(parent_declar_info) = self.declar_info {
+                panic!("infer_const: declaration {:?} depends on {:?} which was not found in the environment", self.ctx.debug_print(parent_declar_info.name), self.ctx.debug_print(c_name))
+            } else {
+                panic!("infer_const: declaration {:?} was not found in the environment", self.ctx.debug_print(c_name))
+            }
         }
     }
 
@@ -369,8 +377,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn do_nat_bin(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>, op: NatBinOp) -> Option<ExprPtr<'t>> {
         use NatBinOp::*;
-        let (x, y) = (self.whnf(x), self.whnf(y));
-        let (arg1, arg2) = (self.ctx.get_bignum_from_expr(x)?, self.ctx.get_bignum_from_expr(y)?);
+        let x = self.whnf(x);
+        let arg1 = self.ctx.get_bignum_from_expr(x)?;
+        let y = self.whnf(y);
+        let arg2 = self.ctx.get_bignum_from_expr(y)?;
         match op {
             Add => self.ctx.mk_nat_lit_quick(arg1 + arg2),
             Sub => self.ctx.mk_nat_lit_quick(nat_sub(arg1, arg2)),
@@ -394,9 +404,6 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// variables.
     pub(crate) fn try_reduce_nat(&mut self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
         if !self.ctx.export_file.config.nat_extension {
-            return None
-        }
-        if self.ctx.has_fvars(e) {
             return None
         }
         let (f, args) = self.ctx.unfold_apps(e);
@@ -445,7 +452,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
 
     fn reduce_proj(&mut self, idx: usize, structure: ExprPtr<'t>, cheap: bool) -> Option<ExprPtr<'t>> {
-        let mut structure = if cheap { self.whnf_no_unfolding_cheap_proj(structure) } else { self.whnf(structure) };
+        let structure = if cheap { self.whnf_no_unfolding_cheap_proj(structure) } else { self.whnf(structure) };
+        self.reduce_proj_core(idx, structure)
+    }
+
+    fn reduce_proj_core(&mut self, idx: usize, mut structure: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
         if let StringLit { ptr, .. } = self.ctx.read_expr(structure) {
             if let Some(s) = self.str_lit_to_ctor_reducing(ptr) {
                 structure = s;
@@ -454,7 +465,24 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let (_, name, _, args) = self.ctx.unfold_const_apps(structure)?;
         let ConstructorData { num_params, .. } = self.env.get_constructor(&name)?;
         let i = (*num_params as usize) + idx;
-        Some(args.get(i).copied().unwrap())
+        args.get(i).copied()
+    }
+
+    /// `x.i =?= y.i` by their structures, as the reference kernel's
+    /// `lazy_delta_proj_reduction` (src/kernel/type_checker.cpp): lazy-delta
+    /// steps on the two structures; once neither unfolds any further, project
+    /// both and compare just the projected fields, and only if a side is not a
+    /// constructor application compare the structures themselves.  Comparing the
+    /// whole structures first would also compare (and evaluate) the fields the
+    /// projection discards.
+    fn lazy_delta_proj_reduction(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>, idx: usize) -> bool {
+        match self.lazy_delta_step(x, y) {
+            FoundEqResult(r) => r,
+            Exhausted(x, y) => match (self.reduce_proj_core(idx, x), self.reduce_proj_core(idx, y)) {
+                (Some(x_i), Some(y_i)) => self.def_eq(x_i, y_i),
+                _ => self.def_eq(x, y),
+            },
+        }
     }
 
     pub(crate) fn infer_then_whnf(&mut self, e: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
@@ -462,14 +490,16 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         self.whnf(ty)
     }
 
-    fn infer_proj(&mut self, _ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
+    fn infer_proj(&mut self, ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
         let structure_ty = self.infer_then_whnf(structure, flag);
         let structure_ty_may_be_prop = self.may_be_prop(structure_ty).0;
         let (_, struct_ty_name, struct_ty_levels, struct_ty_args) = self.ctx.unfold_const_apps(structure_ty).unwrap();
 
         let InductiveData { info: inductive_info, all_ctor_names, num_params, .. } =
             self.env.get_structure(&struct_ty_name, true).unwrap();
-
+        if inductive_info.name != ty_name {
+            panic!("Invalid projection: {:?} != {:?}", self.ctx.debug_print(inductive_info.name), self.ctx.debug_print(ty_name));
+        }
         let ConstructorData { info: ctor_info, .. } = self.env.get_constructor(&all_ctor_names[0]).unwrap();
         let mut ctor_ty = self.ctx.subst_declar_info_levels(*ctor_info, struct_ty_levels);
         for i in 0..(*num_params) {
@@ -798,7 +828,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     let e = self.whnf_no_unfolding_aux(e, cheap_proj);
                     (true, e)
                 } else {
-                    (false, self.ctx.foldl_apps(e_fun, args.into_iter()))
+                    (false, e)
                 },
             Sort { level, .. } => {
                 debug_assert!(args.is_empty());
@@ -817,7 +847,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             }
             Lambda { .. } => {
                 debug_assert!(args.is_empty());
-                (false, self.ctx.foldl_apps(e_fun, args.into_iter()))
+                (false, e)
             }
             Let { val, body, .. } => {
                 let e = self.ctx.inst(body, &[val]);
@@ -830,7 +860,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 } else if let Some(reduced) = self.reduce_rec(name, levels, &args) {
                     (true, self.whnf_no_unfolding_aux(reduced, cheap_proj))
                 } else {
-                    (false, self.ctx.foldl_apps(e_fun, args.into_iter()))
+                    (false, e)
                 },
             Var { .. } => panic!("Loose bvars are not allowed"),
             Pi { .. } => {
@@ -838,7 +868,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 (false, e_fun)
             }
             App { .. } => panic!(),
-            Local { .. } | NatLit { .. } | StringLit { .. } => (false, self.ctx.foldl_apps(e_fun, args.into_iter())),
+            Local { .. } | NatLit { .. } | StringLit { .. } => (false, e),
         };
         if should_cache && !cheap_proj {
             self.tc_cache.whnf_no_unfolding_cache.insert(e, eprime);
@@ -905,7 +935,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             (
                 Proj { ty_name: ty_name_l, idx: idx_l, structure: structure_l, .. },
                 Proj { ty_name: ty_name_r, idx: idx_r, structure: structure_r, .. }
-            ) => ty_name_l == ty_name_r && idx_l == idx_r && self.def_eq(structure_l, structure_r),
+            ) => ty_name_l == ty_name_r && idx_l == idx_r && self.lazy_delta_proj_reduction(structure_l, structure_r, idx_l),
             _ => false,
         }
     }
@@ -976,8 +1006,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             return easy
         }
 
-        let result = if self.proof_irrel_eq(x_n, y_n) {
-            true
+        let result = if let Some(short) = self.proof_irrel_eq(x_n, y_n) {
+            short
         } else {
             match self.lazy_delta_step(x_n, y_n) {
                 FoundEqResult(short) => short,
@@ -1181,6 +1211,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         if self.tc_cache.eq_cache.contains(&SortedPair::new(x, y)) {
             return Some(true)
         }
+        if self.ctx.alpha_eq(x, y) {
+            self.tc_cache.eq_cache.insert(SortedPair::new(x, y));
+            return Some(true)
+        }
         if let Some(r) = self.def_eq_sort(x, y) {
             return Some(r)
         }
@@ -1334,13 +1368,13 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         (self.is_prop(infd).0, infd)
     }
 
-    fn proof_irrel_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
+    fn proof_irrel_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> Option<bool> {
         match self.is_proof(x) {
-            (false, _) => false,
-            (true, l_type) => match self.is_proof(y) {
-                (false, _) => false,
-                (true, r_type) => self.def_eq(l_type, r_type),
-            },
+            (false, _) => None,
+            (true, l_type) => {
+                let r_type = self.infer(y, InferOnly);
+                Some(self.def_eq(l_type, r_type))
+            }
         }
     }
 

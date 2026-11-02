@@ -19,5 +19,3 @@ pub mod tc;
 mod tests;
 pub mod unique_hasher;
 pub mod util;
-
-pub(crate) const STACK_SIZE: usize = 16_777_216;

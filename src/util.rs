@@ -7,7 +7,7 @@ use crate::tc::TypeChecker;
 use crate::unique_hasher::UniqueHasher;
 use indexmap::{IndexMap, IndexSet};
 use num_bigint::BigUint;
-use num_traits::{ Pow, identities::Zero };
+use num_traits::{ identities::Zero };
 use num_integer::Integer;
 use rustc_hash::FxHasher;
 use std::borrow::Cow;
@@ -21,9 +21,13 @@ use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::ops::{ Shl, Shr };
+use std::convert::TryFrom;
 use serde::Deserialize;
 
 pub(crate) const fn default_true() -> bool { true }
+
+pub(crate) const fn default_stack_size_bytes() -> usize { 32 * 1024 * 1024 }
 
 pub(crate) type UniqueIndexSet<A> = IndexSet<A, BuildHasherDefault<UniqueHasher>>;
 pub(crate) type FxIndexSet<A> = IndexSet<A, BuildHasherDefault<FxHasher>>;
@@ -158,11 +162,19 @@ pub(crate) fn nat_xor(x: &BigUint, y: &BigUint) -> BigUint {
 }
 
 pub(crate) fn nat_shl(x: BigUint, y: BigUint) -> BigUint {
-    x * BigUint::from(2u8).pow(y)
+    if x.is_zero() {
+        return x;
+    } 
+
+    x.shl(u64::try_from(&y).expect("nat_shl: shift count exceeds u64::MAX"))
 }
 
 pub(crate) fn nat_shr(x: BigUint, y: BigUint) -> BigUint {
-    x / BigUint::from(2u8).pow(y)
+    if y >= BigUint::from(x.bits()) {
+        return BigUint::zero();
+    }
+
+    x.shr(u64::try_from(&y).unwrap())
 }
 
 pub(crate) fn nat_land(x: BigUint, y: BigUint) -> BigUint {
@@ -186,6 +198,7 @@ pub struct ExprCache<'t> {
     pub(crate) abstr_cache: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
     /// A cache for (expr, starting deBruijn level, current deBruijn level)
     pub(crate) abstr_cache_levels: FxHashMap<(ExprPtr<'t>, u16, u16), ExprPtr<'t>>,
+    pub(crate) alpha_eq_visited: FxHashSet<SortedPair<'t>>,
 }
 
 impl<'t> ExprCache<'t> {
@@ -196,6 +209,7 @@ impl<'t> ExprCache<'t> {
             subst_cache: new_fx_hash_map(),
             dsubst_cache: new_fx_hash_map(),
             abstr_cache_levels: new_fx_hash_map(),
+            alpha_eq_visited: new_fx_hash_set(),
         }
     }
 }
@@ -888,9 +902,14 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub unpermitted_axiom_hard_error: bool,
 
-    /// Number of threads to use for type checking.
+    /// Number of worker threads to use for type checking. Values of 0 or 1 use one worker.
     #[serde(default)]
     pub num_threads: usize,
+
+    /// Stack size in bytes for each checking worker, including serial checking.
+    /// Must be positive. Defaults to 32 MiB.
+    #[serde(default = "default_stack_size_bytes")]
+    pub stack_size_bytes: usize,
 
     #[serde(default)] 
     pub nat_extension: bool,
@@ -938,7 +957,7 @@ impl TryFrom<&Path> for Config {
         match OpenOptions::new().read(true).truncate(false).open(p) {
             Err(e) => Err(Box::from(format!("failed to open configuration file: {:?}", e))),
             Ok(config_file) => {
-                let config = serde_json::from_reader::<_, Config>(BufReader::new(config_file)).unwrap();
+                let config = serde_json::from_reader::<_, Config>(BufReader::new(config_file))?;
                 if config.export_file_path.is_none() && !config.use_stdin {
                     return Err(Box::from(format!("incompatible config options: must specify a path to an export file OR set `use_stdin: true`")))
                 }

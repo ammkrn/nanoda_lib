@@ -164,6 +164,7 @@ fn quoted_name_config(pp_declars: Vec<String>) -> Config {
         permitted_axioms: Some(names),
         unpermitted_axiom_hard_error: true,
         num_threads: 1,
+        stack_size_bytes: crate::util::default_stack_size_bytes(),
         nat_extension: false,
         string_extension: false,
         pp_declars: Some(pp_declars),
