@@ -103,6 +103,23 @@ fn check_proj_from_prop() {
 }
 
 #[test]
+#[should_panic(expected = "infer_proj prop")]
+fn omitted_num_threads_still_checks_declarations() {
+    let (export, _) = test_get_export_file(Some(Path::new("test_resources/ProjFromProp/config.json")))
+        .expect("failed to load ProjFromProp test fixture");
+    export.check_all_declars();
+}
+
+#[test]
+#[should_panic(expected = "infer_proj prop")]
+fn zero_num_threads_still_checks_declarations() {
+    let (mut export, _) = test_get_export_file(Some(Path::new("test_resources/ProjFromProp/config.json")))
+        .expect("failed to load ProjFromProp test fixture");
+    export.config.num_threads = 0;
+    export.check_all_declars();
+}
+
+#[test]
 fn config_invalid_json_returns_error() {
     let error = Config::try_from(Path::new("test_resources/Config/invalid_json.json")).unwrap_err();
     let json_error = error.downcast_ref::<serde_json::Error>().expect("JSON parsing error");
