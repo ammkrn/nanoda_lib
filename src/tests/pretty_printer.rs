@@ -47,3 +47,13 @@ fn lambda_does_not_group_nonconsecutive_styles() -> Result<(), Box<dyn Error>> {
     assert_eq!(actual, "fun (a : Type 0) {b : Type 0} (c d : Type 0) => Prop");
     Ok(())
 }
+
+#[test]
+fn binder_names_are_escaped_unless_identifiers() -> Result<(), Box<dyn Error>> {
+    let actual = render_binders(
+        false,
+        &[("ω", 0, Default), ("x₉", 0, Default), ("é", 0, Default), ("a b", 0, Default), ("₁a", 0, Default)],
+    )?;
+    assert_eq!(actual, "fun (ω x₉ é «a b» «₁a» : Prop) => Prop");
+    Ok(())
+}

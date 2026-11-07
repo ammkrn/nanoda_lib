@@ -1,0 +1,5 @@
+{
+  "export_file_path": "test_resources/PermittedAxioms/export",
+  "permitted_axioms": ["Quot.sound", "«».propext", "propext.«1»"],
+  "unpermitted_axiom_hard_error": false
+}

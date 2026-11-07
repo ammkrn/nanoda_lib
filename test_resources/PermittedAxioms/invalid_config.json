@@ -1,0 +1,4 @@
+{
+  "export_file_path": "test_resources/PermittedAxioms/export",
+  "permitted_axioms": ["Quot.sound", "Quot..sound"]
+}
