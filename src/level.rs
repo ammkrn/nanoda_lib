@@ -1,5 +1,5 @@
 //! Implementation of the `Level` type representing universes
-use crate::util::{LevelPtr, LevelsPtr, NamePtr, TcCtx};
+use crate::util::{LevelPtr, LevelsPtr, NamePtr, TcCtx, FxHashSet};
 
 pub(crate) const ZERO_HASH: u64 = 283;
 pub(crate) const SUCC_HASH: u64 = 541;
@@ -285,4 +285,20 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             IMax(_, r, ..) => self.is_never_zero(r),
         }
     }
+    
+    pub fn collect_params_aux(&self, level: LevelPtr<'t>, params: &mut FxHashSet<LevelPtr<'t>>) {
+        match self.read_level(level) {
+            Zero => {},
+            Succ(level, ..) => {
+                let (level, _) = self.level_succs(level);
+                self.collect_params_aux(level, params);
+            },
+            Param(..) => { params.insert(level); },
+            Max(l, r, ..) | IMax(l, r, ..) => {
+                self.collect_params_aux(l, params);
+                self.collect_params_aux(r, params);
+            }
+        }
+    }
 }
+

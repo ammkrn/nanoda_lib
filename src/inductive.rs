@@ -32,7 +32,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
     }
 
     pub(crate) fn check_inductive_declar(&self, d: &Declar<'t>) {
-        let (ind, env_limit) = match d {
+        let (ind, block_start, block_end, env_limit) = match d {
             Declar::Inductive(ind) => {
                 // Assert computed `is_recursive` value matches the export file. Lean considers
                 // all types in a mutual block to be `is_rec: true` if any one of them is recursive.
@@ -61,7 +61,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
                 });
 
                 let (start, size) = self.mutual_block_sizes.get(&ind.info.name).unwrap();
-                (ind, crate::env::EnvLimit::ByIndex(start + size))
+                (ind, *start, start + size, crate::env::EnvLimit::ByIndex(start + size))
             }
             _ => panic!("expected inductive")
         };
@@ -91,6 +91,16 @@ impl<'t, 'p: 't> ExportFile<'p> {
                     }
                 }
             });
+            
+            for i in block_start..block_end {
+                if let (_, Declar::Recursor(rec_info)) = ctx.export_file.declars.get_index(i).unwrap() {
+                    for rr in rec_info.rec_rules.iter() {
+                        ctx.with_tc(env_limit, |tc| {
+                            tc.infer(rr.val, InferFlag::Check);
+                        })
+                    }
+                }
+            }
 
             // The second temporary environment extension, which also includes the constructors.
             let ctor_extension = ctx.mk_ctors_env_ext(&st, ind_ty_ext1);
@@ -1700,8 +1710,19 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         match self.env.get_old_declar(&resolved_rec_name) {
             Some(Declar::Recursor(original @ RecursorData { .. })) => {
                 assert!(original.aux_data_ck(&restored));
+                assert_eq!(
+                    self.ctx.read_levels(original.info.uparams).len(),
+                    self.ctx.read_levels(restored.info.uparams).len(),
+                    "recursor universe parameter count mismatch for {:?}",
+                    self.ctx.debug_print(resolved_rec_name),
+                );
+                // Align the imported type and rules by universe parameter position,
+                // allowing consistent renaming while checking the order of parameters.
+                let original_ty = self.ctx.subst_expr_levels(
+                    original.info.ty, original.info.uparams, restored.info.uparams,
+                );
                 self.tc_cache.clear();
-                self.assert_def_eq(original.info.ty, restored.info.ty);
+                self.assert_def_eq(original_ty, restored.info.ty);
                 // have to do the rec rules as well.
                 assert_eq!(original.rec_rules.len(), restored.rec_rules.len());
                 for i in 0..original.rec_rules.len() {
@@ -1717,8 +1738,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                         self.ctx.debug_print(old.ctor_name),
                         self.ctx.debug_print(resolved_rec_name),
                     );
+                    let old_val = self.ctx.subst_expr_levels(old.val, original.info.uparams, restored.info.uparams);
                     self.tc_cache.clear();
-                    self.assert_def_eq(old.val, new.val);
+                    self.assert_def_eq(old_val, new.val);
                 }
             }
             // A recursor moved to a later block is hidden by the environment
