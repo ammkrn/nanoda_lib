@@ -84,10 +84,7 @@ impl<'p> ExportFile<'p> {
         match d {
             Axiom { .. } => self.with_tc_and_declar(*d.info(), |tc| tc.check_declar_info(d).unwrap()),
             Inductive(..) => self.check_inductive_declar(d),
-            Quot { .. } => {
-                self.with_tc_and_declar(*d.info(), |tc| tc.check_declar_info(d).unwrap());
-                self.with_ctx(|ctx| crate::quot::check_quot(ctx, d))
-            }
+            Quot { .. } => self.with_ctx(|ctx| crate::quot::check_quot(ctx, d)),
             Definition { val, .. } | Theorem { val, .. } | Opaque { val, .. } =>
                 self.with_tc_and_declar(*d.info(), |tc| {
                     tc.check_declar_info(d).unwrap();
@@ -201,8 +198,14 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// and must have an ascribed type that is actually a type (`infer declaration.type` must
     /// be a sort).
     pub(crate) fn check_declar_info(&mut self, d: &Declar<'t>) -> Result<(), Box<dyn Error>> {
+        use crate::util::FxHashSet;
         let info = d.info();
         assert!(self.ctx.no_dupes_all_params(info.uparams));
+        {
+          let used_levels = self.ctx.collect_uparams(info.ty);
+          let declar_uparams = self.ctx.read_levels(info.uparams).iter().copied().collect::<FxHashSet<_>>();
+          assert!(used_levels.is_subset(&declar_uparams));
+        }
         assert!(!self.ctx.has_fvars(info.ty));
         let inferred_type = self.infer(info.ty, Check);
         let sort = self.ensure_sort(inferred_type);
@@ -1140,10 +1143,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         if !matches!(self.env.get_declar(&c_name), Some(Declar::Quot {..})) {
             return None
         }
-        let (qmk, rest_idx) = if c_name == self.ctx.export_file.name_cache.quot_lift? {
+        let (qmk, rest_idx) = if Some(c_name) == self.ctx.export_file.name_cache.quot_lift {
             let qmk = args.get(5).copied()?;
             (self.whnf(qmk), 6)
-        } else if c_name == self.ctx.export_file.name_cache.quot_ind? {
+        } else if Some(c_name) == self.ctx.export_file.name_cache.quot_ind {
             let qmk = args.get(4).copied()?;
             (self.whnf(qmk), 5)
         } else {

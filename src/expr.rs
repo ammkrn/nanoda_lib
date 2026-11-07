@@ -1,5 +1,5 @@
 //! Implementation of Lean expressions
-use crate::util::{BigUintPtr, ExprPtr, FxHashMap, LevelPtr, LevelsPtr, NamePtr, StringPtr, TcCtx, SortedPair};
+use crate::util::{BigUintPtr, ExprPtr, FxHashMap, LevelPtr, LevelsPtr, NamePtr, StringPtr, TcCtx, SortedPair, FxHashSet, new_fx_hash_set};
 use num_bigint::BigUint;
 use num_traits::identities::Zero;
 use Expr::*;
@@ -854,6 +854,46 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub(crate) fn num_loose_bvars(&self, e: ExprPtr<'t>) -> u16 { self.read_expr(e).num_loose_bvars() }
 
     pub(crate) fn has_fvars(&self, e: ExprPtr<'t>) -> bool { self.read_expr(e).has_fvars() }
+    
+    pub(crate) fn collect_uparams_aux(&self, e: ExprPtr<'t>, seen: &mut FxHashSet<ExprPtr<'t>>, params: &mut FxHashSet<LevelPtr<'t>>) { 
+        if seen.contains(&e) {
+            return
+        }
+        match self.read_expr(e) {
+            Sort{ level, .. } => { self.collect_params_aux(level, params); },
+            Const {levels, ..} => {
+                for level in self.read_levels(levels).iter().copied() {
+                    self.collect_params_aux(level, params);
+                }
+            }
+            Local {..} => panic!(),
+            StringLit { .. } | NatLit { .. } | Var {..} => (),
+                App { fun, arg, .. } => {
+                    self.collect_uparams_aux(fun, seen, params);
+                    self.collect_uparams_aux(arg, seen, params);
+                }
+                Pi { binder_type, body, .. } 
+                | Lambda { binder_type, body, .. } => {
+                    self.collect_uparams_aux(binder_type, seen, params);
+                    self.collect_uparams_aux(body, seen, params);
+                }
+                Let { binder_type, val, body, .. } => {
+                    self.collect_uparams_aux(binder_type, seen, params);
+                    self.collect_uparams_aux(val, seen, params);
+                    self.collect_uparams_aux(body, seen, params);
+                }
+                Proj { structure, .. } => {
+                    self.collect_uparams_aux(structure, seen, params);
+                }
+        }
+        seen.insert(e);
+    }
+    
+    pub(crate) fn collect_uparams(&self, e: ExprPtr<'t>) -> FxHashSet<LevelPtr<'t>>  {
+        let mut levels = new_fx_hash_set();
+        self.collect_uparams_aux(e, &mut new_fx_hash_set(), &mut levels);
+        levels
+    }
 }
 
 impl<'t> Expr<'t> {
