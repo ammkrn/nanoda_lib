@@ -1,0 +1,6 @@
+{
+  "export_file_path": "test_resources/Let/siblings.export",
+  "permitted_axioms": [],
+  "unpermitted_axiom_hard_error": true,
+  "print_success_message": true
+}

@@ -4,3 +4,4 @@ mod level;
 mod natlit;
 mod pretty_printer;
 mod util;
+mod infer_let;
