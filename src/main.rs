@@ -29,21 +29,18 @@ fn use_config(config_path: &Path) -> Result<Option<String>, Box<dyn Error>> {
     // Pretty print as necessary
     let pp_errs = export_file.pp_selected_declars(pp_destination.as_mut());
     if export_file.config.print_success_message {
-        if pp_errs.is_empty() {
-            if skipped_axioms.is_empty() {
-                Ok(Some(format!("Checked {} declarations with no errors", export_file.declars.len())))
-            } else {
-                Ok(Some(format!("Checked {} declarations with no errors, skipping exported but unpermitted axioms {:?}",
-                export_file.declars.len(), skipped_axioms)))
-            }
+        let mut msg = if pp_errs.is_empty() {
+            format!("Checked {} declarations with no errors", export_file.declars.len())
         } else {
-            Ok(Some(format!(
-                "Checked {} declarations with no typechecker errors, {} pretty printer errors: {:#?}",
-                export_file.declars.len(),
-                pp_errs.len(),
-                pp_errs
-            )))
+            format!("Checked {} declarations with no typechecker errors", export_file.declars.len())
+        };
+        if !skipped_axioms.is_empty() {
+            msg.push_str(&format!(", skipping exported but unpermitted axioms {:?}", skipped_axioms));
         }
+        if !pp_errs.is_empty() {
+            msg.push_str(&format!(", {} pretty printer errors: {:#?}", pp_errs.len(), pp_errs));
+        }
+        Ok(Some(msg))
     } else if skipped_axioms.is_empty() {
         Ok(None)
     } else {

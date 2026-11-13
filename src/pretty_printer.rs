@@ -380,10 +380,6 @@ impl<'p> ExportFile<'p> {
                 }
  
             });
-        } else {
-            if self.config.print_axioms {
-                errs.push(Box::<dyn Error>::from("Unable to print axioms"));
-            }
         }
         errs
     }
