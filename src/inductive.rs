@@ -980,6 +980,16 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         non_prop_ctor_telescope_elems.iter().all(|arg| ind_ty_params_and_indices.contains(arg))
     }
 
+    fn ctor_is_recursive(&self, mut ctor_ty: ExprPtr<'t>, ind_name: NamePtr<'t>) -> bool {
+        while let Pi { binder_type, body, .. } = self.ctx.read_expr(ctor_ty) {
+            if self.ctx.find_const(binder_type, |n| n == ind_name) {
+                return true
+            }
+            ctor_ty = body;
+        }
+        false
+    }
+
     fn large_elim_test(&mut self, st: &InductiveCheckState<'t>) -> bool {
         if st.is_nonzero.unwrap() {
             // If our inductive is in `Type <n>`, it's large eliminating
@@ -996,6 +1006,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     // 1. is not a mutual inductive (ind_types = 1)
                     // 2. is an inductive proposition (because its result sort is Prop/0)
                     // 3. has one and only one constructor
+                    // Recursive inductive predicates (e.g. `Acc`) only eliminate into Prop.
+                    [ctor] if self.ctor_is_recursive(ctor.ty, ind_ty.name) => false,
                     [ctor] => self.large_elim_test_aux(ctor.ty, st.local_params.len()),
                     // More than one constructor; no large elimination.
                     _ => false,
