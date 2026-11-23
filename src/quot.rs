@@ -121,23 +121,57 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Declar<
 
 #[allow(non_snake_case)]
 pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Declar<'p>) {
-    // `Eq` matching expectations is a prerequisite for checking `Quot`.
+    use crate::util::NamePtr;
+    let quot_name = ctx.export_file.name_cache.quot.unwrap();
+    let quot_mk_name = ctx.export_file.name_cache.quot_mk.unwrap_or_else(|| ctx.str2("Quot", "mk"));
+    let quot_lift_name = ctx.export_file.name_cache.quot_lift.unwrap_or_else(|| ctx.str2("Quot", "lift"));
+    let quot_ind_name = ctx.export_file.name_cache.quot_ind.unwrap_or_else(|| ctx.str2("Quot", "ind"));
+    assert!(
+        [quot_name, quot_mk_name, quot_lift_name, quot_ind_name].contains(&declar.info().name),
+        "invalid quotient declaration {:?}",
+        ctx.debug_print(declar.info().name),
+    );
+    let declar_uparams = ctx.read_levels(declar.info().uparams);
+    let expected_num_uparams = if declar.info().name == quot_lift_name { 2 } else { 1 };
+    assert_eq!(
+        declar_uparams.len(),
+        expected_num_uparams,
+        "invalid quotient universe parameter count for {:?}",
+        ctx.debug_print(declar.info().name),
+    );
+    let u_level = declar_uparams[0];
+
+    let env = ctx.export_file.new_env(EnvLimit::ByName(declar.info().name));
+    let dependencies: &[NamePtr<'_>] = if declar.info().name == quot_name {
+        &[]
+    } else if declar.info().name == quot_mk_name {
+        &[quot_name]
+    } else {
+        &[quot_name, quot_mk_name]
+    };
+    for dependency in dependencies {
+        assert!(
+            matches!(env.get_declar(dependency), Some(Declar::Quot { .. })),
+            "expected earlier quotient primitive {:?} when checking {:?}",
+            ctx.debug_print(*dependency),
+            ctx.debug_print(declar.info().name),
+        );
+    }
+    // Check primitive metadata and prerequisites before checking the type, and
+    // ensure the imported type is well formed before comparing it with ours.
+    {
+        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
+        tc.check_declar_info(declar).unwrap();
+    }
+    if declar.info().name == quot_name {
+        check_eq(ctx, declar);
+    }
+
     let prop = ctx.prop();
-    let u_name = ctx.str1("u");
-    let v_name = ctx.str1("v");
     let q_name = ctx.str1("q");
-    let u_level = ctx.param(u_name);
-    let v_level = ctx.param(v_name);
     let sort_u = ctx.mk_sort(u_level);
-    let sort_v = ctx.mk_sort(v_level);
 
     let levels_u = ctx.alloc_levels_slice(&[u_level]);
-    let levels_v = ctx.alloc_levels_slice(&[v_level]);
-    let levels_uv = ctx.alloc_levels_slice(&[u_level, v_level]);
-    let quot_name = ctx.export_file.name_cache.quot.unwrap();
-    let quot_mk_name = ctx.export_file.name_cache.quot_mk.unwrap();
-    let quot_lift_name = ctx.str2("Quot", "lift");
-    let quot_ind_name = ctx.str2("Quot", "ind");
 
     let A_name = ctx.str1("A");
     let B_name = ctx.str1("B");
@@ -145,21 +179,13 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Decla
     let f_name = ctx.str1("f");
     let a_name = ctx.str1("a");
     let b_name = ctx.str1("b");
-    assert!(matches!(ctx.export_file.declars.get(&quot_name), Some(Declar::Quot {..})));
-    assert!(matches!(ctx.export_file.declars.get(&quot_mk_name), Some(Declar::Quot {..})));
-    assert!(matches!(ctx.export_file.declars.get(&quot_lift_name), Some(Declar::Quot {..})));
-    assert!(matches!(ctx.export_file.declars.get(&quot_ind_name), Some(Declar::Quot {..})));
 
     // local for `{A : Sort u}`
     let A = ctx.mk_unique(A_name, Implicit, sort_u);
-    // local for `{B : Sort v}`
-    let B = ctx.mk_unique(B_name, Implicit, sort_v);
     let A_A_Prop = arrow!(in ctx; A, A, prop);
-    let A_B = arrow!(in ctx; A, B);
+    
     // local for `(r : A -> A -> Prop)`
     let r = ctx.mk_unique(r_name, Default, A_A_Prop);
-    // local for `(f : A -> B)`
-    let f = ctx.mk_unique(f_name, Default, A_B);
     // local for `(a1 : A)`
     let a = ctx.mk_unique(a_name, Default, A);
     // local for `(b : A)`
@@ -188,36 +214,48 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Decla
 
     let quot_mk_const = ctx.mk_const(expected_quot_mk.info().name, levels_u);
     let eq_name = ctx.str1("Eq");
-    let eq_const = ctx.mk_const(eq_name, levels_v);
 
-    let fa = app!(in ctx; f, a);
-    let fb = app!(in ctx; f, b);
-    // @eq B (f a) = (f b)
-    let eq_app = app!(in ctx; eq_const, B, fa, fb);
     let rab = app!(in ctx; r, a, b);
 
-    // (∀ (a b : A), r a b → f a = f b)
-    let lift_inner = pi_telescope! {
-        in ctx;
-        a,
-        b,
-        arrow! {
-            in ctx;
-            rab,
-            eq_app
-        }
-    };
-
-    if declar.info().name == ctx.str1("Quot") {
-        let env = ctx.export_file.new_env(EnvLimit::ByName(quot_name));
+    if declar.info().name == quot_name {
         let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
         tc.assert_def_eq(declar.info().ty, expected_quot.info().ty);
-    } else if declar.info().name == ctx.str2("Quot", "mk") {
-        let env = ctx.export_file.new_env(EnvLimit::ByName(quot_mk_name));
+    } else if declar.info().name == quot_mk_name {
         let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
         tc.assert_def_eq(declar.info().ty, expected_quot_mk.info().ty);
     } else if declar.info().name == quot_lift_name {
+        let v_level = declar_uparams[1];
+        let sort_v = ctx.mk_sort(v_level);
+        let levels_v = ctx.alloc_levels_slice(&[v_level]);
+        let levels_uv = declar.info().uparams;
         check_eq(ctx, declar);
+        // local for `{B : Sort v}`
+        let B = ctx.mk_unique(B_name, Implicit, sort_v);
+
+        let A_B = arrow!(in ctx; A, B);
+
+        // local for `(f : A -> B)`
+        let f = ctx.mk_unique(f_name, Default, A_B);
+ 
+        let eq_const = ctx.mk_const(eq_name, levels_v);
+        let fa = app!(in ctx; f, a);
+        let fb = app!(in ctx; f, b);
+
+        // @eq B (f a) = (f b)
+        let eq_app = app!(in ctx; eq_const, B, fa, fb);
+
+        // (∀ (a b : A), r a b → f a = f b)
+        let lift_inner = pi_telescope! {
+            in ctx;
+            a,
+            b,
+            arrow! {
+                in ctx;
+                rab,
+                eq_app
+            }
+        };
+
         // Quot.lift : Π {A : Sort u} {r : A → A → Prop} {B : Sort v} (f : A → B),
         //   (∀ (a b : A), r a b → f a = f b) → @Quot A r → B
         let expected_quot_lift = Declar::Quot {
@@ -239,7 +277,6 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Decla
                 },
             },
         };
-        let env = ctx.export_file.new_env(EnvLimit::ByName(declar.info().name));
         let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
         tc.assert_def_eq(declar.info().ty, expected_quot_lift.info().ty);
         return
@@ -270,7 +307,6 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Decla
             },
         };
 
-        let env = ctx.export_file.new_env(EnvLimit::ByName(declar.info().name));
         let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
         tc.assert_def_eq(declar.info().ty, expected_quot_ind.info().ty);
         return
