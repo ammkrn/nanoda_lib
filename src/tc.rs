@@ -412,6 +412,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let (f, args) = self.ctx.unfold_apps(e);
         let out = match (self.ctx.read_expr(f), args.as_slice()) {
             (Const { name, .. }, [arg]) if Some(name) == self.ctx.export_file.name_cache.nat_succ => {
+                if self.ctx.has_fvars(*arg) {
+                    return None;
+                }
                 let v_expr = self.whnf(*arg);
                 self.ctx.get_bignum_succ_from_expr(v_expr)
             }
