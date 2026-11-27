@@ -381,7 +381,7 @@ enum ExportJsonVal<'a> {
     },
 }
 
-pub(crate) fn parse_export_file<'p, R: BufRead>(
+pub fn parse_export_file<'p, R: BufRead>(
     buf_reader: R,
     config: Config,
 
