@@ -139,7 +139,7 @@ impl<'p> ExportFile<'p> {
     }
 
     /// Check all declarations in this export file using a single thread.
-    pub(crate) fn check_all_declars_serial(&self) {
+    pub fn check_all_declars_serial(&self) {
         for declar in self.declars.values() {
             self.check_declar(declar);
         }
